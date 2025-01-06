@@ -1,0 +1,20 @@
+{
+  "name": "discord-bot",
+  "version": "1.0.0",
+  "main": "src/index.ts",
+  "scripts": {
+    "start": "ts-node src/index.ts",
+    "build": "tsc"
+  },
+  "dependencies": {
+    "discord.js": "^14.0.0",
+    "mysql2": "^3.12.0",
+    "redis": "^4.7.0"
+  },
+  "devDependencies": {
+    "@types/mysql": "^2.15.26",
+    "@types/redis": "^4.0.10",
+    "ts-node": "^10.0.0",
+    "typescript": "^4.0.0"
+  }
+}
