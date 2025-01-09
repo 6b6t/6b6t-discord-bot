@@ -26,14 +26,14 @@ export class RedisManager {
             this.subscriber = createClient({
                 socket: {
                     host: config.redis.host,
-                    port: config.redis.port,
+                    port: Number(config.redis.port),
                 }
             });
 
             this.client = createClient({
                 socket: {
                     host: config.redis.host,
-                    port: config.redis.port,
+                    port: Number(config.redis.port),
                 }
             });
 

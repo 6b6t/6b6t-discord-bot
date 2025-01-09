@@ -7,14 +7,14 @@ const config = {
     allowedUsers: ['1192360689411575828'],
     redis: {
         host: 'localhost',
-        port: '6379',
+        port: 6379,
         channels: {
             rankUpdates: 'rank_updates'
         }
     },
     mysql: {
         host: 'localhost',
-        port: '3306',
+        port: 3306,
         user: 'linking',
         password: '1234',
         database: 'linking'

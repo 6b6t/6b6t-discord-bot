@@ -7,7 +7,7 @@ export class DatabaseManager {
     constructor() {
         this.pool = mysql.createPool({
             host: config.mysql.host,
-            port: config.mysql.port,
+            port: Number(config.mysql.port),
             user: config.mysql.user,
             password: config.mysql.password,
             database: config.mysql.database,
