@@ -51,5 +51,22 @@ services:
     volumes:
       - ${VOLUME_BASE_PATH}/redis:/data
 
+  discord_bot:
+    build:
+      context: ..
+      dockerfile: docker/images/discord_bot/Dockerfile
+    restart: always
+    depends_on:
+      - mariadb
+      - redis
+    networks:
+      - website_net
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - MYSQL_HOST=mariadb
+      - MYSQL_PORT=3306
+      - DISCORD_TOKEN=${DISCORD_TOKEN}
+
 networks:
   website_net: { }

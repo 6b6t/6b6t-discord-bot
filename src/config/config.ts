@@ -1,20 +1,20 @@
 export type RankRoleKey = 'group.prime' | 'group.elite' | 'group.apex' | 'group.primeultra' | 'group.eliteultra';
 
 const config = {
-    token: '',
+    token: process.env.DISCORD_TOKEN || '',
     clientId: '1325506526571532462',
     guildId: '917520262797344779',
     allowedUsers: ['1192360689411575828'],
     redis: {
-        host: 'localhost',
-        port: 6379,
+        host: process.env.REDIS_HOST || 'localhost',
+        port: parseInt(process.env.REDIS_PORT || '6379'),
         channels: {
             rankUpdates: 'rank_updates'
         }
     },
     mysql: {
-        host: 'localhost',
-        port: 3306,
+        host: process.env.MYSQL_HOST || 'localhost',
+        port: parseInt(process.env.MYSQL_PORT || '3306'),
         user: 'linking',
         password: '1234',
         database: 'linking'
