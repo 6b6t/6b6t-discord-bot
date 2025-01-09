@@ -1,0 +1,55 @@
+name: 6bwebsite
+
+services:
+  mariadb:
+    image: mariadb:11
+    restart: always
+    cap_add:
+      - SYS_NICE
+      - NET_ADMIN
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+      nproc: 65536
+    user: root
+#    command: --init-file=/docker-entrypoint-initdb.d/initfile.sql --max_connections=99999
+    expose:
+      - 3306
+    ports:
+      - "127.0.0.1:33123:3306"
+    networks:
+      - website_net
+    environment:
+      MARIADB_ROOT_PASSWORD: devenv
+    volumes:
+      - ${VOLUME_BASE_PATH}/mysql:/var/lib/mysql
+#      - ./db-init:/docker-entrypoint-initdb.d:ro
+  redis:
+    build:
+      context: images/redis
+      dockerfile: Dockerfile
+    restart: always
+    cap_add:
+      - SYS_NICE
+      - NET_ADMIN
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+      nproc: 65536
+    user: root
+#    command: --init-file=/docker-entrypoint-initdb.d/initfile.sql --max_connections=99999
+    expose:
+      - 6379
+    ports:
+      - "127.0.0.1:33124:6379"
+    networks:
+      - website_net
+    environment:
+      MARIADB_ROOT_PASSWORD: devenv
+    volumes:
+      - ${VOLUME_BASE_PATH}/redis:/data
+
+networks:
+  website_net: { }
