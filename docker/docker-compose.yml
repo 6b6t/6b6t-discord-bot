@@ -50,7 +50,6 @@ services:
       MARIADB_ROOT_PASSWORD: devenv
     volumes:
       - ${VOLUME_BASE_PATH}/redis:/data
-
   discord_bot:
     build:
       context: ..
