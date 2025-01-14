@@ -6,7 +6,7 @@ const config = {
     guildId: '1326869396324614245',
     allowedUsers: ['367842772025081856'],
     redis: {
-        host: 'localhost',
+        host: 'redis',
         port: 6379,
         channels: {
             rankUpdates: 'rank_updates'
