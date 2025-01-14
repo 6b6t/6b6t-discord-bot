@@ -13,7 +13,7 @@ const config = {
         }
     },
     mysql: {
-        host: 'localhost',
+        host: 'mariadb',
         port: 3306,
         user: 'root',
         password: 'devenv',
