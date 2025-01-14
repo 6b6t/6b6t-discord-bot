@@ -1,8 +1,8 @@
 export type RankRoleKey = 'group.prime' | 'group.elite' | 'group.apex' | 'group.primeultra' | 'group.eliteultra';
 
 const config = {
-    token: '',
-    clientId: '1325506526571532462',
+    token: 'MTMyODcxNTM4NjM3MTMwOTYxOQ.GwoZsC.T0zyps43eOsiJ9J8Z2fXNP9Q8IMxbmUaGsHd1U',
+    clientId: '1328715386371309619',
     guildId: '917520262797344779',
     allowedUsers: ['1192360689411575828'],
     redis: {
@@ -15,8 +15,8 @@ const config = {
     mysql: {
         host: 'localhost',
         port: 3306,
-        user: 'linking',
-        password: '1234',
+        user: 'root',
+        password: 'devenv',
         database: 'linking'
     },
     rankRoles: {
