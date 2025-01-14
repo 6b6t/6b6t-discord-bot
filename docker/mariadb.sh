@@ -1,0 +1,1 @@
+mariadb -h127.0.0.1 -P33123 -uroot -pdevenv
