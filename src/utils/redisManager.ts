@@ -22,7 +22,6 @@ export class RedisManager {
     }
 
     private async initializeRedis() {
-        console.log('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaAttempting to connect to Redis host:', config.redis.host);
         try {
             
             this.subscriber = createClient({
