@@ -3,8 +3,8 @@ export type RankRoleKey = 'group.prime' | 'group.elite' | 'group.apex' | 'group.
 const config = {
     token: 'MTMyODcxNTM4NjM3MTMwOTYxOQ.GwoZsC.T0zyps43eOsiJ9J8Z2fXNP9Q8IMxbmUaGsHd1U',
     clientId: '1328715386371309619',
-    guildId: '917520262797344779',
-    allowedUsers: ['1192360689411575828'],
+    guildId: '1326869396324614245',
+    allowedUsers: ['367842772025081856'],
     redis: {
         host: 'localhost',
         port: 6379,
