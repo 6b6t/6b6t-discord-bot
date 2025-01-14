@@ -50,7 +50,7 @@ services:
       MARIADB_ROOT_PASSWORD: devenv
     volumes:
       - ${VOLUME_BASE_PATH}/redis:/data
-  discord_bot:
+  discord-bot:
     build:
       context: ..
       dockerfile: docker/images/discord_bot/Dockerfile
