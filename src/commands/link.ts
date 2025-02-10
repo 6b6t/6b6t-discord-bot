@@ -69,7 +69,7 @@ const command: Command = {
             .addComponents(
                 new ButtonBuilder()
                     .setCustomId('link_button')
-                    .setLabel('Enter Link Code')
+                    .setLabel('Link your account')
                     .setStyle(ButtonStyle.Primary)
             );
 
@@ -79,8 +79,8 @@ const command: Command = {
 
     async handleButton(interaction: ButtonInteraction) {
         const linkCode = generateSecureCode();
-        await redisManager.storeLinkCode(linkCode, interaction.user.id);
-        
+//        await redisManager.storeLinkCode(linkCode, interaction.user.id);
+
         await interaction.reply({ 
             content: `Your unique link code is: \`${linkCode}\`\n\nRun this command in-game:\n\`/link ${linkCode}\`\n\nThis code will expire in 5 minutes.`, 
             ephemeral: true 
