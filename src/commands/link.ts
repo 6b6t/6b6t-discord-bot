@@ -79,7 +79,8 @@ const command: Command = {
 
     async handleButton(interaction: ButtonInteraction) {
         const linkCode = generateSecureCode();
-//        await redisManager.storeLinkCode(linkCode, interaction.user.id);
+        const dbManager = new DatabaseManager();
+        await dbManager.storeLinkCode(linkCode, interaction.user.id);
 
         await interaction.reply({ 
             content: `Your unique link code is: \`${linkCode}\`\n\nRun this command in-game:\n\`/link ${linkCode}\`\n\nThis code will expire in 5 minutes.`, 

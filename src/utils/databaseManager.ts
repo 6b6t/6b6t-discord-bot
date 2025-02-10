@@ -47,7 +47,46 @@ export class DatabaseManager {
         }
     }
 
+    async storeLinkCode(code: string, playerUuid: string): Promise<boolean> {
+        try {
+            // Store code with 5 minute expiration
+            await this.pool.execute(
+                'INSERT INTO link_codes (code, player_uuid, expires_at) VALUES (?, ?, DATE_ADD(NOW(), INTERVAL 5 MINUTE))',
+                [code, playerUuid]
+            );
+            return true;
+        } catch (error) {
+            console.error('Error storing link code:', error);
+            return false;
+        }
+    }
+
+    async verifyLinkCode(code: string, discordId: string): Promise<boolean> {
+        try {
+            // Get and validate unexpired code
+            const [rows] = await this.pool.execute<mysql.RowDataPacket[]>(
+                'SELECT player_uuid FROM link_codes WHERE code = ? AND expires_at > NOW()',
+                [code]
+            );
+
+            if (rows.length === 0) {
+                return false;
+            }
+
+            const playerUuid = rows[0].player_uuid;
+            
+            // Delete the used code
+            await this.pool.execute('DELETE FROM link_codes WHERE code = ?', [code]);
+            
+            // Link the player
+            return await this.linkPlayer(playerUuid, discordId);
+        } catch (error) {
+            console.error('Error verifying link code:', error);
+            return false;
+        }
+    }
+
     async close() {
         await this.pool.end();
     }
-} 
+}
