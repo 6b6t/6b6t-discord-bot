@@ -1,6 +1,7 @@
 import { SlashCommandBuilder } from '@discordjs/builders';
+import { randomBytes } from 'crypto';
 import { 
-    CommandInteraction, 
+    CommandInteraction,
     EmbedBuilder, 
     ActionRowBuilder, 
     ButtonBuilder, 
@@ -16,6 +17,22 @@ import {
 import { RedisManager } from '../utils/redisManager';
 import { Command } from '../types/command';
 import config from '../config/config';
+
+const ALLOWED_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
+
+function generateSecureCode(): string {
+    const sections = [8, 4, 4, 4, 12]; // UUID format sections
+    const result = sections.map(length => {
+        let section = '';
+        while (section.length < length) {
+            const randomByte = randomBytes(1)[0];
+            const index = randomByte % ALLOWED_CHARS.length;
+            section += ALLOWED_CHARS[index];
+        }
+        return section;
+    });
+    return result.join('-');
+}
 
 const command: Command = {
     data: new SlashCommandBuilder()
@@ -43,9 +60,9 @@ const command: Command = {
         const embed = new EmbedBuilder()
             .setColor('#0099ff')
             .setTitle('Link Your Minecraft Account')
-            .setDescription('Click the button below and enter the code you received in-game to link your accounts.\n\nLinking will automatically give you all ranks that you purchased from [6b6t Shop](https://6b6t.org/shop).')
+            .setDescription('Use the command shown below in-game to link your accounts.\n\nLinking will automatically give you all ranks that you purchased from [6b6t Shop](https://6b6t.org/shop).')
             .addFields(
-                { name: 'How to link', value: '1. Run `/link` command in-game\n2. Click the button below\n3. Enter the code you received' }
+                { name: 'How to link', value: `1. Click the button below to get your unique code\n2. Run \`/link <code>\` in-game with your code` }
             );
 
         const row = new ActionRowBuilder<ButtonBuilder>()
@@ -61,39 +78,13 @@ const command: Command = {
     },
 
     async handleButton(interaction: ButtonInteraction) {
-        const modal = new ModalBuilder()
-            .setCustomId('link_modal')
-            .setTitle('Enter Link Code');
-
-        const codeInput = new TextInputBuilder()
-            .setCustomId('link_code')
-            .setLabel('Enter the code you received in-game')
-            .setStyle(TextInputStyle.Short)
-            .setMinLength(1)
-            .setMaxLength(4)
-            .setRequired(true);
-
-        const actionRow = new ActionRowBuilder<TextInputBuilder>().addComponents(codeInput);
-        modal.addComponents(actionRow);
-
-        await interaction.showModal(modal);
-    },
-
-    async handleModal(interaction: ModalSubmitInteraction, redisManager: RedisManager) {
-        const code = interaction.fields.getTextInputValue('link_code');
-        const success = await redisManager.verifyLinkCode(code, interaction.user.id);
-
-        if (success) {
-            await interaction.reply({ 
-                content: 'Successfully linked your Minecraft account!', 
-                ephemeral: true 
-            });
-        } else {
-            await interaction.reply({ 
-                content: 'Invalid or expired code. Please try again.', 
-                ephemeral: true 
-            });
-        }
+        const linkCode = generateSecureCode();
+        await redisManager.storeLinkCode(linkCode, interaction.user.id);
+        
+        await interaction.reply({ 
+            content: `Your unique link code is: \`${linkCode}\`\n\nRun this command in-game:\n\`/link ${linkCode}\`\n\nThis code will expire in 5 minutes.`, 
+            ephemeral: true 
+        });
     }
 };
 
