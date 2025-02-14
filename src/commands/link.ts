@@ -15,6 +15,7 @@ import {
     TextChannel
 } from 'discord.js';
 import { RedisManager } from '../utils/redisManager';
+import { DatabaseManager } from '../utils/databaseManager';
 import { Command } from '../types/command';
 import config from '../config/config';
 

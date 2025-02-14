@@ -17,7 +17,7 @@ const config = {
         port: 3306,
         user: 'root',
         password: 'devenv',
-        database: 'linking'
+        database: 'linked_players'
     },
     rankRoles: {
         'group.prime': '1268337190144835718',
