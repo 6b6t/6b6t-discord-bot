@@ -22,7 +22,7 @@ import config from '../config/config';
 const ALLOWED_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
 
 function generateSecureCode(): string {
-    const sections = [8, 4, 4, 4, 12]; // UUID format sections
+    const sections = [4, 4, 4, 4];
     const result = sections.map(length => {
         let section = '';
         while (section.length < length) {
