@@ -51,7 +51,8 @@ export class DatabaseManager {
         try {
             // Store code with 5 minute expiration
             await this.pool.execute(
-                'INSERT INTO link_codes (code, player_uuid, expires_at) VALUES (?, ?, DATE_ADD(NOW(), INTERVAL 5 MINUTE))',
+                'INSERT INTO link_codes (code, player_uuid, expires_at) VALUES (?, ?, DATE_ADD(NOW(), INTERVAL 5 MINUTE)) ' +
+                'ON DUPLICATE KEY UPDATE code = VALUES(code), expires_at = VALUES(expires_at)',
                 [code, playerUuid]
             );
             return true;
