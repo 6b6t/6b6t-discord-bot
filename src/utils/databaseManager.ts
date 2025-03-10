@@ -75,10 +75,10 @@ export class DatabaseManager {
             }
 
             const playerUuid = rows[0].player_uuid;
-            
+
             // Delete the used code
             await this.pool.execute('DELETE FROM link_codes WHERE code = ?', [code]);
-            
+
             // Link the player
             return await this.linkPlayer(playerUuid, discordId);
         } catch (error) {
