@@ -1,5 +1,5 @@
 import {Client, Snowflake} from 'discord.js';
-import {collectUserInfo, getAllLinkedUsers, UserInfo, UserLinkAndInfo} from "../helpers";
+import {collectUserInfo, getAllLinkedUsers, UserInfo, UserLinkAndInfo} from "../utils/helpers";
 import config from "../config/config";
 
 const roles: Record<string, {

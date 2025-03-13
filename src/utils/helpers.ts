@@ -1,6 +1,6 @@
 import {RowDataPacket} from "mysql2";
-import {getStatsPool} from "./utils/mysql-client";
-import {getRedisClient} from "./utils/redis";
+import {getStatsPool} from "./mysql-client";
+import {getRedisClient} from "./redis";
 
 export type UserInfo = {
   topRank: string;
