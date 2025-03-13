@@ -1,1 +1,0 @@
-docker compose down ; docker rmi 6bwebsite-discord-bot:latest ; docker compose up

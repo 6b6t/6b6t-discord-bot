@@ -2,9 +2,9 @@ import {Client, GatewayIntentBits, REST, Routes} from 'discord.js';
 import config from './config/config';
 import {onReady} from './events/ready';
 import {CommandManager} from './utils/commandManager';
-import {RedisManager} from './utils/redisManager';
 import 'dotenv/config'
 import {sync} from "./events/sync";
+import {getRedisClient} from "./utils/redis";
 
 const client = new Client({
   intents: [
@@ -14,24 +14,24 @@ const client = new Client({
 });
 
 const commandManager = new CommandManager();
-const redisManager = new RedisManager(client);
 
 async function initializeBot() {
   try {
     console.log('Loading commands...');
     commandManager.loadCommands();
 
-    const rest = new REST({version: '10'}).setToken(config.token);
+    const rest = new REST({version: '10'}).setToken(process.env.DISCORD_TOKEN!);
     const commands = commandManager.getCommandsJSON();
-
-    console.log(`Registering ${commands.length} commands to guild ${config.guildId}...`);
-    await rest.put(
-        Routes.applicationGuildCommands(config.clientId, config.guildId),
-        {body: commands}
-    );
+    if (commands.length > 0) {
+      console.log(`Registering ${commands.length} commands to guild ${config.guildId}...`);
+      await rest.put(
+          Routes.applicationGuildCommands(config.clientId, config.guildId),
+          {body: commands}
+      );
+    }
 
     console.log('Initializing bot...');
-    await client.login(config.token);
+    await client.login(process.env.DISCORD_TOKEN!);
 
     console.log(`Bot initialized and ready to serve in guild: ${config.guildId}`);
   } catch (error) {
@@ -52,7 +52,7 @@ async function gracefulShutdown() {
   console.log('Shutting down gracefully...');
 
   try {
-    await redisManager.close();
+    (await getRedisClient()).disconnect();
     console.log('Redis connections closed');
 
     if (client.isReady()) {
