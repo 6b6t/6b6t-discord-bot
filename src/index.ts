@@ -22,13 +22,11 @@ async function initializeBot() {
 
     const rest = new REST({version: '10'}).setToken(process.env.DISCORD_TOKEN!);
     const commands = commandManager.getCommandsJSON();
-    if (commands.length > 0) {
-      console.log(`Registering ${commands.length} commands to guild ${config.guildId}...`);
-      await rest.put(
-          Routes.applicationGuildCommands(config.clientId, config.guildId),
-          {body: commands}
-      );
-    }
+    console.log(`Registering ${commands.length} commands to guild ${config.guildId}...`);
+    await rest.put(
+        Routes.applicationGuildCommands(config.clientId, config.guildId),
+        {body: commands}
+    );
 
     console.log('Initializing bot...');
     await client.login(process.env.DISCORD_TOKEN!);
