@@ -1,7 +1,5 @@
-export type RankRoleKey = 'group.prime' | 'group.elite' | 'group.apex' | 'group.primeultra' | 'group.eliteultra';
 
 const config = {
-    token: 'MTMyODcxNTM4NjM3MTMwOTYxOQ.GwoZsC.T0zyps43eOsiJ9J8Z2fXNP9Q8IMxbmUaGsHd1U',
     clientId: '1328715386371309619',
     guildId: '1326869396324614245',
     redis: {
@@ -18,14 +16,6 @@ const config = {
         password: 'devenv',
         database: 'linked_players'
     },
-    rankRoles: {
-        'group.prime': '1268337190144835718',
-        'group.elite': '1268337279898878013',
-        'group.apex': '1268345919003430942',
-        'group.primeultra': '1325147393372586054',
-        'group.eliteultra': '1325147417322192927'
-    } as Record<RankRoleKey, string>,
-    linkedRole: '1325507259307921428'
 };
 
 export default config;

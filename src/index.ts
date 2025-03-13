@@ -1,12 +1,16 @@
-import {Client, REST, Routes} from 'discord.js';
+import {Client, GatewayIntentBits, REST, Routes} from 'discord.js';
 import config from './config/config';
 import {onReady} from './events/ready';
 import {CommandManager} from './utils/commandManager';
 import {RedisManager} from './utils/redisManager';
 import 'dotenv/config'
+import {sync} from "./events/sync";
 
 const client = new Client({
-  intents: []
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMembers,
+  ]
 });
 
 const commandManager = new CommandManager();
@@ -37,6 +41,12 @@ async function initializeBot() {
 }
 
 client.once('ready', onReady);
+
+setInterval(() => {
+  if (client.isReady()) {
+    void sync(client);
+  }
+}, 30_000);
 
 async function gracefulShutdown() {
   console.log('Shutting down gracefully...');
