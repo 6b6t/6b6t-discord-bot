@@ -1,13 +1,14 @@
 import { REST, Routes } from 'discord.js';
 import config from './config/config';
 import { CommandManager } from './utils/commandManager';
+import 'dotenv/config'
 
 const commandManager = new CommandManager();
 commandManager.loadCommands();
 
 const commands = Array.from(commandManager.getCommands().values()).map(command => command.data.toJSON());
 
-const rest = new REST({ version: '10' }).setToken(config.token);
+const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN!);
 
 (async () => {
     try {
