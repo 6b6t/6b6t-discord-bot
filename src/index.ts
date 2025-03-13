@@ -3,7 +3,6 @@ import config from './config/config';
 import {onReady} from './events/ready';
 import {CommandManager} from './utils/commandManager';
 import 'dotenv/config'
-import {sync} from "./events/sync";
 import {getRedisClient} from "./utils/redis";
 
 const client = new Client({
