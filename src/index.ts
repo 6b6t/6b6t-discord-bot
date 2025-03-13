@@ -75,14 +75,4 @@ process.on('SIGUSR2', () => {
   void gracefulShutdown();
 });
 
-process.on('uncaughtException', async (error) => {
-  console.error('Uncaught Exception:', error);
-  await gracefulShutdown();
-});
-
-process.on('unhandledRejection', async (reason, promise) => {
-  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
-  await gracefulShutdown();
-});
-
 void initializeBot();
