@@ -32,19 +32,6 @@ async function initializeBot() {
     await client.login(process.env.DISCORD_TOKEN!);
 
     console.log(`Bot initialized and ready to serve in guild: ${config.guildId}`);
-
-    async function runSync() {
-      console.log("Running sync...");
-      try {
-        if (client.isReady()) {
-          await sync(client);
-        }
-      } finally {
-        setTimeout(runSync, 30_000);
-      }
-    }
-
-    void runSync();
   } catch (error) {
     console.error('Error initializing bot:', error);
     process.exit(1);
