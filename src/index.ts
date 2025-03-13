@@ -1,8 +1,9 @@
-import {Client, Interaction, REST, Routes} from 'discord.js';
+import {Client, REST, Routes} from 'discord.js';
 import config from './config/config';
 import {onReady} from './events/ready';
 import {CommandManager} from './utils/commandManager';
 import {RedisManager} from './utils/redisManager';
+import 'dotenv/config'
 
 const client = new Client({
   intents: []
