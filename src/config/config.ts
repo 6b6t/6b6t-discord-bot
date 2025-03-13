@@ -4,7 +4,6 @@ const config = {
     token: 'MTMyODcxNTM4NjM3MTMwOTYxOQ.GwoZsC.T0zyps43eOsiJ9J8Z2fXNP9Q8IMxbmUaGsHd1U',
     clientId: '1328715386371309619',
     guildId: '1326869396324614245',
-    allowedUsers: ['367842772025081856'],
     redis: {
         host: 'redis',
         port: 6379,
