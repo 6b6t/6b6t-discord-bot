@@ -53,7 +53,10 @@ const roles: Record<string, {
 };
 
 export const sync = async (client: Client) => {
+  console.log('Getting linked users...');
   const linkedUsers = await getAllLinkedUsers();
+
+  console.log('Collecting user info...');
   const userLinksAndInfos: UserLinkAndInfo[] = (await Promise.all(linkedUsers.map(async linkedUser => {
     const userInfo = await collectUserInfo(linkedUser.minecraftUuid);
     if (userInfo === null) return null;
@@ -65,11 +68,13 @@ export const sync = async (client: Client) => {
     return result;
   }))).filter(user => user !== null);
 
+  console.log("Getting guild info...");
   const guild = client.guilds.cache.get(config.guildId);
   if (!guild) return console.error('Guild not found');
 
   await guild.members.fetch(); // Ensure all members are cached
 
+  console.log("Assigning guild roles...");
   for (const [key, {id, predicate}] of Object.entries(roles)) {
     const role = guild.roles.cache.get(id);
     if (!role) return console.log('Role not found');
@@ -89,4 +94,6 @@ export const sync = async (client: Client) => {
       await guild.members.cache.get(memberId)?.roles.remove(role);
     }
   }
+
+  console.log("Sync complete");
 };
