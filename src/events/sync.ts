@@ -36,7 +36,7 @@ const roles: Record<string, {
   },
   '2022': {
     id: "1349065372313321514",
-    predicate: (info) => info.firstJoinYear === 2022
+    predicate: (info) => info.firstJoinYear <= 2022
   },
   '2023': {
     id: "1349065403477004480",
