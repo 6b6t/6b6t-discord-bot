@@ -20,6 +20,9 @@ importers:
       redis:
         specifier: ^4.7.0
         version: 4.7.0
+      cron:
+        specifier: ^4.1.0,
+        version: 4.1.0,
     devDependencies:
       '@types/node':
         specifier: ^22.10.5
