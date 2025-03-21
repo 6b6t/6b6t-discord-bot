@@ -1,13 +1,13 @@
-import { Client, Message, MessageFlags, TextChannel } from 'discord.js';
+import { ChannelType, Client, Message, MessageFlags } from 'discord.js';
 import { deleteAdvertisingMessage } from '../utils/helpers';
 import config from "../config/config";
 
 export const onMessageCreate = async (client: Client, message: Message) => {
-    console.log(message.channel.id)
+    if (!(message.channel.type === ChannelType.GuildText)) return;
     if (message.channel.id !== config.advertisingId) return;
     if (message.author.bot) return;
 
-    const channel = message.channel as TextChannel;
+    const channel = message.channel
     await deleteAdvertisingMessage(client);
 
     try {

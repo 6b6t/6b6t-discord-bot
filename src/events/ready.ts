@@ -1,4 +1,4 @@
-import { Client, TextChannel } from 'discord.js';
+import { ChannelType, Client } from 'discord.js';
 import {sync} from "./sync";
 import cron from 'cron';
 import config from "../config/config";
@@ -17,11 +17,11 @@ export const onReady = (client: Client) => {
     }
 
     async function sendReminder() {
-        const channel = client.channels.cache.get(config.generalId) as TextChannel;
-        if (channel) {
-          await channel.send(config.generalMessage);
+        const channel = client.channels.cache.get(config.generalId);
+        if (channel && channel.type === ChannelType.GuildText) {
+            await channel.send(config.generalMessage);
         } else {
-          console.error(`Couldn't find general channel by ID: ${config.generalId}`)
+            console.error(`Couldn't find general channel by ID: ${config.generalId}`)
         }
     };
 
