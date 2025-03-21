@@ -113,13 +113,7 @@ export async function getTopRank(
   return topRank;
 }
 
-export async function deleteAdvertisingMessage(client: Client) {
-  const channel = client.channels.cache.get(config.advertisingId) as TextChannel;
-  if (!channel) {
-    console.error(`Could not find advertising channel by ID: ${config.advertisingId}`);
-    return;
-  }
-
+export async function deleteAdvertisingMessage(client: Client, channel: TextChannel) {
   const messages = await channel.messages.fetch({ limit: 100 });
   const botMessage = messages.find((msg) => msg.author.id === client.user?.id);
 

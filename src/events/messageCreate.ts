@@ -8,7 +8,7 @@ export const onMessageCreate = async (client: Client, message: Message) => {
     if (message.author.bot) return;
 
     const channel = message.channel
-    await deleteAdvertisingMessage(client);
+    await deleteAdvertisingMessage(client, channel);
 
     try {
         await channel.send({
