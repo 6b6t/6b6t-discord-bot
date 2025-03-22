@@ -1,10 +1,11 @@
-import { ChannelType, Client } from 'discord.js';
+import {ChannelType, Client} from 'discord.js';
 import {sync} from "./sync";
 import cron from 'cron';
 import config from "../config/config";
 
 export const onReady = (client: Client) => {
     console.log(`Logged in as ${client.user?.tag}!`);
+
     async function runSync() {
         console.log("Running sync...");
         try {
@@ -17,13 +18,13 @@ export const onReady = (client: Client) => {
     }
 
     async function sendReminder() {
-        const channel = client.channels.cache.get(config.generalId);
+        const channel = await client.channels.fetch(config.generalId);
         if (channel && channel.type === ChannelType.GuildText) {
             await channel.send(config.generalMessage);
         } else {
             console.error(`Couldn't find general channel by ID: ${config.generalId}`)
         }
-    };
+    }
 
     new cron.CronJob(
         "0 10 * * *",
@@ -32,7 +33,7 @@ export const onReady = (client: Client) => {
         true,
         "Europe/Berlin"
     );
-    
+
     new cron.CronJob(
         "0 18 * * *",
         sendReminder,

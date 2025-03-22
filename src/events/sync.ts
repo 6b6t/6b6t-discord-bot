@@ -69,14 +69,14 @@ export const sync = async (client: Client) => {
   }))).filter(user => user !== null);
 
   console.log("Getting guild info...");
-  const guild = client.guilds.cache.get(config.guildId);
+  const guild = await client.guilds.fetch(config.guildId);
   if (!guild) return console.error('Guild not found');
 
   await guild.members.fetch(); // Ensure all members are cached
 
   console.log("Assigning guild roles...");
   for (const [key, {id, predicate}] of Object.entries(roles)) {
-    const role = guild.roles.cache.get(id);
+    const role = await guild.roles.fetch(id);
     if (!role) return console.log('Role not found');
 
     const allowedUsers = userLinksAndInfos.filter(user => predicate(user));
@@ -86,12 +86,12 @@ export const sync = async (client: Client) => {
 
     for (const userLink of membersToAdd) {
       console.log(`Adding ${key} to ${userLink.discordId}`);
-      await guild.members.cache.get(userLink.discordId)?.roles.add(role);
+      await (await guild.members.fetch(userLink.discordId))?.roles.add(role);
     }
 
     for (const memberId of membersToRemove) {
       console.log(`Removing ${key} from ${memberId}`);
-      await guild.members.cache.get(memberId)?.roles.remove(role);
+      await (await guild.members.fetch(memberId))?.roles.remove(role);
     }
   }
 
