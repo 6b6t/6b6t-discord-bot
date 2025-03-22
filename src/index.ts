@@ -1,14 +1,16 @@
-import {Client, GatewayIntentBits, REST, Routes} from 'discord.js';
+import {Client, GatewayIntentBits, Message, REST, Routes} from 'discord.js';
 import config from './config/config';
 import {onReady} from './events/ready';
 import {CommandManager} from './utils/commandManager';
 import 'dotenv/config'
 import {getRedisClient} from "./utils/redis";
+import { onMessageCreate } from './events/messageCreate';
 
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMembers,
+    GatewayIntentBits.GuildMessages,
   ]
 });
 
@@ -38,6 +40,7 @@ async function initializeBot() {
 }
 
 client.once('ready', onReady);
+client.on('messageCreate', async (message: Message) => await onMessageCreate(client, message));
 
 async function gracefulShutdown() {
   console.log('Shutting down gracefully...');

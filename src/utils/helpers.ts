@@ -1,6 +1,8 @@
 import {RowDataPacket} from "mysql2";
 import {getStatsPool} from "./mysql-client";
 import {getRedisClient} from "./redis";
+import { Client, TextChannel } from "discord.js";
+import config from "../config/config";
 
 export type UserInfo = {
   topRank: string;
@@ -109,4 +111,17 @@ export async function getTopRank(
   }
 
   return topRank;
+}
+
+export async function deleteAdvertisingMessage(client: Client, channel: TextChannel) {
+  const messages = await channel.messages.fetch({ limit: 100 });
+  const botMessage = messages.find((msg) => msg.author.id === client.user?.id);
+
+  if (botMessage) {
+    try {
+      await botMessage.delete();
+    } catch (error) {
+      console.error("Failed to delete advertising message: ", error);
+    }
+  }
 }

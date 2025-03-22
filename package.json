@@ -9,8 +9,9 @@
   },
   "dependencies": {
     "discord.js": "14.18.0",
-    "dotenv": "^16.4.7",
     "mysql2": "^3.13.0",
+    "cron": "^4.1.0",
+    "dotenv": "^16.4.7",
     "redis": "^4.7.0"
   },
   "devDependencies": {
