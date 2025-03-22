@@ -79,19 +79,21 @@ export const sync = async (client: Client) => {
     const role = await guild.roles.fetch(id);
     if (!role) return console.log('Role not found');
 
-    const allowedUsers = userLinksAndInfos.filter(user => predicate(user));
+    const allowedUserIds = userLinksAndInfos
+        .filter(user => predicate(user))
+        .map(user => user.discordId);
     const membersInRole = role.members.map(member => member.id);
-    const membersToAdd = allowedUsers.filter(user => !membersInRole.includes(user.discordId));
-    const membersToRemove = membersInRole.filter(member => !allowedUsers.map(user => user.discordId).includes(member));
+    const membersToAdd = allowedUserIds.filter(user => !membersInRole.includes(user));
+    const membersToRemove = membersInRole.filter(member => !allowedUserIds.includes(member));
 
-    for (const userLink of membersToAdd) {
-      console.log(`Adding ${key} to ${userLink.discordId}`);
-      await (await guild.members.fetch(userLink.discordId))?.roles.add(role);
+    for (const memberId of membersToAdd) {
+      console.log(`Adding ${key} to ${memberId}`);
+      await guild.members.cache.get(memberId)?.roles.add(role);
     }
 
     for (const memberId of membersToRemove) {
       console.log(`Removing ${key} from ${memberId}`);
-      await (await guild.members.fetch(memberId))?.roles.remove(role);
+      await guild.members.cache.get(memberId)?.roles.remove(role);
     }
   }
 
