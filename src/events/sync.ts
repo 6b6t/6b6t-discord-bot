@@ -1,54 +1,62 @@
-import {Client, Snowflake} from 'discord.js';
-import {collectUserInfo, getAllLinkedUsers, UserInfo, UserLinkAndInfo} from "../utils/helpers";
-import config from "../config/config";
+import { Client, Snowflake } from 'discord.js';
+import {
+  collectUserInfo,
+  getAllLinkedUsers,
+  UserInfo,
+  UserLinkAndInfo,
+} from '../utils/helpers';
+import config from '../config/config';
 
-const roles: Record<string, {
-  id: Snowflake,
-  predicate: (check: UserInfo) => boolean
-}> = {
-  'linked': {
+const roles: Record<
+  string,
+  {
+    id: Snowflake;
+    predicate: (check: UserInfo) => boolean;
+  }
+> = {
+  linked: {
     id: '1325507259307921428',
-    predicate: () => true
+    predicate: () => true,
   },
-  'prime': {
+  prime: {
     id: '1268337190144835718',
-    predicate: (info) => info.topRank === 'prime'
+    predicate: (info) => info.topRank === 'prime',
   },
-  'primeultra': {
+  primeultra: {
     id: '1325147393372586054',
-    predicate: (info) => info.topRank === 'primeultra'
+    predicate: (info) => info.topRank === 'primeultra',
   },
-  'elite': {
+  elite: {
     id: '1268337279898878013',
-    predicate: (info) => info.topRank === 'elite'
+    predicate: (info) => info.topRank === 'elite',
   },
-  'eliteultra': {
+  eliteultra: {
     id: '1325147417322192927',
-    predicate: (info) => info.topRank === 'eliteultra'
+    predicate: (info) => info.topRank === 'eliteultra',
   },
-  'apex': {
+  apex: {
     id: '1268345919003430942',
-    predicate: (info) => info.topRank === 'apex'
+    predicate: (info) => info.topRank === 'apex',
   },
-  'apexultra': {
+  apexultra: {
     id: '1349026308390391839',
-    predicate: (info) => info.topRank === 'apexultra'
+    predicate: (info) => info.topRank === 'apexultra',
   },
   '2022': {
-    id: "1349065372313321514",
-    predicate: (info) => info.firstJoinYear <= 2022
+    id: '1349065372313321514',
+    predicate: (info) => info.firstJoinYear <= 2022,
   },
   '2023': {
-    id: "1349065403477004480",
-    predicate: (info) => info.firstJoinYear === 2023
+    id: '1349065403477004480',
+    predicate: (info) => info.firstJoinYear === 2023,
   },
   '2024': {
-    id: "1349065422065893516",
-    predicate: (info) => info.firstJoinYear === 2024
+    id: '1349065422065893516',
+    predicate: (info) => info.firstJoinYear === 2024,
   },
   '2025': {
-    id: "1349065443650043955",
-    predicate: (info) => info.firstJoinYear === 2025
+    id: '1349065443650043955',
+    predicate: (info) => info.firstJoinYear === 2025,
   },
 };
 
@@ -57,34 +65,42 @@ export const sync = async (client: Client) => {
   const linkedUsers = await getAllLinkedUsers();
 
   console.log('Collecting user info...');
-  const userLinksAndInfos: UserLinkAndInfo[] = (await Promise.all(linkedUsers.map(async linkedUser => {
-    const userInfo = await collectUserInfo(linkedUser.minecraftUuid);
-    if (userInfo === null) return null;
+  const userLinksAndInfos: UserLinkAndInfo[] = (
+    await Promise.all(
+      linkedUsers.map(async (linkedUser) => {
+        const userInfo = await collectUserInfo(linkedUser.minecraftUuid);
+        if (userInfo === null) return null;
 
-    const result: UserLinkAndInfo = {
-      ...linkedUser,
-      ...userInfo
-    }
-    return result;
-  }))).filter(user => user !== null);
+        const result: UserLinkAndInfo = {
+          ...linkedUser,
+          ...userInfo,
+        };
+        return result;
+      }),
+    )
+  ).filter((user) => user !== null);
 
-  console.log("Getting guild info...");
+  console.log('Getting guild info...');
   const guild = await client.guilds.fetch(config.guildId);
   if (!guild) return console.error('Guild not found');
 
   await guild.members.fetch(); // Ensure all members are cached
 
-  console.log("Assigning guild roles...");
-  for (const [key, {id, predicate}] of Object.entries(roles)) {
+  console.log('Assigning guild roles...');
+  for (const [key, { id, predicate }] of Object.entries(roles)) {
     const role = await guild.roles.fetch(id);
     if (!role) return console.log('Role not found');
 
     const allowedUserIds = userLinksAndInfos
-        .filter(user => predicate(user))
-        .map(user => user.discordId);
-    const membersInRole = role.members.map(member => member.id);
-    const membersToAdd = allowedUserIds.filter(user => !membersInRole.includes(user));
-    const membersToRemove = membersInRole.filter(member => !allowedUserIds.includes(member));
+      .filter((user) => predicate(user))
+      .map((user) => user.discordId);
+    const membersInRole = role.members.map((member) => member.id);
+    const membersToAdd = allowedUserIds.filter(
+      (user) => !membersInRole.includes(user),
+    );
+    const membersToRemove = membersInRole.filter(
+      (member) => !allowedUserIds.includes(member),
+    );
 
     for (const memberId of membersToAdd) {
       console.log(`Adding ${key} to ${memberId}`);
@@ -97,5 +113,5 @@ export const sync = async (client: Client) => {
     }
   }
 
-  console.log("Sync complete");
+  console.log('Sync complete');
 };

@@ -3,6 +3,7 @@ import { createClient } from 'redis';
 type ClientType = ReturnType<typeof createClient>;
 
 let cachedClient: ClientType;
+
 export async function getRedisClient(): Promise<ClientType> {
   if (cachedClient) return cachedClient;
 

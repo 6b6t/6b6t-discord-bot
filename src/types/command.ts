@@ -1,8 +1,12 @@
-import { CommandInteraction, ButtonInteraction, ModalSubmitInteraction } from 'discord.js';
+import {
+  ButtonInteraction,
+  CommandInteraction,
+  ModalSubmitInteraction,
+} from 'discord.js';
 
 export interface Command {
-    data: any;
-    execute: (interaction: CommandInteraction) => Promise<void>;
-    handleButton?: (interaction: ButtonInteraction) => Promise<void>;
-    handleModal?: (interaction: ModalSubmitInteraction) => Promise<void>;
+  data: any;
+  execute: (interaction: CommandInteraction) => Promise<void>;
+  handleButton?: (interaction: ButtonInteraction) => Promise<void>;
+  handleModal?: (interaction: ModalSubmitInteraction) => Promise<void>;
 }

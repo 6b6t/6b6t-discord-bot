@@ -19,6 +19,7 @@ function createMysqlClient() {
 }
 
 let statsPool: mysql.Pool;
+
 export function getStatsPool(): mysql.Pool {
   if (statsPool) return statsPool;
 
