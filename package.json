@@ -6,7 +6,8 @@
   "scripts": {
     "start": "tsx src/index.ts",
     "typecheck": "tsc --noEmit",
-    "prepare": "husky"
+    "prepare": "husky",
+    "pre-commit": "lint-staged"
   },
   "dependencies": {
     "@types/he": "^1.2.3",
