@@ -3,7 +3,7 @@ const config = {
   guildId: '917520262797344779',
   advertisingId: '1322175662903005186',
   generalId: '982192297645056040',
-  youtubeId: '',
+  youtubeId: '1353453116007252050',
   youtubeQueries: ['6b6t.org', '6b6t'],
   youtubeIgnoreWords: ['2b2t', '5b5t', '7b7t', '9b9t', 'constantiam', '8b8t'],
   generalMessage:

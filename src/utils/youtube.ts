@@ -5,7 +5,7 @@ import 'dotenv/config';
 
 const youtube = google.youtube({
   version: 'v3',
-  auth: process.env.API_KEY,
+  auth: process.env.YOUTUBE_API_KEY,
 });
 
 export async function getLatestVideo(
