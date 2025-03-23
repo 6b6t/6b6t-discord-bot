@@ -19,7 +19,7 @@ export async function getLatestVideo(
   try {
     const query = [
       queries.join(' OR '),
-      ignoreWords.map((word) => `-` + word),
+      ...ignoreWords.map((word) => `-` + word),
     ].join(' ');
     const response = await youtube.search.list({
       q: query,

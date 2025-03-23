@@ -19,7 +19,7 @@ export const onReady = (client: Client) => {
   }
 
   async function sendReminder() {
-    const channel = client.channels.cache.get(config.generalId);
+    const channel = await client.channels.fetch(config.generalId);
     if (channel && channel.type === ChannelType.GuildText) {
       await channel.send(config.generalMessage);
     } else {
@@ -28,7 +28,7 @@ export const onReady = (client: Client) => {
   }
 
   async function sendNotification() {
-    const youtubeChannel = client.channels.cache.get(config.youtubeId);
+    const youtubeChannel = await client.channels.fetch(config.youtubeId);
     if (youtubeChannel && youtubeChannel.type === ChannelType.GuildText) {
       await sendYoutubeNotification(
         youtubeChannel,
