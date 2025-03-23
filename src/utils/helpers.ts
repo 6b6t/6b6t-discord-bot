@@ -2,7 +2,6 @@ import {RowDataPacket} from "mysql2";
 import {getStatsPool} from "./mysql-client";
 import {getRedisClient} from "./redis";
 import { Client, TextChannel } from "discord.js";
-import config from "../config/config";
 
 export type UserInfo = {
   topRank: string;
