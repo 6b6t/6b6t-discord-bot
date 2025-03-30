@@ -13,6 +13,12 @@ export const onMessageCreate = async (client: Client, message: Message) => {
   try {
     await channel.send({
       content: config.advertisingMessage,
+      // Prevent role pings
+      allowedMentions: {
+        users: [],
+        roles: [],
+        repliedUser: false,
+      },
       flags: [MessageFlags.SuppressNotifications],
     });
   } catch (error) {

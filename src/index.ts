@@ -7,6 +7,10 @@ import { getRedisClient } from './utils/redis';
 import { onMessageCreate } from './events/messageCreate';
 
 const client = new Client({
+  allowedMentions: {
+    // Prevent @everyone pings
+    parse: ['users', 'roles'],
+  },
   intents: [
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMembers,
