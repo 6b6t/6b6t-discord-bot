@@ -125,3 +125,18 @@ export async function deleteAdvertisingMessage(
     }
   }
 }
+
+export async function getServerData(host: string): Promise<any> {
+  const url = `https://mcapi.us/server/status?ip=${host}&port=25565`;
+
+  try {
+    const response = await fetch(url);
+    if (!response.ok) {
+      return null;
+    }
+    return await response.json();
+  } catch (error) {
+    console.error('Error fetching server status:', error);
+    return null;
+  }
+}
