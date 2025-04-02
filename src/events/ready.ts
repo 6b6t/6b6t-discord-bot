@@ -1,10 +1,11 @@
-import { ChannelType, Client } from 'discord.js';
+import { ChannelType, Client, ActivityType } from 'discord.js';
 import { sync } from './sync';
+import { getServerData } from '../utils/helpers';
+import { sendYoutubeNotification } from '../utils/youtube';
 import cron from 'cron';
 import config from '../config/config';
-import { sendYoutubeNotification } from '../utils/youtube';
 
-export const onReady = (client: Client) => {
+export const onReady = async (client: Client) => {
   console.log(`Logged in as ${client.user?.tag}!`);
 
   async function runSync() {
@@ -41,6 +42,19 @@ export const onReady = (client: Client) => {
       );
     }
   }
+
+  async function updateStatus() {
+    if (!client.user) return;
+    const data = await getServerData(config.statusHost);
+    if (!data) return;
+    client.user.setActivity(
+      `IP: ${config.statusHost} - Join ${data.players.now} other players online!`,
+      { type: ActivityType.Playing },
+    );
+  }
+
+  await updateStatus();
+  new cron.CronJob('*/5 * * * *', updateStatus, null, true, 'Europe/Berlin');
 
   new cron.CronJob('0 10 * * *', sendReminder, null, true, 'Europe/Berlin');
 
