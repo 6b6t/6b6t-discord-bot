@@ -17,7 +17,7 @@
     "googleapis": "^148.0.0",
     "he": "^1.2.0",
     "mysql2": "^3.13.0",
-    "redis": "^4.7.0"
+    "redis": "^5.0.0"
   },
   "devDependencies": {
     "@types/node": "^22.10.5",
