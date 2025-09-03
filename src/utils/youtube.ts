@@ -86,10 +86,8 @@ export async function sendYoutubeNotification(
     return;
   }
 
-  const message = await channel.send(
-    `**${video.title}** - ${video.author}\n${video.url}`,
-  );
-  await message.crosspost();
+  await channel.send(`**${video.title}** - ${video.author}\n${video.url}`);
+  // await message.crosspost();
 
   console.log('New video notification sent:', video.url);
 }
