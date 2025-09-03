@@ -24,7 +24,9 @@ export const onReady = async (client: Client) => {
     if (channel && channel.type === ChannelType.GuildText) {
       await channel.send(config.generalMessage);
     } else {
-      console.error(`Couldn't find general channel by ID: ${config.generalId}`);
+      console.error(
+        `Couldn't find general channel by ID: ${config.generalId} ${channel}`,
+      );
     }
   }
 
@@ -38,7 +40,7 @@ export const onReady = async (client: Client) => {
       );
     } else {
       console.error(
-        `Couldn't find youtube videos channel by ID: ${config.youtubeId}`,
+        `Couldn't find youtube videos channel by ID: ${config.youtubeId} ${youtubeChannel}`,
       );
     }
   }
