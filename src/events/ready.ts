@@ -65,6 +65,8 @@ export const onReady = async (client: Client) => {
   This would ignore any video sent before those 20 minutes, but it can't be fixed without paying or using IFTTT
   */
 
+  // Run once at startup foir debugging
+  void sendNotification();
   new cron.CronJob(
     '*/20 * * * *',
     sendNotification,
