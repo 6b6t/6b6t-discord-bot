@@ -71,11 +71,18 @@ export async function sendYoutubeNotification(
   queries: string[],
   ignoreWords: string[],
 ) {
+  console.log('Checking for new YouTube videos...');
   const video = await getLatestVideo(queries, ignoreWords);
-  if (!video) return;
+  if (!video) {
+    console.log('No new video found.');
+    return;
+  }
 
   const lastMessages = await getLastNotifications(channel);
-  if (lastMessages.some((msg) => msg.includes(video.url))) return;
+  if (lastMessages.some((msg) => msg.includes(video.url))) {
+    console.log('Video already notified.');
+    return;
+  }
 
   await channel.send(`**${video.title}** - ${video.author}\n${video.url}`);
 }
