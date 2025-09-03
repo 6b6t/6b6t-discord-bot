@@ -53,7 +53,6 @@ export async function collectUserInfo(uuid: string): Promise<UserInfo | null> {
 export async function findPlayerInfoByUuid(
   uuid: string,
 ): Promise<RowDataPacket[]> {
-  console.time(`findPlayerInfo-${uuid}`);
   try {
     const [rows] = await getStatsPool().execute<RowDataPacket[]>(
       `
@@ -68,8 +67,6 @@ export async function findPlayerInfoByUuid(
   } catch (e) {
     console.error(e);
     throw new Error('Failed to find player info');
-  } finally {
-    console.timeEnd(`findPlayerInfo-${uuid}`);
   }
 }
 

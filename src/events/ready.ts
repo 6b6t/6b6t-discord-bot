@@ -24,13 +24,18 @@ export const onReady = async (client: Client) => {
     if (channel && channel.type === ChannelType.GuildText) {
       await channel.send(config.generalMessage);
     } else {
-      console.error(`Couldn't find general channel by ID: ${config.generalId}`);
+      console.error(
+        `Couldn't find general channel by ID: ${config.generalId} ${channel}`,
+      );
     }
   }
 
   async function sendNotification() {
     const youtubeChannel = await client.channels.fetch(config.youtubeId);
-    if (youtubeChannel && youtubeChannel.type === ChannelType.GuildText) {
+    if (
+      youtubeChannel &&
+      youtubeChannel.type === ChannelType.GuildAnnouncement
+    ) {
       await sendYoutubeNotification(
         youtubeChannel,
         config.youtubeQueries,
@@ -38,7 +43,7 @@ export const onReady = async (client: Client) => {
       );
     } else {
       console.error(
-        `Couldn't find youtube videos channel by ID: ${config.youtubeId}`,
+        `Couldn't find youtube videos channel by ID: ${config.youtubeId} ${youtubeChannel}`,
       );
     }
   }
@@ -65,6 +70,8 @@ export const onReady = async (client: Client) => {
   This would ignore any video sent before those 20 minutes, but it can't be fixed without paying or using IFTTT
   */
 
+  // Run once at startup foir debugging
+  void sendNotification();
   new cron.CronJob(
     '*/20 * * * *',
     sendNotification,

@@ -1,4 +1,4 @@
-import { TextChannel } from 'discord.js';
+import { BaseGuildTextChannel } from 'discord.js';
 import { google } from 'googleapis';
 import he from 'he';
 import 'dotenv/config';
@@ -56,7 +56,9 @@ export async function getLatestVideo(
   return null;
 }
 
-async function getLastNotifications(channel: TextChannel): Promise<string[]> {
+async function getLastNotifications(
+  channel: BaseGuildTextChannel,
+): Promise<string[]> {
   try {
     const messages = await channel.messages.fetch({ limit: 5 });
     return messages.map((msg) => msg.content);
@@ -67,15 +69,25 @@ async function getLastNotifications(channel: TextChannel): Promise<string[]> {
 }
 
 export async function sendYoutubeNotification(
-  channel: TextChannel,
+  channel: BaseGuildTextChannel,
   queries: string[],
   ignoreWords: string[],
 ) {
+  console.log('Checking for new YouTube videos...');
   const video = await getLatestVideo(queries, ignoreWords);
-  if (!video) return;
+  if (!video) {
+    console.log('No new video found.');
+    return;
+  }
 
   const lastMessages = await getLastNotifications(channel);
-  if (lastMessages.some((msg) => msg.includes(video.url))) return;
+  if (lastMessages.some((msg) => msg.includes(video.url))) {
+    console.log('Video already notified.');
+    return;
+  }
 
   await channel.send(`**${video.title}** - ${video.author}\n${video.url}`);
+  // await message.crosspost();
+
+  console.log('New video notification sent:', video.url);
 }
