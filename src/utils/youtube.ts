@@ -90,4 +90,6 @@ export async function sendYoutubeNotification(
     `**${video.title}** - ${video.author}\n${video.url}`,
   );
   await message.crosspost();
+
+  console.log('New video notification sent:', video.url);
 }
