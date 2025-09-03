@@ -32,7 +32,10 @@ export const onReady = async (client: Client) => {
 
   async function sendNotification() {
     const youtubeChannel = await client.channels.fetch(config.youtubeId);
-    if (youtubeChannel && youtubeChannel.type === ChannelType.GuildText) {
+    if (
+      youtubeChannel &&
+      youtubeChannel.type === ChannelType.GuildAnnouncement
+    ) {
       await sendYoutubeNotification(
         youtubeChannel,
         config.youtubeQueries,

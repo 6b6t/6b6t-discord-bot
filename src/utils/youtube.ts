@@ -1,4 +1,4 @@
-import { TextChannel } from 'discord.js';
+import { BaseGuildTextChannel } from 'discord.js';
 import { google } from 'googleapis';
 import he from 'he';
 import 'dotenv/config';
@@ -56,7 +56,9 @@ export async function getLatestVideo(
   return null;
 }
 
-async function getLastNotifications(channel: TextChannel): Promise<string[]> {
+async function getLastNotifications(
+  channel: BaseGuildTextChannel,
+): Promise<string[]> {
   try {
     const messages = await channel.messages.fetch({ limit: 5 });
     return messages.map((msg) => msg.content);
@@ -67,7 +69,7 @@ async function getLastNotifications(channel: TextChannel): Promise<string[]> {
 }
 
 export async function sendYoutubeNotification(
-  channel: TextChannel,
+  channel: BaseGuildTextChannel,
   queries: string[],
   ignoreWords: string[],
 ) {
@@ -84,5 +86,8 @@ export async function sendYoutubeNotification(
     return;
   }
 
-  await channel.send(`**${video.title}** - ${video.author}\n${video.url}`);
+  const message = await channel.send(
+    `**${video.title}** - ${video.author}\n${video.url}`,
+  );
+  await message.crosspost();
 }
