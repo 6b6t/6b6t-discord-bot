@@ -32,20 +32,25 @@ export const onReady = async (client: Client) => {
 
   async function sendNotification() {
     const youtubeChannel = await client.channels.fetch(config.youtubeId);
-    if (
-      youtubeChannel &&
-      youtubeChannel.type === ChannelType.GuildAnnouncement
-    ) {
-      await sendYoutubeNotification(
-        youtubeChannel,
-        config.youtubeQueries,
-        config.youtubeIgnoreWords,
-      );
-    } else {
+    if (!youtubeChannel) {
       console.error(
         `Couldn't find youtube videos channel by ID: ${config.youtubeId} ${youtubeChannel}`,
       );
+      return;
     }
+
+    if (youtubeChannel.type !== ChannelType.GuildAnnouncement) {
+      console.error(
+        `Youtube videos channel (${config.youtubeId} ${youtubeChannel}) isn't an announcement channel`,
+      );
+      return;
+    }
+
+    await sendYoutubeNotification(
+      youtubeChannel,
+      config.youtubeQueries,
+      config.youtubeIgnoreWords,
+    );
   }
 
   async function updateStatus() {

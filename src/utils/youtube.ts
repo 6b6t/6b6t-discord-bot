@@ -86,8 +86,21 @@ export async function sendYoutubeNotification(
     return;
   }
 
-  await channel.send(`**${video.title}** - ${video.author}\n${video.url}`);
-  // await message.crosspost();
+  const message = await channel.send(
+    `**${video.title}** - ${video.author}\n${video.url}`,
+  );
+
+  setTimeout(
+    async () => {
+      // won't publish if the bot shuts down
+      try {
+        await message.crosspost();
+      } catch (error) {
+        console.error('Failed to crosspost:', error);
+      }
+    },
+    12 * 60 * 60 * 1000,
+  );
 
   console.log('New video notification sent:', video.url);
 }

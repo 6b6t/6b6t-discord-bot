@@ -1,10 +1,21 @@
-import { Client, GatewayIntentBits, Message, REST, Routes } from 'discord.js';
+import {
+  Client,
+  GatewayIntentBits,
+  Interaction,
+  Message,
+  OmitPartialGroupDMChannel,
+  PartialMessage,
+  REST,
+  Routes,
+} from 'discord.js';
 import config from './config/config';
 import { onReady } from './events/ready';
 import { CommandManager } from './utils/commandManager';
 import 'dotenv/config';
 import { getRedisClient } from './utils/redis';
 import { onMessageCreate } from './events/messageCreate';
+import { onMessageUpdate } from './events/messageUpdate';
+import { onInteractionCreate } from './events/interactionCreate';
 
 const client = new Client({
   allowedMentions: {
@@ -23,7 +34,7 @@ const commandManager = new CommandManager();
 async function initializeBot() {
   try {
     console.log('Loading commands...');
-    commandManager.loadCommands();
+    await commandManager.loadCommands();
 
     const rest = new REST({ version: '10' }).setToken(
       process.env.DISCORD_TOKEN!,
@@ -49,10 +60,22 @@ async function initializeBot() {
   }
 }
 
-client.once('ready', onReady);
+client.once('clientReady', onReady);
 client.on(
   'messageCreate',
   async (message: Message) => await onMessageCreate(client, message),
+);
+client.on(
+  'messageUpdate',
+  async (
+    oldMessage: Message | PartialMessage,
+    newMessage: Message | PartialMessage,
+  ) => await onMessageUpdate(client, oldMessage, newMessage),
+);
+client.on(
+  'interactionCreate',
+  async (interaction: Interaction) =>
+    await onInteractionCreate(commandManager, interaction),
 );
 
 async function gracefulShutdown() {
