@@ -4,7 +4,7 @@ import { CommandManager } from './utils/commandManager';
 import 'dotenv/config';
 
 const commandManager = new CommandManager();
-commandManager.loadCommands();
+await commandManager.loadCommands();
 
 const commands = Array.from(commandManager.getCommands().values()).map(
   (command) => command.data.toJSON(),
