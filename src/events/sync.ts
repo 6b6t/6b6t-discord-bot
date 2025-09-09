@@ -86,6 +86,18 @@ export const sync = async (client: Client) => {
 
   await guild.members.fetch(); // Ensure all members are cached
 
+  // Build bypass set: members having the manually managed role
+  const bypassMembers = new Set<string>();
+  try {
+    const rid = config.manuallyManagedRoleId;
+    if (rid) {
+      const role = await guild.roles.fetch(rid);
+      role?.members.forEach((m) => bypassMembers.add(m.id));
+    }
+  } catch (e) {
+    console.error('Failed to resolve manually managed role(s):', e);
+  }
+
   console.log('Assigning guild roles...');
   for (const [key, { id, predicate }] of Object.entries(roles)) {
     const role = await guild.roles.fetch(id);
@@ -93,8 +105,11 @@ export const sync = async (client: Client) => {
 
     const allowedUserIds = userLinksAndInfos
       .filter((user) => predicate(user))
-      .map((user) => user.discordId);
-    const membersInRole = role.members.map((member) => member.id);
+      .map((user) => user.discordId)
+      .filter((id) => !bypassMembers.has(id));
+    const membersInRole = role.members
+      .map((member) => member.id)
+      .filter((id) => !bypassMembers.has(id));
     const membersToAdd = allowedUserIds.filter(
       (user) => !membersInRole.includes(user),
     );

@@ -1,6 +1,7 @@
 const config = {
   clientId: '1325506526571532462',
   guildId: '917520262797344779',
+  manuallyManagedRoleId: '1414830403470233620',
   advertisingId: '1322175662903005186',
   generalId: '982192297645056040',
   youtubeId: '1353453116007252050',
