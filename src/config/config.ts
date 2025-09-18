@@ -27,6 +27,8 @@ const config = {
     'quiltanarchy',
     '0b0t',
     'cobblestone.com',
+    'crashing',
+    'botting',
   ],
   serverVersion: '1.21.7',
   generalMessage:
