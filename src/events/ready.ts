@@ -4,6 +4,7 @@ import { getServerData } from '../utils/helpers';
 import { sendYoutubeNotification } from '../utils/youtube';
 import cron from 'cron';
 import config from '../config/config';
+import { existsRoleMenu, sendRoleMenu } from '../utils/menu';
 
 export const onReady = async (client: Client) => {
   console.log(`Logged in as ${client.user?.tag}!`);
@@ -53,6 +54,28 @@ export const onReady = async (client: Client) => {
     );
   }
 
+  async function sendRoleMenuMsg() {
+    const roleChannel = await client.channels.fetch(config.roleMenuId);
+    if (!roleChannel) {
+      console.error(
+        `Couldn't find reaction role channel channel by ID: ${config.roleMenuId} ${roleChannel}`,
+      );
+      return;
+    }
+
+    if (roleChannel.type !== ChannelType.GuildText) {
+      console.error(
+        `Reaction role channel (${config.roleMenuId} ${roleChannel}) isn't a channel`,
+      );
+      return;
+    }
+
+    const existsMenu = await existsRoleMenu(roleChannel);
+    if (existsMenu) return;
+
+    await sendRoleMenu(roleChannel);
+  }
+
   async function updateStatus() {
     if (!client.user) return;
     const data = await getServerData(config.statusHost);
@@ -75,7 +98,7 @@ export const onReady = async (client: Client) => {
   This would ignore any video sent before those 20 minutes, but it can't be fixed without paying or using IFTTT
   */
 
-  // Run once at startup foir debugging
+  // Run once at startup for debugging
   void sendNotification();
   new cron.CronJob(
     '*/20 * * * *',
@@ -85,5 +108,6 @@ export const onReady = async (client: Client) => {
     'Europe/Berlin',
   );
 
+  void sendRoleMenuMsg();
   void runSync();
 };
