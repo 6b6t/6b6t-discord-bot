@@ -8,6 +8,25 @@ const config = {
   statusHost: 'play.6b6t.org',
   reviewId: '1413604129707917372',
   reviewIgnoreRoleIds: ['917520262939938915', '1268946626387378189'],
+  roleMenuId: '1418899432790954058',
+  roleMenuRequiredRoleId: '1349026308390391839',
+  roleMenuRoleIds: [
+    '1418900642356789349',
+    '1418900581464014848',
+    '1418900538363351131',
+    '1418900492850958437',
+    '1418900454422876160',
+    '1418900403566678138',
+    '1418900273325277236',
+    '1418900229020979250',
+    '1418900180039630908',
+    '1418900131339829298',
+    '1418900079452098700',
+    '1418900031695618099',
+    '1418899986778947584',
+    '1418899908148072511',
+    '1418899819006656623',
+  ],
   youtubeQueries: ['6b6t.org', '6b6t'],
   youtubeIgnoreWords: [
     '2b2t',
@@ -30,7 +49,6 @@ const config = {
     'crashing',
     'botting',
   ],
-  serverVersion: '1.21.7',
   generalMessage:
     "Don't have a rank? Get lower /tpa & /home cooldowns and white username by [voting](https://6b6t.org/vote)!",
   advertisingMessage:

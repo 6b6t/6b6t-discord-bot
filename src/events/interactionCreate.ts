@@ -1,10 +1,11 @@
-import { Interaction } from 'discord.js';
+import { GuildMember, Interaction, PermissionsBitField } from 'discord.js';
 import { CommandManager } from '../utils/commandManager';
+import config from '../config/config';
 
-export const onInteractionCreate = async (
+async function handleCommand(
   commandManager: CommandManager,
   interaction: Interaction,
-) => {
+) {
   if (!interaction.isChatInputCommand()) return;
 
   const command = commandManager.getCommands().get(interaction.commandName);
@@ -39,4 +40,55 @@ export const onInteractionCreate = async (
       });
     }
   }
+}
+
+async function handleRoleMenu(interaction: Interaction) {
+  if (!interaction.isStringSelectMenu()) return;
+  if (interaction.customId !== 'legend_role_menu') return;
+
+  const member = interaction.guild?.members.cache.get(interaction.user.id);
+  if (!member) return;
+  if (
+    !member.roles.cache.has(config.roleMenuRequiredRoleId) ||
+    !member.permissions.has(PermissionsBitField.Flags.Administrator)
+  ) {
+    await interaction.reply({
+      content: `You don't have the <@&${config.roleMenuRequiredRoleId}> role`,
+      ephemeral: true,
+    });
+    return;
+  }
+
+  const roleIds = interaction.values;
+  const selectedRoleId = roleIds[0];
+
+  try {
+    const menuRoleIds = config.roleMenuRoleIds.filter(
+      (id) => id !== selectedRoleId,
+    );
+    await member.roles.remove(menuRoleIds);
+    await member.roles.add(selectedRoleId);
+
+    await interaction.reply({
+      content: `You have been given the color: <@&${selectedRoleId}>`,
+      ephemeral: true,
+    });
+  } catch (error) {
+    console.error(
+      `Error while assigning role ${selectedRoleId} to user ${member.id}: `,
+      error,
+    );
+    await interaction.reply({
+      content: `Failed to assign color <@&${selectedRoleId}>`,
+      ephemeral: true,
+    });
+  }
+}
+
+export const onInteractionCreate = async (
+  commandManager: CommandManager,
+  interaction: Interaction,
+) => {
+  await handleCommand(commandManager, interaction);
+  await handleRoleMenu(interaction);
 };

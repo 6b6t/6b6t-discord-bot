@@ -124,16 +124,25 @@ export async function deleteAdvertisingMessage(
 }
 
 export async function getServerData(host: string): Promise<any> {
-  const url = `https://mcapi.us/server/status?ip=${host}&port=25565`;
+  const mcUrl = `https://mcapi.us/server/status?ip=${host}&port=25565`;
+  const versionUrl = `https://www.6b6t.org/api/version`;
 
   try {
-    const response = await fetch(url);
-    if (!response.ok) {
-      return null;
-    }
-    return await response.json();
+    const [mcRes, versionRes] = await Promise.all([
+      fetch(mcUrl),
+      fetch(versionUrl),
+    ]);
+
+    if (!mcRes.ok || !versionRes.ok) return null;
+
+    const [mcData, versionData] = await Promise.all([
+      mcRes.json(),
+      versionRes.json(),
+    ]);
+
+    return { ...mcData, ...versionData };
   } catch (error) {
-    console.error('Error fetching server status:', error);
+    console.error('Error fetching server data:', error);
     return null;
   }
 }
