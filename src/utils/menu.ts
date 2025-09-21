@@ -18,11 +18,17 @@ function buildRoleMenu(roleIds: string[], guild: Guild): ActionRowBuilder {
     .setCustomId('legend_role_menu')
     .setPlaceholder('Select a color')
     .addOptions(
+      new StringSelectMenuOptionBuilder()
+        .setLabel('Clear')
+        .setValue('clear_top'), // can't use same value
       ...roles.map((role) =>
         new StringSelectMenuOptionBuilder()
           .setLabel(role.name)
           .setValue(role.id),
       ),
+      new StringSelectMenuOptionBuilder()
+        .setLabel('Clear')
+        .setValue('clear_bottom'), // can't use same value
     );
 
   return new ActionRowBuilder().addComponents(selectMenu);

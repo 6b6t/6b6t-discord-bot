@@ -53,33 +53,54 @@ async function handleRoleMenu(interaction: Interaction) {
     !member.permissions.has(PermissionsBitField.Flags.Administrator)
   ) {
     await interaction.reply({
-      content: `You don't have the <@&${config.roleMenuRequiredRoleId}> role`,
+      content: `You don't have the <@&${config.roleMenuRequiredRoleId}> role.`,
       ephemeral: true,
     });
     return;
   }
 
   const roleIds = interaction.values;
-  const selectedRoleId = roleIds[0];
+  const selectedId = roleIds[0];
 
   try {
     const menuRoleIds = config.roleMenuRoleIds.filter(
-      (id) => id !== selectedRoleId,
+      (id) => id !== selectedId,
     );
+
+    if (selectedId === 'clear_top' || selectedId === 'clear_bottom') {
+      const hasColorRole = member.roles.cache.some((r) =>
+        config.roleMenuRoleIds.includes(r.id),
+      );
+
+      if (hasColorRole) {
+        await member.roles.remove(config.roleMenuRoleIds);
+        await interaction.reply({
+          content: `Your color role has been removed.`,
+          ephemeral: true,
+        });
+      } else {
+        await interaction.reply({
+          content: `You don't have any color role.`,
+          ephemeral: true,
+        });
+      }
+      return;
+    }
+
     await member.roles.remove(menuRoleIds);
-    await member.roles.add(selectedRoleId);
+    await member.roles.add(selectedId);
 
     await interaction.reply({
-      content: `You have been given the color: <@&${selectedRoleId}>`,
+      content: `You have been given the color: <@&${selectedId}>`,
       ephemeral: true,
     });
   } catch (error) {
     console.error(
-      `Error while assigning role ${selectedRoleId} to user ${member.id}: `,
+      `Error while assigning role ${selectedId} to user ${member.id}: `,
       error,
     );
     await interaction.reply({
-      content: `Failed to assign color <@&${selectedRoleId}>`,
+      content: `Failed to assign color <@&${selectedId}>`,
       ephemeral: true,
     });
   }
