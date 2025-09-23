@@ -107,7 +107,7 @@ export async function getTopRank(username: string): Promise<string | null> {
   return topRank;
 }
 
-export async function deleteAdvertisingMessage(
+export async function deleteLatestMessage(
   client: Client,
   channel: TextChannel,
 ) {
@@ -118,7 +118,10 @@ export async function deleteAdvertisingMessage(
     try {
       await botMessage.delete();
     } catch (error) {
-      console.error('Failed to delete advertising message: ', error);
+      console.error(
+        `Failed to delete latest message in ${channel.id}: `,
+        error,
+      );
     }
   }
 }
