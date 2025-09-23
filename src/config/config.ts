@@ -3,6 +3,7 @@ const config = {
   guildId: '917520262797344779',
   manuallyManagedRoleId: '1414830403470233620',
   advertisingId: '1322175662903005186',
+  merchId: '1418951317602172958',
   generalId: '982192297645056040',
   youtubeId: '1353453116007252050',
   statusHost: 'play.6b6t.org',
@@ -53,6 +54,8 @@ const config = {
     "Don't have a rank? Get lower /tpa & /home cooldowns and white username by [voting](https://6b6t.org/vote)!",
   advertisingMessage:
     'To post here you need <@&1268345919003430942> or <@&1325147417322192927> or <@&1325147393372586054> rank from the [6b6t Shop](https://6b6t.org/shop). Ultra ranks are addons on top of the permanent ranks Prime and Elite.',
+  merchMessage:
+    'Get your 6b6t Mousepad and 6b6t Mug which are included with the ranks from the [6b6t Shop](<https://6b6t.org/shop>)!',
 };
 
 export default config;
