@@ -90,8 +90,8 @@ export async function getTopRank(username: string): Promise<string | null> {
 
   let topRank = 'default';
   const ranks: string[] = response.ranks;
-  if (ranks.includes('apexultra')) {
-    topRank = 'apexultra';
+  if (ranks.includes('legend')) {
+    topRank = 'legend';
   } else if (ranks.includes('apex')) {
     topRank = 'apex';
   } else if (ranks.includes('eliteultra')) {

@@ -38,9 +38,9 @@ const roles: Record<
     id: '1268345919003430942',
     predicate: (info) => info.topRank === 'apex',
   },
-  apexultra: {
+  legend: {
     id: '1349026308390391839',
-    predicate: (info) => info.topRank === 'apexultra',
+    predicate: (info) => info.topRank === 'legend',
   },
   '2022': {
     id: '1349065372313321514',
