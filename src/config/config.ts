@@ -53,7 +53,7 @@ const config = {
   generalMessage:
     "Don't have a rank? Get lower /tpa & /home cooldowns and white username by [voting](https://6b6t.org/vote)!",
   advertisingMessage:
-    'To post here you need <@&1268345919003430942> or <@&1325147417322192927> or <@&1325147393372586054> rank from the [6b6t Shop](https://6b6t.org/shop). Ultra ranks are addons on top of the permanent ranks Prime and Elite.',
+    'To post here you need <@&1349026308390391839> or <@&1268345919003430942> or <@&1325147417322192927> or <@&1325147393372586054> rank from the [6b6t Shop](https://6b6t.org/shop). Ultra ranks are addons on top of the permanent ranks Prime and Elite.',
   merchMessage:
     'Get your 6b6t Mousepad and 6b6t Mug which are included with the ranks from the [6b6t Shop](<https://6b6t.org/shop>)!',
 };
