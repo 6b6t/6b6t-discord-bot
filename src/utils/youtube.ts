@@ -11,38 +11,47 @@ const youtube = google.youtube({
 export async function getLatestVideo(
   queries: string[],
   ignoreWords: string[],
+  whitelistedChannels: string[],
 ): Promise<{
   author: string;
   title: string;
   url: string;
 } | null> {
   try {
-    const query = [
-      queries.join(' OR '),
-      ...ignoreWords.map((word) => `-` + word),
-    ].join(' ');
+    const query = queries.join(' OR ');
     const response = await youtube.search.list({
       q: query,
       order: 'date',
       part: ['snippet'],
-      maxResults: 1,
+      maxResults: 5,
       type: ['video'],
     });
 
     if (response.data.items && response.data.items.length > 0) {
-      const video = response.data.items[0];
-      const videoId = video.id?.videoId;
-      const title = he.decode(video.snippet?.title ?? '');
-      const description = video.snippet?.description ?? '';
-      const author = video.snippet?.channelTitle ?? '';
+      for (const video of response.data.items) {
+        const videoId = video.id?.videoId;
+        const title = he.decode(video.snippet?.title ?? '');
+        const description = video.snippet?.description ?? '';
+        const author = video.snippet?.channelTitle ?? '';
+        const channelId = video.snippet?.channelId ?? '';
 
-      const hasQuery = queries.some(
-        (query) =>
-          title.toLowerCase().includes(query.toLowerCase()) ||
-          description.toLowerCase().includes(query.toLowerCase()),
-      );
+        const hasQuery = queries.some(
+          (query) =>
+            title.toLowerCase().includes(query.toLowerCase()) ||
+            description.toLowerCase().includes(query.toLowerCase()),
+        );
 
-      if (videoId && hasQuery) {
+        if (!videoId || !hasQuery) continue;
+
+        if (!whitelistedChannels.includes(channelId)) {
+          const hasIgnoredWord = ignoreWords.some(
+            (word) =>
+              title.toLowerCase().includes(word.toLowerCase()) ||
+              description.toLowerCase().includes(word.toLowerCase()),
+          );
+          if (hasIgnoredWord) continue;
+        }
+
         return {
           author,
           title,
@@ -72,9 +81,10 @@ export async function sendYoutubeNotification(
   channel: BaseGuildTextChannel,
   queries: string[],
   ignoreWords: string[],
+  whitelistedChannels: string[],
 ) {
   console.log('Checking for new YouTube videos...');
-  const video = await getLatestVideo(queries, ignoreWords);
+  const video = await getLatestVideo(queries, ignoreWords, whitelistedChannels);
   if (!video) {
     console.log('No new video found.');
     return;

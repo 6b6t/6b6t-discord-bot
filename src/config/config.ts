@@ -29,6 +29,11 @@ const config = {
     '1418899819006656623',
   ],
   youtubeQueries: ['6b6t.org', '6b6t'],
+  youtubeWhitelistedIds: [
+    'UCMLjKYJwRo7Z9-SkJUMw4rg',
+    'UCBrOlHTLhY0dnmqBWqbD3IQ',
+    'UCoXqVBjCPgKkoI_KZA3tutw',
+  ], // youtube channel ids
   youtubeIgnoreWords: [
     '2b2t',
     '5b5t',
