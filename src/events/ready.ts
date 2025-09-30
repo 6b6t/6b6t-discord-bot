@@ -51,6 +51,7 @@ export const onReady = async (client: Client) => {
       youtubeChannel,
       config.youtubeQueries,
       config.youtubeIgnoreWords,
+      config.youtubeWhitelistedIds,
     );
   }
 
