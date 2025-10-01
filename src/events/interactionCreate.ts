@@ -49,7 +49,7 @@ async function handleRoleMenu(interaction: Interaction) {
   const member = interaction.guild?.members.cache.get(interaction.user.id);
   if (!member) return;
   if (
-    !member.roles.cache.has(config.roleMenuRequiredRoleId) ||
+    !member.roles.cache.has(config.roleMenuRequiredRoleId) &&
     !member.permissions.has(PermissionsBitField.Flags.Administrator)
   ) {
     await interaction.reply({
