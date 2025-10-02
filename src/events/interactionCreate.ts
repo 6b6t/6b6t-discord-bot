@@ -9,7 +9,22 @@ async function handleCommand(
   if (!interaction.isChatInputCommand()) return;
 
   const command = commandManager.getCommands().get(interaction.commandName);
+  const member = interaction.member;
   if (!command) return;
+  if (!member) return;
+
+  const isAdmin =
+    'cache' in member.roles
+      ? member.roles.cache.has(config.commandAdminRoleId)
+      : member.roles.includes(config.commandAdminRoleId);
+
+  if (command.admin && !isAdmin) {
+    await interaction.reply({
+      content: 'You do not have permission to use this command.',
+      ephemeral: true,
+    });
+    return;
+  }
 
   const cooldown = command.cooldown ?? 60;
   const remaining = commandManager.isOnCooldown(

@@ -6,6 +6,7 @@ const config = {
   merchId: '1418951317602172958',
   generalId: '982192297645056040',
   youtubeId: '1353453116007252050',
+  commandAdminRoleId: '917520262939938915',
   statusHost: 'play.6b6t.org',
   reviewId: '1413604129707917372',
   reviewIgnoreRoleIds: ['917520262939938915', '1268946626387378189'],

@@ -107,6 +107,27 @@ export async function getTopRank(username: string): Promise<string | null> {
   return topRank;
 }
 
+export async function getPlayerByDiscordId(
+  discordId: string,
+): Promise<{ name: string; topRank: string; firstJoinYear: number } | null> {
+  const linkedUsers = await getAllLinkedUsers();
+  const userLink = linkedUsers.find((u) => u.discordId === discordId);
+  if (!userLink) return null;
+
+  const playerInfoRows = await findPlayerInfoByUuid(userLink.minecraftUuid);
+  if (playerInfoRows.length === 0) return null;
+
+  const playerInfo = playerInfoRows[0];
+  const topRank = await getTopRank(playerInfo.name);
+  if (!topRank) return null;
+
+  return {
+    name: playerInfo.name,
+    topRank,
+    firstJoinYear: new Date(playerInfo.first_join).getFullYear(),
+  };
+}
+
 export async function deleteLatestMessage(
   client: Client,
   channel: TextChannel,
