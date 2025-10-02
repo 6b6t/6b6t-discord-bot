@@ -1,13 +1,14 @@
 import {
   ButtonInteraction,
-  CommandInteraction,
+  ChatInputCommandInteraction,
   ModalSubmitInteraction,
 } from 'discord.js';
 
 export interface Command {
   data: any;
   cooldown?: number;
-  execute: (interaction: CommandInteraction) => Promise<void>;
+  admin?: boolean;
+  execute: (interaction: ChatInputCommandInteraction) => Promise<void>;
   handleButton?: (interaction: ButtonInteraction) => Promise<void>;
   handleModal?: (interaction: ModalSubmitInteraction) => Promise<void>;
 }
