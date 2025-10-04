@@ -3,10 +3,14 @@ import {
   GatewayIntentBits,
   Interaction,
   Message,
-  OmitPartialGroupDMChannel,
+  MessageReaction,
   PartialMessage,
+  PartialMessageReaction,
+  Partials,
+  PartialUser,
   REST,
   Routes,
+  User,
 } from 'discord.js';
 import config from './config/config';
 import { onReady } from './events/ready';
@@ -16,6 +20,8 @@ import { getRedisClient } from './utils/redis';
 import { onMessageCreate } from './events/messageCreate';
 import { onMessageUpdate } from './events/messageUpdate';
 import { onInteractionCreate } from './events/interactionCreate';
+import { onMessageReactionAdd } from './events/messageReactionAdd';
+import { onMessageReactionRemove } from './events/messageReactionRemove';
 
 const client = new Client({
   allowedMentions: {
@@ -26,7 +32,9 @@ const client = new Client({
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMembers,
     GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.GuildMessageReactions,
   ],
+  partials: [Partials.Message, Partials.Channel, Partials.Reaction],
 });
 
 const commandManager = new CommandManager();
@@ -76,6 +84,20 @@ client.on(
   'interactionCreate',
   async (interaction: Interaction) =>
     await onInteractionCreate(commandManager, interaction),
+);
+client.on(
+  'messageReactionAdd',
+  async (
+    reaction: MessageReaction | PartialMessageReaction,
+    user: User | PartialUser,
+  ) => await onMessageReactionAdd(client, reaction, user),
+);
+client.on(
+  'messageReactionRemove',
+  async (
+    reaction: MessageReaction | PartialMessageReaction,
+    user: User | PartialUser,
+  ) => await onMessageReactionRemove(client, reaction, user),
 );
 
 async function gracefulShutdown() {

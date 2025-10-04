@@ -131,8 +131,9 @@ export async function getPlayerByDiscordId(
 export async function deleteLatestMessage(
   client: Client,
   channel: TextChannel,
+  limit: number = 100,
 ) {
-  const messages = await channel.messages.fetch({ limit: 100 });
+  const messages = await channel.messages.fetch({ limit: limit });
   const botMessage = messages.find((msg) => msg.author.id === client.user?.id);
 
   if (botMessage) {
@@ -145,6 +146,17 @@ export async function deleteLatestMessage(
       );
     }
   }
+}
+
+export async function botHasRecentMessages(
+  channel: TextChannel,
+  client: Client,
+  limit: number = 100,
+) {
+  const messages = await channel.messages.fetch({ limit });
+  if (messages.size === 0) return false;
+
+  return messages.some((msg) => msg.author.id === client.user?.id);
 }
 
 export async function getServerData(host: string): Promise<any> {
