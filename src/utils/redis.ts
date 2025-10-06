@@ -8,7 +8,7 @@ export async function getRedisClient(): Promise<ClientType> {
   if (cachedClient) return cachedClient;
 
   // Create and configure Redis client
-  const redisClient = createClient({ url: 'redis://redis:6379' });
+  const redisClient = createClient({ url: process.env.REDIS_URL });
   redisClient.on('error', (err) => console.log('Redis Client Error', err));
 
   // Connect to Redis
