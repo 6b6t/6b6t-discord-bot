@@ -122,6 +122,7 @@ Select your language.
         name: '6b6t.org',
         iconURL: 'https://www.6b6t.org/logo.png',
       })
+      .setImage('https://www.6b6t.org/media/language-and-roles.gif')
       .setDescription(
         `
 Select your notifications.
