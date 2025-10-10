@@ -6,6 +6,7 @@ function createMysqlClient() {
   console.log('[MySQL] Creating connection pool');
   return mysql.createPool({
     host: process.env.MYSQL_DB_HOST,
+    port: parseInt(process.env.MYSQL_DB_PORT ?? '3306', 10),
     user: process.env.MYSQL_DB_USER,
     password: process.env.MYSQL_DB_PASS,
     database: process.env.MYSQL_DB_STATS,
