@@ -5,9 +5,13 @@ type ClientType = ReturnType<typeof createClient>;
 let cachedClient: ClientType;
 
 export async function getRedisClient(): Promise<ClientType> {
-  if (cachedClient) return cachedClient;
+  if (cachedClient) {
+    console.log('[Redis] Reusing cached client');
+    return cachedClient;
+  }
 
   // Create and configure Redis client
+  console.log('[Redis] Creating client instance');
   const redisClient = createClient({
     url: process.env.REDIS_URL,
     name: '6b6t-discord-bot',
@@ -27,7 +31,9 @@ export async function getRedisClient(): Promise<ClientType> {
   });
 
   // Connect to Redis
+  console.log('[Redis] Connecting…');
   await redisClient.connect();
+  console.log('[Redis] Connection established');
 
   cachedClient = redisClient;
 
