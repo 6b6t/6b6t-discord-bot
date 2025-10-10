@@ -24,7 +24,7 @@ let statsPool: mysql.Pool;
 
 export function getStatsPool(): mysql.Pool {
   if (statsPool) {
-    console.log('[MySQL] Reusing in-memory pool');
+    // console.log('[MySQL] Reusing in-memory pool');
     return statsPool;
   }
 
