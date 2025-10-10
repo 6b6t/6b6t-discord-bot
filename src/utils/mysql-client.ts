@@ -14,7 +14,7 @@ function createMysqlClient() {
     connectionLimit: 10,
     maxIdle: 10,
     idleTimeout: 60000,
-    queueLimit: 0,
+    queueLimit: 30,
     enableKeepAlive: true,
     keepAliveInitialDelay: 0,
   });
