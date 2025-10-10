@@ -12,6 +12,11 @@ export async function getRedisClient(): Promise<ClientType> {
     url: process.env.REDIS_URL,
     name: '6b6t-discord-bot',
     pingInterval: 30000,
+    socket: {
+      keepAlive: true,
+      noDelay: true,
+      reconnectStrategy: (retries) => Math.min(1000 * retries, 15000),
+    },
   });
   redisClient.on('error', (err) => console.log('Redis Client Error', err));
   redisClient.on('reconnecting', () => {
