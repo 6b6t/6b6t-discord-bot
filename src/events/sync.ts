@@ -61,15 +61,25 @@ const roles: Record<
 };
 
 export const sync = async (client: Client) => {
-  console.log('Getting linked users...');
-  const linkedUsers = await getAllLinkedUsers();
+  const linkLog = (step: string, message: string) =>
+    console.log(`[LinkedRoles][${step}] ${message}`);
 
-  console.log('Collecting user info...');
+  linkLog('Bootstrap', 'Fetching linked users');
+  const linkedUsers = await getAllLinkedUsers();
+  linkLog('Bootstrap', `Fetched ${linkedUsers.length} linked users`);
+
+  linkLog('CollectInfo', 'Collecting user info');
   const userLinksAndInfos: UserLinkAndInfo[] = (
     await Promise.all(
       linkedUsers.map(async (linkedUser) => {
         const userInfo = await collectUserInfo(linkedUser.minecraftUuid);
-        if (userInfo === null) return null;
+        if (userInfo === null) {
+          linkLog(
+            'CollectInfo',
+            `Skipping ${linkedUser.discordId}: unable to resolve Minecraft data`,
+          );
+          return null;
+        }
 
         const result: UserLinkAndInfo = {
           ...linkedUser,
@@ -80,7 +90,9 @@ export const sync = async (client: Client) => {
     )
   ).filter((user) => user !== null);
 
-  console.log('Getting guild info...');
+  linkLog('CollectInfo', `Resolved ${userLinksAndInfos.length} player records`);
+
+  linkLog('Guild', 'Fetching guild info');
   const guild = await client.guilds.fetch(config.guildId);
   if (!guild) return console.error('Guild not found');
 
@@ -97,11 +109,19 @@ export const sync = async (client: Client) => {
   } catch (e) {
     console.error('Failed to resolve manually managed role(s):', e);
   }
+  linkLog(
+    'Bypass',
+    `Bypassing ${bypassMembers.size} manually managed member(s)`,
+  );
 
-  console.log('Assigning guild roles...');
+  linkLog('Assign', 'Assigning guild roles');
   for (const [key, { id, predicate }] of Object.entries(roles)) {
+    linkLog(key, `Preparing role ${id}`);
     const role = await guild.roles.fetch(id);
-    if (!role) return console.log('Role not found');
+    if (!role) {
+      linkLog(key, 'Role not found, skipping');
+      continue;
+    }
 
     const allowedUserIds = userLinksAndInfos
       .filter((user) => predicate(user))
@@ -117,16 +137,31 @@ export const sync = async (client: Client) => {
       (member) => !allowedUserIds.includes(member),
     );
 
+    linkLog(
+      key,
+      `Allowed=${allowedUserIds.length}, current=${membersInRole.length}, add=${membersToAdd.length}, remove=${membersToRemove.length}`,
+    );
+
     for (const memberId of membersToAdd) {
-      console.log(`Adding ${key} to ${memberId}`);
-      await guild.members.cache.get(memberId)?.roles.add(role);
+      linkLog(key, `Adding role to ${memberId}`);
+      const member = guild.members.cache.get(memberId);
+      if (!member) {
+        linkLog(key, `Member ${memberId} not cached, skipping add`);
+        continue;
+      }
+      await member.roles.add(role);
     }
 
     for (const memberId of membersToRemove) {
-      console.log(`Removing ${key} from ${memberId}`);
-      await guild.members.cache.get(memberId)?.roles.remove(role);
+      linkLog(key, `Removing role from ${memberId}`);
+      const member = guild.members.cache.get(memberId);
+      if (!member) {
+        linkLog(key, `Member ${memberId} not cached, skipping remove`);
+        continue;
+      }
+      await member.roles.remove(role);
     }
   }
 
-  console.log('Sync complete');
+  linkLog('Assign', 'Linked role sync complete');
 };
