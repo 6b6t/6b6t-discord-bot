@@ -1,10 +1,17 @@
-import { ChannelType, Client, ActivityType } from 'discord.js';
+import {
+  ChannelType,
+  Client,
+  ActivityType,
+  EmbedBuilder,
+  Colors,
+} from 'discord.js';
 import { sync } from './sync';
-import { getServerData } from '../utils/helpers';
+import { botHasRecentMessages, getServerData } from '../utils/helpers';
 import { sendYoutubeNotification } from '../utils/youtube';
 import cron from 'cron';
 import config from '../config/config';
 import { existsRoleMenu, sendRoleMenu } from '../utils/menu';
+import { sendReactionRoleMenu } from '../utils/reactionMenu';
 
 export const onReady = async (client: Client) => {
   console.log(`Logged in as ${client.user?.tag}!`);
@@ -68,14 +75,14 @@ export const onReady = async (client: Client) => {
     const roleChannel = await client.channels.fetch(config.roleMenuId);
     if (!roleChannel) {
       console.error(
-        `Couldn't find reaction role channel channel by ID: ${config.roleMenuId} ${roleChannel}`,
+        `Couldn't find role menu channel by ID: ${config.roleMenuId} ${roleChannel}`,
       );
       return;
     }
 
     if (roleChannel.type !== ChannelType.GuildText) {
       console.error(
-        `Reaction role channel (${config.roleMenuId} ${roleChannel}) isn't a channel`,
+        `Role menu channel (${config.roleMenuId} ${roleChannel}) isn't a text channel`,
       );
       return;
     }
@@ -84,6 +91,71 @@ export const onReady = async (client: Client) => {
     if (existsMenu) return;
 
     await sendRoleMenu(roleChannel);
+  }
+
+  async function sendReactionRoleMenus() {
+    const reactionRoleChannel = await client.channels.fetch(
+      config.reactionRoleMenuId,
+    );
+    if (!reactionRoleChannel) {
+      console.error(
+        `Couldn't find reaction role channel by ID: ${config.reactionRoleMenuId} ${reactionRoleChannel}`,
+      );
+      return;
+    }
+
+    if (reactionRoleChannel.type !== ChannelType.GuildText) {
+      console.error(
+        `Reaction role channel (${config.reactionRoleMenuId} ${reactionRoleChannel}) isn't a text channel`,
+      );
+      return;
+    }
+
+    const hasMessages = await botHasRecentMessages(reactionRoleChannel, client);
+    if (hasMessages) return;
+
+    const languageEmbed = new EmbedBuilder()
+      .setAuthor({
+        name: '6b6t.org',
+        iconURL: 'https://www.6b6t.org/logo.png',
+      })
+      .setDescription(
+        `
+Select your language.
+      `,
+      )
+      .setColor('#07CFFA');
+
+    const notificationEmbed = new EmbedBuilder()
+      .setAuthor({
+        name: '6b6t.org',
+        iconURL: 'https://www.6b6t.org/logo.png',
+      })
+      .setImage('https://www.6b6t.org/media/language-and-roles.gif')
+      .setDescription(
+        `
+Select your notifications.
+
+✨ - General changes to 6b6t
+⚔️ - Crystal PvP, anticheat changes, PvP events and more
+🌩️ - Server going offline, online or restarting
+🎉 - Events and competitions in Discord and Minecraft
+🏄 - Help us test new features
+🎥 - Receive social media notifications
+      `,
+      )
+      .setColor('#FFF11A');
+
+    await sendReactionRoleMenu(
+      reactionRoleChannel,
+      config.languageMenuRoleIds,
+      languageEmbed,
+    );
+    await sendReactionRoleMenu(
+      reactionRoleChannel,
+      config.notificationMenuRoleIds,
+      notificationEmbed,
+    );
   }
 
   async function updateStatus() {
@@ -131,5 +203,6 @@ export const onReady = async (client: Client) => {
   );
 
   void sendRoleMenuMsg();
+  void sendReactionRoleMenus();
   void runSync();
 };
