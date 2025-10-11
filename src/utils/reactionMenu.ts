@@ -64,7 +64,7 @@ export async function handleReactionRemove(
     await member.roles.remove(role);
   } catch (error) {
     console.error(
-      `Failed to remove role ${role.id} to user ${userId}: `,
+      `Failed to remove role ${role.id} from user ${userId}: `,
       error,
     );
   }
