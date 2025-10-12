@@ -1,19 +1,39 @@
+name: 'Build and Test'
+
 on:
-  push:
-    branches:
-      - main
-  pull_request:
-name: ci
+  - push
+  - pull_request
+
 jobs:
-  lint:
-    runs-on: ubuntu-latest
+  test:
+    name: Build and Test
+
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-node@v5
+      - name: 'Checkout repository'
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@v4
+        name: Install pnpm
+        with:
+          version: latest
+          run_install: false
+
+      - name: Install Node.js
+        uses: actions/setup-node@v4
         with:
           node-version: lts/*
-      - uses: pnpm/action-setup@v4
-        with:
-          version: 10
-      - run: pnpm install
-      - run: pnpm run typecheck
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install
+
+      - name: Run typecheck
+        run: |
+          pnpm typecheck
+
+      - name: Run check
+        run: |
+          pnpm exec biome ci

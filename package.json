@@ -20,15 +20,17 @@
     "redis": "^5.0.0"
   },
   "devDependencies": {
+    "@biomejs/biome": "2.2.5",
     "@types/node": "^22.10.5",
     "husky": "^9.1.7",
     "lint-staged": "^16.0.0",
-    "prettier": "^3.5.3",
     "tsx": "^4.19.3",
     "typescript": "^5.7.3"
   },
   "lint-staged": {
-    "**/*": "prettier --write --ignore-unknown"
+    "*": [
+      "biome check --write --unsafe --no-errors-on-unmatched --files-ignore-unknown=true"
+    ]
   },
   "pnpm": {
     "onlyBuiltDependencies": [
