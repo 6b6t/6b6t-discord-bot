@@ -1,32 +1,32 @@
 import {
   Client,
   GatewayIntentBits,
-  Interaction,
-  Message,
-  MessageReaction,
-  PartialMessage,
-  PartialMessageReaction,
+  type Interaction,
+  type Message,
+  type MessageReaction,
+  type PartialMessage,
+  type PartialMessageReaction,
   Partials,
-  PartialUser,
+  type PartialUser,
   REST,
   Routes,
-  User,
-} from 'discord.js';
-import config from './config/config';
-import { onReady } from './events/ready';
-import { CommandManager } from './utils/commandManager';
-import 'dotenv/config';
-import { getRedisClient } from './utils/redis';
-import { onMessageCreate } from './events/messageCreate';
-import { onMessageUpdate } from './events/messageUpdate';
-import { onInteractionCreate } from './events/interactionCreate';
-import { onMessageReactionAdd } from './events/messageReactionAdd';
-import { onMessageReactionRemove } from './events/messageReactionRemove';
+  type User,
+} from "discord.js";
+import config from "./config/config";
+import { onReady } from "./events/ready";
+import { CommandManager } from "./utils/commandManager";
+import "dotenv/config";
+import { onInteractionCreate } from "./events/interactionCreate";
+import { onMessageCreate } from "./events/messageCreate";
+import { onMessageReactionAdd } from "./events/messageReactionAdd";
+import { onMessageReactionRemove } from "./events/messageReactionRemove";
+import { onMessageUpdate } from "./events/messageUpdate";
+import { getRedisClient } from "./utils/redis";
 
 const client = new Client({
   allowedMentions: {
     // Prevent @everyone pings
-    parse: ['users', 'roles'],
+    parse: ["users", "roles"],
   },
   intents: [
     GatewayIntentBits.Guilds,
@@ -41,10 +41,10 @@ const commandManager = new CommandManager();
 
 async function initializeBot() {
   try {
-    console.log('Loading commands...');
+    console.log("Loading commands...");
     await commandManager.loadCommands();
 
-    const rest = new REST({ version: '10' }).setToken(
+    const rest = new REST({ version: "10" }).setToken(
       process.env.DISCORD_TOKEN!,
     );
     const commands = commandManager.getCommandsJSON();
@@ -56,44 +56,44 @@ async function initializeBot() {
       { body: commands },
     );
 
-    console.log('Initializing bot...');
+    console.log("Initializing bot...");
     await client.login(process.env.DISCORD_TOKEN!);
 
     console.log(
       `Bot initialized and ready to serve in guild: ${config.guildId}`,
     );
   } catch (error) {
-    console.error('Error initializing bot:', error);
+    console.error("Error initializing bot:", error);
     process.exit(1);
   }
 }
 
-client.once('clientReady', onReady);
+client.once("clientReady", onReady);
 client.on(
-  'messageCreate',
+  "messageCreate",
   async (message: Message) => await onMessageCreate(client, message),
 );
 client.on(
-  'messageUpdate',
+  "messageUpdate",
   async (
     oldMessage: Message | PartialMessage,
     newMessage: Message | PartialMessage,
   ) => await onMessageUpdate(client, oldMessage, newMessage),
 );
 client.on(
-  'interactionCreate',
+  "interactionCreate",
   async (interaction: Interaction) =>
     await onInteractionCreate(commandManager, interaction),
 );
 client.on(
-  'messageReactionAdd',
+  "messageReactionAdd",
   async (
     reaction: MessageReaction | PartialMessageReaction,
     user: User | PartialUser,
   ) => await onMessageReactionAdd(client, reaction, user),
 );
 client.on(
-  'messageReactionRemove',
+  "messageReactionRemove",
   async (
     reaction: MessageReaction | PartialMessageReaction,
     user: User | PartialUser,
@@ -101,46 +101,46 @@ client.on(
 );
 
 async function gracefulShutdown() {
-  console.log('Shutting down gracefully...');
+  console.log("Shutting down gracefully...");
 
   try {
     (await getRedisClient()).disconnect();
-    console.log('Redis connections closed');
+    console.log("Redis connections closed");
 
     if (client.isReady()) {
-      console.log('Logging out of Discord...');
+      console.log("Logging out of Discord...");
       await client.destroy();
       await new Promise((resolve) => setTimeout(resolve, 1000));
     }
-    console.log('Discord client destroyed');
+    console.log("Discord client destroyed");
 
-    console.log('Shutdown complete');
+    console.log("Shutdown complete");
     process.exit(0);
   } catch (error) {
-    console.error('Error during shutdown:', error);
+    console.error("Error during shutdown:", error);
     process.exit(1);
   }
 }
 
-process.on('SIGINT', () => {
-  console.log('\nReceived SIGINT (Ctrl+C)');
+process.on("SIGINT", () => {
+  console.log("\nReceived SIGINT (Ctrl+C)");
   void gracefulShutdown();
 });
-process.on('SIGTERM', () => {
-  console.log('\nReceived SIGTERM');
+process.on("SIGTERM", () => {
+  console.log("\nReceived SIGTERM");
   void gracefulShutdown();
 });
-process.on('SIGUSR2', () => {
-  console.log('\nReceived SIGUSR2');
+process.on("SIGUSR2", () => {
+  console.log("\nReceived SIGUSR2");
   void gracefulShutdown();
 });
 
-process.on('uncaughtException', async (error) => {
-  console.error('Uncaught Exception:', error);
+process.on("uncaughtException", async (error) => {
+  console.error("Uncaught Exception:", error);
 });
 
-process.on('unhandledRejection', async (reason, promise) => {
-  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+process.on("unhandledRejection", async (reason, promise) => {
+  console.error("Unhandled Rejection at:", promise, "reason:", reason);
 });
 
 void initializeBot();

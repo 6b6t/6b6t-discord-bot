@@ -1,7 +1,7 @@
-import { REST, Routes } from 'discord.js';
-import config from './config/config';
-import { CommandManager } from './utils/commandManager';
-import 'dotenv/config';
+import { REST, Routes } from "discord.js";
+import config from "./config/config";
+import { CommandManager } from "./utils/commandManager";
+import "dotenv/config";
 
 const commandManager = new CommandManager();
 await commandManager.loadCommands();
@@ -10,7 +10,7 @@ const commands = Array.from(commandManager.getCommands().values()).map(
   (command) => command.data.toJSON(),
 );
 
-const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN!);
+const rest = new REST({ version: "10" }).setToken(process.env.DISCORD_TOKEN!);
 
 (async () => {
   try {
@@ -18,7 +18,7 @@ const rest = new REST({ version: '10' }).setToken(process.env.DISCORD_TOKEN!);
       `Started refreshing ${commands.length} application (/) commands.`,
     );
 
-    const data = await rest.put(
+    const _data = await rest.put(
       Routes.applicationGuildCommands(config.clientId, config.guildId),
       { body: commands },
     );

@@ -1,18 +1,18 @@
 import {
-  SlashCommandBuilder,
-  ChatInputCommandInteraction,
-  PermissionFlagsBits,
+  type ChatInputCommandInteraction,
   MessageFlags,
-} from 'discord.js';
-import { Command } from '../types/command';
-import { getPlayerByDiscordId } from '../utils/helpers';
+  PermissionFlagsBits,
+  SlashCommandBuilder,
+} from "discord.js";
+import type { Command } from "../types/command";
+import { getPlayerByDiscordId } from "../utils/helpers";
 
 const GetUserCommand: Command = {
   data: new SlashCommandBuilder()
-    .setName('getuser')
-    .setDescription('…')
+    .setName("getuser")
+    .setDescription("…")
     .addUserOption((option) =>
-      option.setName('id').setDescription('…').setRequired(true),
+      option.setName("id").setDescription("…").setRequired(true),
     )
     .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
 
@@ -20,7 +20,7 @@ const GetUserCommand: Command = {
   admin: true,
 
   async execute(interaction: ChatInputCommandInteraction) {
-    const discordUser = interaction.options.getUser('id', true);
+    const discordUser = interaction.options.getUser("id", true);
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
     try {
@@ -40,7 +40,7 @@ const GetUserCommand: Command = {
     } catch (error) {
       console.error(error);
       await interaction.editReply(
-        'An error occurred while fetching user info.',
+        "An error occurred while fetching user info.",
       );
     }
   },

@@ -1,7 +1,7 @@
-import { RowDataPacket } from 'mysql2';
-import { getStatsPool } from './mysql-client';
-import { getRedisClient } from './redis';
-import { Client, TextChannel } from 'discord.js';
+import type { Client, TextChannel } from "discord.js";
+import type { RowDataPacket } from "mysql2";
+import { getStatsPool } from "./mysql-client";
+import { getRedisClient } from "./redis";
 
 export type UserInfo = {
   topRank: string;
@@ -16,11 +16,11 @@ export type UserLink = {
 export type UserLinkAndInfo = UserLink & UserInfo;
 
 export async function getAllLinkedUsers(): Promise<UserLink[]> {
-  let result: UserLink[] = [];
+  const result: UserLink[] = [];
   const redisClient = await getRedisClient();
-  for (const key of await redisClient.keys('uuid_to_discord_id:*')) {
+  for (const key of await redisClient.keys("uuid_to_discord_id:*")) {
     const valueDiscordId = await redisClient.get(key);
-    const keyUuid = key.split(':')[1];
+    const keyUuid = key.split(":")[1];
     if (valueDiscordId !== null) {
       result.push({
         discordId: valueDiscordId,
@@ -66,42 +66,42 @@ export async function findPlayerInfoByUuid(
     return rows;
   } catch (e) {
     console.error(e);
-    throw new Error('Failed to find player info');
+    throw new Error("Failed to find player info");
   }
 }
 
 export async function getTopRank(username: string): Promise<string | null> {
   const response = await (
     await fetch(`${process.env.HTTP_COMMAND_SERVICE_BASE_URL}/get-ranks`, {
-      method: 'POST',
+      method: "POST",
       body: JSON.stringify({ username }),
       headers: {
-        Accept: 'application/json',
-        'Content-Type': 'application/json',
+        Accept: "application/json",
+        "Content-Type": "application/json",
         Authorization: `${process.env.HTTP_COMMAND_SERVICE_ACCESS_TOKEN}`,
       },
     })
   ).json();
   if (response.success !== true) {
     throw new Error(response.error);
-  } else if (response['user-not-found'] === true) {
+  } else if (response["user-not-found"] === true) {
     return null;
   }
 
-  let topRank = 'default';
+  let topRank = "default";
   const ranks: string[] = response.ranks;
-  if (ranks.includes('legend')) {
-    topRank = 'legend';
-  } else if (ranks.includes('apex')) {
-    topRank = 'apex';
-  } else if (ranks.includes('eliteultra')) {
-    topRank = 'eliteultra';
-  } else if (ranks.includes('elite')) {
-    topRank = 'elite';
-  } else if (ranks.includes('primeultra')) {
-    topRank = 'primeultra';
-  } else if (ranks.includes('prime')) {
-    topRank = 'prime';
+  if (ranks.includes("legend")) {
+    topRank = "legend";
+  } else if (ranks.includes("apex")) {
+    topRank = "apex";
+  } else if (ranks.includes("eliteultra")) {
+    topRank = "eliteultra";
+  } else if (ranks.includes("elite")) {
+    topRank = "elite";
+  } else if (ranks.includes("primeultra")) {
+    topRank = "primeultra";
+  } else if (ranks.includes("prime")) {
+    topRank = "prime";
   }
 
   return topRank;
@@ -178,7 +178,7 @@ export async function getServerData(host: string): Promise<any> {
 
     return { ...mcData, ...versionData };
   } catch (error) {
-    console.error('Error fetching server data:', error);
+    console.error("Error fetching server data:", error);
     return null;
   }
 }

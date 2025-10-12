@@ -1,4 +1,4 @@
-import { BaseGuildTextChannel, EmbedBuilder, Message } from 'discord.js';
+import type { BaseGuildTextChannel, EmbedBuilder, Message } from "discord.js";
 
 export interface ReactionRole {
   emoji: string;

@@ -1,8 +1,8 @@
-import { SlashCommandBuilder, CommandInteraction } from 'discord.js';
-import { Command } from '../types/command';
+import { type CommandInteraction, SlashCommandBuilder } from "discord.js";
+import type { Command } from "../types/command";
 
 const IpCommand: Command = {
-  data: new SlashCommandBuilder().setName('ip').setDescription("See 6b6t's IP"),
+  data: new SlashCommandBuilder().setName("ip").setDescription("See 6b6t's IP"),
 
   async execute(interaction: CommandInteraction) {
     await interaction.reply(

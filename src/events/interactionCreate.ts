@@ -1,6 +1,6 @@
-import { GuildMember, Interaction, PermissionsBitField } from 'discord.js';
-import { CommandManager } from '../utils/commandManager';
-import config from '../config/config';
+import { type Interaction, PermissionsBitField } from "discord.js";
+import config from "../config/config";
+import type { CommandManager } from "../utils/commandManager";
 
 async function handleCommand(
   commandManager: CommandManager,
@@ -14,13 +14,13 @@ async function handleCommand(
   if (!member) return;
 
   const isAdmin =
-    'cache' in member.roles
+    "cache" in member.roles
       ? member.roles.cache.has(config.commandAdminRoleId)
       : member.roles.includes(config.commandAdminRoleId);
 
   if (command.admin && !isAdmin) {
     await interaction.reply({
-      content: 'You do not have permission to use this command.',
+      content: "You do not have permission to use this command.",
       ephemeral: true,
     });
     return;
@@ -46,11 +46,11 @@ async function handleCommand(
     console.error(error);
     if (interaction.deferred || interaction.replied) {
       await interaction.editReply(
-        'There was an error while executing this command',
+        "There was an error while executing this command",
       );
     } else {
       await interaction.reply({
-        content: 'There was an error while executing this command',
+        content: "There was an error while executing this command",
         ephemeral: true,
       });
     }
@@ -59,7 +59,7 @@ async function handleCommand(
 
 async function handleRoleMenu(interaction: Interaction) {
   if (!interaction.isStringSelectMenu()) return;
-  if (interaction.customId !== 'legend_role_menu') return;
+  if (interaction.customId !== "legend_role_menu") return;
 
   const member = interaction.guild?.members.cache.get(interaction.user.id);
   if (!member) return;
@@ -82,7 +82,7 @@ async function handleRoleMenu(interaction: Interaction) {
       (id) => id !== selectedId,
     );
 
-    if (selectedId === 'clear_top' || selectedId === 'clear_bottom') {
+    if (selectedId === "clear_top" || selectedId === "clear_bottom") {
       const hasColorRole = member.roles.cache.some((r) =>
         config.roleMenuRoleIds.includes(r.id),
       );

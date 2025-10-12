@@ -1,15 +1,15 @@
-import {
+import type {
   Client,
   MessageReaction,
   PartialMessageReaction,
   PartialUser,
   User,
-} from 'discord.js';
-import config from '../config/config';
-import { handleReactionRemove } from '../utils/reactionMenu';
+} from "discord.js";
+import config from "../config/config";
+import { handleReactionRemove } from "../utils/reactionMenu";
 
 export const onMessageReactionRemove = async (
-  client: Client,
+  _client: Client,
   reaction: MessageReaction | PartialMessageReaction,
   user: User | PartialUser,
 ) => {

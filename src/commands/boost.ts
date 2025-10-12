@@ -1,14 +1,14 @@
 import {
-  SlashCommandBuilder,
-  CommandInteraction,
+  type CommandInteraction,
   MessageFlags,
-} from 'discord.js';
-import { Command } from '../types/command';
+  SlashCommandBuilder,
+} from "discord.js";
+import type { Command } from "../types/command";
 
 const BoostCommand: Command = {
   data: new SlashCommandBuilder()
-    .setName('boost')
-    .setDescription('See the perks for boosting the 6b6t Discord'),
+    .setName("boost")
+    .setDescription("See the perks for boosting the 6b6t Discord"),
 
   async execute(interaction: CommandInteraction) {
     await interaction.reply({
