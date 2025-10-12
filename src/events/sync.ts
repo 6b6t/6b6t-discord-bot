@@ -104,7 +104,9 @@ export const sync = async (client: Client) => {
     const rid = config.manuallyManagedRoleId;
     if (rid) {
       const role = await guild.roles.fetch(rid);
-      role?.members.forEach((m) => bypassMembers.add(m.id));
+      role?.members.forEach((m) => {
+        bypassMembers.add(m.id);
+      });
     }
   } catch (e) {
     console.error("Failed to resolve manually managed role(s):", e);
