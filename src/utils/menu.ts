@@ -1,13 +1,14 @@
 import {
   ActionRowBuilder,
-  BaseGuildTextChannel,
+  type BaseGuildTextChannel,
   ComponentType,
   EmbedBuilder,
+  type Guild,
+  type Role,
   StringSelectMenuBuilder,
   StringSelectMenuOptionBuilder,
-} from 'discord.js';
-import { Guild, Role } from 'discord.js';
-import config from '../config/config';
+} from "discord.js";
+import config from "../config/config";
 
 function buildRoleMenu(roleIds: string[], guild: Guild): ActionRowBuilder {
   const roles: Role[] = roleIds
@@ -15,20 +16,20 @@ function buildRoleMenu(roleIds: string[], guild: Guild): ActionRowBuilder {
     .filter((r): r is Role => !!r);
 
   const selectMenu = new StringSelectMenuBuilder()
-    .setCustomId('legend_role_menu')
-    .setPlaceholder('Select a color')
+    .setCustomId("legend_role_menu")
+    .setPlaceholder("Select a color")
     .addOptions(
       new StringSelectMenuOptionBuilder()
-        .setLabel('Clear')
-        .setValue('clear_top'), // can't use same value
+        .setLabel("Clear")
+        .setValue("clear_top"), // can't use same value
       ...roles.map((role) =>
         new StringSelectMenuOptionBuilder()
           .setLabel(role.name)
           .setValue(role.id),
       ),
       new StringSelectMenuOptionBuilder()
-        .setLabel('Clear')
-        .setValue('clear_bottom'), // can't use same value
+        .setLabel("Clear")
+        .setValue("clear_bottom"), // can't use same value
     );
 
   return new ActionRowBuilder().addComponents(selectMenu);
@@ -47,7 +48,7 @@ export async function existsRoleMenu(
       for (const component of row.components) {
         if (
           component.type === ComponentType.StringSelect &&
-          component.customId === 'legend_role_menu'
+          component.customId === "legend_role_menu"
         ) {
           return true;
         }
@@ -65,12 +66,12 @@ export async function sendRoleMenu(channel: BaseGuildTextChannel) {
   );
 
   const embed = new EmbedBuilder()
-    .setTitle('Legend Color Roles')
+    .setTitle("Legend Color Roles")
     .setDescription(
-      'Change your color in the Discord by picking one of the colors.',
+      "Change your color in the Discord by picking one of the colors.",
     )
-    .setThumbnail('https://www.6b6t.org/logo.png')
-    .setColor('#FFF11A');
+    .setThumbnail("https://www.6b6t.org/logo.png")
+    .setColor("#FFF11A");
 
   try {
     await channel.send({

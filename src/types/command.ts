@@ -1,8 +1,8 @@
-import {
+import type {
   ButtonInteraction,
   ChatInputCommandInteraction,
   ModalSubmitInteraction,
-} from 'discord.js';
+} from "discord.js";
 
 export interface Command {
   data: any;

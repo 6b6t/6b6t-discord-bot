@@ -1,9 +1,14 @@
-import { ChannelType, Client, Message, PartialMessage } from 'discord.js';
-import config from '../config/config';
+import {
+  ChannelType,
+  type Client,
+  type Message,
+  type PartialMessage,
+} from "discord.js";
+import config from "../config/config";
 
 export const onMessageUpdate = async (
-  client: Client,
-  oldMessage: Message | PartialMessage,
+  _client: Client,
+  _oldMessage: Message | PartialMessage,
   newMessage: Message | PartialMessage,
 ) => {
   if (!(newMessage.channel.type === ChannelType.GuildText)) return;

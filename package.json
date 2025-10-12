@@ -6,6 +6,8 @@
   "scripts": {
     "start": "tsx src/index.ts",
     "typecheck": "tsc --noEmit",
+    "fix": "biome check --write --unsafe",
+    "check": "biome check",
     "prepare": "husky",
     "pre-commit": "lint-staged"
   },

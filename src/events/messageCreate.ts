@@ -1,12 +1,12 @@
 import {
   ChannelType,
-  Client,
-  Message,
+  type Client,
+  type Message,
   MessageFlags,
-  TextChannel,
-} from 'discord.js';
-import { deleteLatestMessage } from '../utils/helpers';
-import config from '../config/config';
+  type TextChannel,
+} from "discord.js";
+import config from "../config/config";
+import { deleteLatestMessage } from "../utils/helpers";
 
 async function handleChannel(
   client: Client,
@@ -33,7 +33,7 @@ async function handleChannel(
 }
 
 export const onMessageCreate = async (client: Client, message: Message) => {
-  if (message.channel.type != ChannelType.GuildText) return;
+  if (message.channel.type !== ChannelType.GuildText) return;
   await handleChannel(
     client,
     message.channel,

@@ -1,9 +1,9 @@
-import { SlashCommandBuilder, CommandInteraction } from 'discord.js';
-import { Command } from '../types/command';
+import { type CommandInteraction, SlashCommandBuilder } from "discord.js";
+import type { Command } from "../types/command";
 
 const ShopCommand: Command = {
   data: new SlashCommandBuilder()
-    .setName('shop')
+    .setName("shop")
     .setDescription("See 6b6t's shop"),
 
   async execute(interaction: CommandInteraction) {
