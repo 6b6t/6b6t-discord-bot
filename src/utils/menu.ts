@@ -70,6 +70,7 @@ export async function sendRoleMenu(channel: BaseGuildTextChannel) {
     .setDescription(
       "Change your color in the Discord by picking one of the colors.",
     )
+    .setImage("https://www.6b6t.org/media/legend-color.gif")
     .setThumbnail("https://www.6b6t.org/logo.png")
     .setColor("#FFF11A");
 
