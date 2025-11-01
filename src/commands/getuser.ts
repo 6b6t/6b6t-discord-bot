@@ -33,7 +33,7 @@ const GetUserCommand: Command = {
       }
 
       await interaction.editReply(
-        `**${discordUser.tag}** is linked to **${info.name}**.\n` +
+        `Discord user **${discordUser.tag}** is linked to Minecraft user **${info.name}**.\n` +
           `Top Rank: **${info.topRank}**\n` +
           `First Join Year: **${info.firstJoinYear}**`,
       );
