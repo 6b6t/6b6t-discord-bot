@@ -3,6 +3,8 @@ import type { RowDataPacket } from "mysql2";
 import { getStatsPool } from "./mysql-client";
 import { getRedisClient } from "./redis";
 
+const SERVER_API = `https://www.6b6t.org/api`
+
 export type UserInfo = {
   topRank: string;
   firstJoinYear: number;
@@ -46,7 +48,7 @@ export async function collectUserInfo(uuid: string): Promise<UserInfo | null> {
   const firstJoinYear = new Date(playerInfo[0].first_join).getFullYear();
   return {
     topRank: topRank,
-    firstJoinYear,
+    firstJoinYear
   };
 }
 
@@ -160,23 +162,26 @@ export async function botHasRecentMessages(
 }
 
 export async function getServerData(host: string): Promise<any> {
-  const mcUrl = `https://mcapi.us/server/status?ip=${host}&port=25565`;
-  const versionUrl = `https://www.6b6t.org/api/version`;
+  const mcUrl = `https://api.mcstatus.io/v2/status/java/${host}`;
+  const versionUrl = `${SERVER_API}/version`;
+  const uptimeUrl = `${SERVER_API}/uptime`;
 
   try {
-    const [mcRes, versionRes] = await Promise.all([
+    const [mcRes, versionRes, uptimeRes] = await Promise.all([
       fetch(mcUrl),
       fetch(versionUrl),
+      fetch(uptimeUrl),
     ]);
 
-    if (!mcRes.ok || !versionRes.ok) return null;
+    if (!mcRes.ok || !versionRes.ok || !uptimeRes.ok) return null;
 
-    const [mcData, versionData] = await Promise.all([
+    const [mcData, versionData, uptimeData] = await Promise.all([
       mcRes.json(),
       versionRes.json(),
+      uptimeRes.json(),
     ]);
 
-    return { ...mcData, ...versionData };
+    return { ...mcData, ...versionData, uptime: uptimeData.statistics };
   } catch (error) {
     console.error("Error fetching server data:", error);
     return null;
