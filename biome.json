@@ -30,12 +30,12 @@
     "enabled": true,
     "rules": {
       "recommended": true,
-      "suspicious": {
-        "noUnknownAtRules": "off"
+      "correctness": {
+        "useImportExtensions": "off"
       }
     },
     "domains": {
-      "project": "recommended"
+      "project": "all"
     }
   },
   "assist": {
