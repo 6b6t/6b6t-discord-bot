@@ -49,7 +49,7 @@ const PlayerCountCommand: Command = {
     }
 
     await interaction.reply(
-      `There are currently ${data.players.online} players online on 6b6t. The server has been up for ${uptimeStr}.`
+      `There are currently ${data.players.online} players online on 6b6t. The server has been up for ${uptimeStr}.`,
     );
   },
 };

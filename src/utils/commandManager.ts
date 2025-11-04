@@ -53,18 +53,18 @@ export class CommandManager {
     userId: string,
     cooldownSeconds: number,
   ): number {
-    if (!this.cooldowns.has(commandName)) {
-      this.cooldowns.set(commandName, new Collection());
+    let timestamps = this.cooldowns.get(commandName);
+
+    if (!timestamps) {
+      timestamps = new Collection<string, number>();
+      this.cooldowns.set(commandName, timestamps);
     }
 
     const now = Date.now();
-    const timestamps = this.cooldowns.get(commandName)!;
+    const expirationTime = timestamps.get(userId);
 
-    if (timestamps.has(userId)) {
-      const expirationTime = timestamps.get(userId)!;
-      if (now < expirationTime) {
-        return Math.ceil((expirationTime - now) / 1000);
-      }
+    if (expirationTime && now < expirationTime) {
+      return Math.ceil((expirationTime - now) / 1000);
     }
 
     timestamps.set(userId, now + cooldownSeconds * 1000);

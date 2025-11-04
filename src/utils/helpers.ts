@@ -3,7 +3,7 @@ import type { RowDataPacket } from "mysql2";
 import { getAllUuidDiscordMappings } from "./link/storage";
 import { getStatsPool } from "./mysql-client";
 
-const SERVER_API = `https://www.6b6t.org/api`
+const SERVER_API = `https://www.6b6t.org/api`;
 
 export type UserInfo = {
   topRank: string;
@@ -39,7 +39,7 @@ export async function collectUserInfo(uuid: string): Promise<UserInfo | null> {
   const firstJoinYear = new Date(playerInfo[0].first_join).getFullYear();
   return {
     topRank: topRank,
-    firstJoinYear
+    firstJoinYear,
   };
 }
 
