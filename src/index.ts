@@ -21,7 +21,7 @@ import { onMessageCreate } from "./events/messageCreate";
 import { onMessageReactionAdd } from "./events/messageReactionAdd";
 import { onMessageReactionRemove } from "./events/messageReactionRemove";
 import { onMessageUpdate } from "./events/messageUpdate";
-import { getRedisClient } from "./utils/redis";
+import { closeAllMysqlPools } from "./utils/mysql-pool";
 
 const client = new Client({
   allowedMentions: {
@@ -104,15 +104,15 @@ async function gracefulShutdown() {
   console.log("Shutting down gracefully...");
 
   try {
-    (await getRedisClient()).disconnect();
-    console.log("Redis connections closed");
-
     if (client.isReady()) {
       console.log("Logging out of Discord...");
       await client.destroy();
       await new Promise((resolve) => setTimeout(resolve, 1000));
     }
     console.log("Discord client destroyed");
+
+    await closeAllMysqlPools();
+    console.log("MySQL pools closed");
 
     console.log("Shutdown complete");
     process.exit(0);

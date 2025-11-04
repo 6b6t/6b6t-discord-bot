@@ -1,7 +1,7 @@
 import type { Client, TextChannel } from "discord.js";
 import type { RowDataPacket } from "mysql2";
+import { getAllUuidDiscordMappings } from "./link/storage";
 import { getStatsPool } from "./mysql-client";
-import { getRedisClient } from "./redis";
 
 export type UserInfo = {
   topRank: string;
@@ -16,20 +16,11 @@ export type UserLink = {
 export type UserLinkAndInfo = UserLink & UserInfo;
 
 export async function getAllLinkedUsers(): Promise<UserLink[]> {
-  const result: UserLink[] = [];
-  const redisClient = await getRedisClient();
-  for (const key of await redisClient.keys("uuid_to_discord_id:*")) {
-    const valueDiscordId = await redisClient.get(key);
-    const keyUuid = key.split(":")[1];
-    if (valueDiscordId !== null) {
-      result.push({
-        discordId: valueDiscordId,
-        minecraftUuid: keyUuid,
-      });
-    }
-  }
-
-  return result;
+  const mappings = await getAllUuidDiscordMappings();
+  return mappings.map((mapping) => ({
+    discordId: mapping.discordId,
+    minecraftUuid: mapping.uuid,
+  }));
 }
 
 export async function collectUserInfo(uuid: string): Promise<UserInfo | null> {
