@@ -15,6 +15,17 @@ export type UserLink = {
 
 export type UserLinkAndInfo = UserLink & UserInfo;
 
+export type PlayerSummary = {
+  uuid: string;
+  username: string;
+};
+
+export type ServerData = {
+  playerCount: number;
+  players: PlayerSummary[];
+  version?: string;
+};
+
 export async function getAllLinkedUsers(): Promise<UserLink[]> {
   const mappings = await getAllUuidDiscordMappings();
   return mappings.map((mapping) => ({
@@ -150,24 +161,73 @@ export async function botHasRecentMessages(
   return messages.some((msg) => msg.author.id === client.user?.id);
 }
 
-export async function getServerData(host: string): Promise<any> {
-  const mcUrl = `https://mcapi.us/server/status?ip=${host}&port=25565`;
+async function fetchPlayersFromCommandService(): Promise<ServerData | null> {
+  try {
+    const response = await fetch(
+      `${process.env.HTTP_COMMAND_SERVICE_BASE_URL}/players`,
+      {
+        headers: {
+          Accept: "application/json",
+          Authorization: `${process.env.HTTP_COMMAND_SERVICE_ACCESS_TOKEN}`,
+        },
+      },
+    );
+
+    if (response.status === 403) {
+      console.error(
+        "HTTP command service rejected the players request (missing can-get-players permission)",
+      );
+      return null;
+    }
+
+    if (!response.ok) {
+      console.error(
+        "HTTP command service player request failed:",
+        await response.text(),
+      );
+      return null;
+    }
+
+    const payload = (await response.json()) as {
+      success: boolean;
+      "player-count": number;
+      players?: PlayerSummary[];
+    };
+
+    if (!payload.success) {
+      console.error(
+        "HTTP command service returned an unsuccessful player response",
+      );
+      return null;
+    }
+
+    return {
+      playerCount: payload["player-count"],
+      players: payload.players ?? [],
+    };
+  } catch (error) {
+    console.error("Error fetching players from HTTP command service:", error);
+    return null;
+  }
+}
+
+export async function getServerData(): Promise<ServerData | null> {
   const versionUrl = `https://www.6b6t.org/api/version`;
 
   try {
-    const [mcRes, versionRes] = await Promise.all([
-      fetch(mcUrl),
-      fetch(versionUrl),
+    const [players, version] = await Promise.all([
+      fetchPlayersFromCommandService(),
+      fetch(versionUrl)
+        .then((res) => (res.ok ? res.json() : null))
+        .catch((error) => {
+          console.error("Error fetching version data:", error);
+          return null;
+        }),
     ]);
 
-    if (!mcRes.ok || !versionRes.ok) return null;
+    if (!players) return null;
 
-    const [mcData, versionData] = await Promise.all([
-      mcRes.json(),
-      versionRes.json(),
-    ]);
-
-    return { ...mcData, ...versionData };
+    return { ...players, version: version?.version };
   } catch (error) {
     console.error("Error fetching server data:", error);
     return null;

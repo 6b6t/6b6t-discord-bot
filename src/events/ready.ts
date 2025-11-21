@@ -163,17 +163,17 @@ Select your notifications.
       return;
     }
     cronLog("UpdateStatus", "Fetching server data");
-    const data = await getServerData(config.statusHost);
+    const data = await getServerData();
     if (!data) {
       cronLog("UpdateStatus", "No data received from server");
       return;
     }
     cronLog(
       "UpdateStatus",
-      `Setting activity with ${data.players.now} players online`,
+      `Setting activity with ${data.playerCount} players online`,
     );
     client.user.setActivity(
-      `IP: ${config.statusHost} - Join ${data.players.now} other players online!`,
+      `IP: ${config.statusHost} - Join ${data.playerCount} other players online!`,
       { type: ActivityType.Playing },
     );
     cronLog("UpdateStatus", "Finished");
