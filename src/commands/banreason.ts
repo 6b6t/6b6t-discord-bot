@@ -23,6 +23,9 @@ const BanReasonCommand: Command = {
       option.setName("user").setDescription("User to check").setRequired(true),
     ),
 
+  cooldown: 0,
+  admin: true,
+
   async execute(interaction: ChatInputCommandInteraction) {
     if (!interaction.inGuild() || !interaction.guild) {
       await interaction.reply({
