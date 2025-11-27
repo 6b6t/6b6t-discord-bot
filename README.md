@@ -23,3 +23,4 @@ Bot for the [6b6t Discord Server](https://discord.6b6t.org)
 | `/shop` | Information about the 6b6t shop | Everyone |
 | `/boost` | Information about Discord boosting perks | Everyone |
 | `/getuser` | Look up Minecraft account info by Discord user | Administrator |
+| `/banreason` | Look up who banned and the user and the reason | Moderator |
