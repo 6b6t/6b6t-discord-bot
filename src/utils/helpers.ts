@@ -74,13 +74,13 @@ export async function findPlayerInfoByUuid(
 
 export async function getTopRank(username: string): Promise<string | null> {
   const response = await (
-    await fetch(`${process.env.HTTP_COMMAND_SERVICE_BASE_URL}/get-ranks`, {
+    await fetch(`${process.env.HTTP_MAIN_COMMAND_SERVICE_BASE_URL}/get-ranks`, {
       method: "POST",
       body: JSON.stringify({ username }),
       headers: {
         Accept: "application/json",
         "Content-Type": "application/json",
-        Authorization: `${process.env.HTTP_COMMAND_SERVICE_ACCESS_TOKEN}`,
+        Authorization: `${process.env.HTTP_MAIN_COMMAND_SERVICE_ACCESS_TOKEN}`,
       },
     })
   ).json();
@@ -164,11 +164,11 @@ export async function botHasRecentMessages(
 async function fetchPlayersFromCommandService(): Promise<ServerData | null> {
   try {
     const response = await fetch(
-      `${process.env.HTTP_COMMAND_SERVICE_BASE_URL}/players`,
+      `${process.env.HTTP_PROXY_COMMAND_SERVICE_BASE_URL}/players`,
       {
         headers: {
           Accept: "application/json",
-          Authorization: `${process.env.HTTP_COMMAND_SERVICE_ACCESS_TOKEN}`,
+          Authorization: `${process.env.HTTP_PROXY_COMMAND_SERVICE_ACCESS_TOKEN}`,
         },
       },
     );
