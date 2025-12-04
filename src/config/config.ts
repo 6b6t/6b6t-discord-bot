@@ -4,6 +4,7 @@ const config = {
   manuallyManagedRoleId: "1414830403470233620",
   advertisingId: "1322175662903005186",
   merchId: "1418951317602172958",
+  updatesId: "982190978142195712",
   generalId: "982192297645056040",
   youtubeId: "1353453116007252050",
   commandAdminRoleId: "917520262939938915",

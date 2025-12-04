@@ -34,6 +34,22 @@ async function handleChannel(
 
 export const onMessageCreate = async (client: Client, message: Message) => {
   if (message.channel.type !== ChannelType.GuildText) return;
+
+  if (message.channel.id === config.updatesId) {
+    try {
+      if (!message.author.bot) {
+        await message.author.send(
+          "Please post your announcement on r/6b6t subreddit too.",
+        );
+      }
+    } catch (error) {
+      console.error(
+        `[UpdatesDM] Failed to DM user ${message.author.id}:`,
+        error,
+      );
+    }
+  }
+
   await handleChannel(
     client,
     message.channel,
