@@ -4,6 +4,7 @@ import {
   ChannelType,
   type Client,
   EmbedBuilder,
+  PermissionsBitField,
 } from "discord.js";
 import config from "../config/config";
 import { botHasRecentMessages, getServerData } from "../utils/helpers";
@@ -90,6 +91,74 @@ export const onReady = async (client: Client) => {
     if (existsMenu) return;
 
     await sendRoleMenu(roleChannel);
+  }
+
+  async function cleanRoleMenuRoles() {
+    cronLog("CleanRoleMenuRoles", "Fetching guild");
+    const guild = await client.guilds.fetch(config.guildId);
+    if (!guild) {
+      cronLog("CleanRoleMenuRoles", "Guild not found, skipping");
+      return;
+    }
+
+    try {
+      await guild.members.fetch();
+    } catch (error) {
+      console.error(
+        "[Cron][CleanRoleMenuRoles] Failed to fetch guild members:",
+        error,
+      );
+      return;
+    }
+
+    const memberIdsWithMenuRoles = new Set<string>();
+
+    for (const roleId of config.roleMenuRoleIds) {
+      try {
+        const role =
+          guild.roles.cache.get(roleId) ?? (await guild.roles.fetch(roleId));
+        if (!role) {
+          cronLog("CleanRoleMenuRoles", `Role ${roleId} not found, skipping`);
+          continue;
+        }
+
+        role.members.forEach((member) => {
+          memberIdsWithMenuRoles.add(member.id);
+        });
+      } catch (error) {
+        console.error(
+          `[Cron][CleanRoleMenuRoles] Failed to inspect role ${roleId}:`,
+          error,
+        );
+      }
+    }
+
+    let removedCount = 0;
+    for (const memberId of memberIdsWithMenuRoles) {
+      const member = guild.members.cache.get(memberId);
+      if (!member) continue;
+
+      const hasAccess =
+        member.roles.cache.has(config.roleMenuRequiredRoleId) ||
+        member.permissions.has(PermissionsBitField.Flags.Administrator);
+
+      if (hasAccess) continue;
+
+      try {
+        await member.roles.remove(config.roleMenuRoleIds);
+        removedCount += 1;
+      } catch (error) {
+        console.error(
+          `[Cron][CleanRoleMenuRoles] Failed to remove role menu roles from ${member.id}:`,
+          error,
+        );
+      }
+    }
+
+    cronLog(
+      "CleanRoleMenuRoles",
+      `Removed role menu roles from ${removedCount} member(s)`,
+    );
   }
 
   async function sendReactionRoleMenus() {
@@ -181,6 +250,13 @@ Select your notifications.
 
   await updateStatus();
   new cron.CronJob("*/5 * * * *", updateStatus, null, true, "Europe/Berlin");
+  new cron.CronJob(
+    "*/5 * * * *",
+    cleanRoleMenuRoles,
+    null,
+    true,
+    "Europe/Berlin",
+  );
 
   new cron.CronJob("0 10 * * *", sendReminder, null, true, "Europe/Berlin");
 
@@ -202,6 +278,7 @@ Select your notifications.
   );
 
   void sendRoleMenuMsg();
+  void cleanRoleMenuRoles();
   void sendReactionRoleMenus();
   void runSync();
 };

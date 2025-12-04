@@ -44,9 +44,12 @@ async function initializeBot() {
     console.log("Loading commands...");
     await commandManager.loadCommands();
 
-    const rest = new REST({ version: "10" }).setToken(
-      process.env.DISCORD_TOKEN!,
-    );
+    const token = process.env.DISCORD_TOKEN;
+    if (!token) {
+      throw new Error("DISCORD_TOKEN is not set");
+    }
+
+    const rest = new REST({ version: "10" }).setToken(token);
     const commands = commandManager.getCommandsJSON();
     console.log(
       `Registering ${commands.length} commands to guild ${config.guildId}...`,
@@ -57,7 +60,7 @@ async function initializeBot() {
     );
 
     console.log("Initializing bot...");
-    await client.login(process.env.DISCORD_TOKEN!);
+    await client.login(token);
 
     console.log(
       `Bot initialized and ready to serve in guild: ${config.guildId}`,
