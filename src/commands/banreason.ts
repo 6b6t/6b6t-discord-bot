@@ -24,7 +24,8 @@ const BanReasonCommand: Command = {
     ),
 
   cooldown: 0,
-  admin: true,
+  // Uses custom allowedRoleIds check instead of global admin check
+  admin: false,
 
   async execute(interaction: ChatInputCommandInteraction) {
     if (!interaction.inGuild() || !interaction.guild) {
