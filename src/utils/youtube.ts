@@ -2,6 +2,10 @@ import type { BaseGuildTextChannel } from "discord.js";
 import { google } from "googleapis";
 import he from "he";
 import "dotenv/config";
+import {
+  isYoutubeVideoPosted,
+  markYoutubeVideoPosted,
+} from "./youtube-storage";
 
 const youtube = google.youtube({
   version: "v3",
@@ -13,6 +17,7 @@ export async function getLatestVideo(
   ignoreWords: string[],
   whitelistedChannels: string[],
 ): Promise<{
+  id: string;
   author: string;
   title: string;
   url: string;
@@ -43,6 +48,9 @@ export async function getLatestVideo(
 
         if (!videoId || !hasQuery) continue;
 
+        // Skip if video was already posted (persisted across restarts/deletions)
+        if (await isYoutubeVideoPosted(videoId)) continue;
+
         if (!whitelistedChannels.includes(channelId)) {
           const hasIgnoredWord = ignoreWords.some(
             (word) =>
@@ -53,6 +61,7 @@ export async function getLatestVideo(
         }
 
         return {
+          id: videoId,
           author,
           title,
           url: `https://www.youtube.com/watch?v=${videoId}`,
@@ -63,18 +72,6 @@ export async function getLatestVideo(
     console.error("YouTube API Error: ", error);
   }
   return null;
-}
-
-async function getLastNotifications(
-  channel: BaseGuildTextChannel,
-): Promise<string[]> {
-  try {
-    const messages = await channel.messages.fetch({ limit: 5 });
-    return messages.map((msg) => msg.content);
-  } catch (error) {
-    console.error(`Error while getting last notifications: `, error);
-    return [];
-  }
 }
 
 export async function sendYoutubeNotification(
@@ -90,11 +87,8 @@ export async function sendYoutubeNotification(
     return;
   }
 
-  const lastMessages = await getLastNotifications(channel);
-  if (lastMessages.some((msg) => msg.includes(video.url))) {
-    console.log("Video already notified.");
-    return;
-  }
+  // Mark video as posted before sending to prevent duplicates
+  await markYoutubeVideoPosted(video.id);
 
   const message = await channel.send(
     `**${video.title}** - ${video.author}\n${video.url}`,
