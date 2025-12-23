@@ -58,6 +58,10 @@ const roles: Record<
     id: "1349065443650043955",
     predicate: (info) => info.firstJoinYear === 2025,
   },
+  "2026": {
+    id: "1453085388930416702",
+    predicate: (info) => info.firstJoinYear === 2026,
+  },
 };
 
 export const sync = async (client: Client) => {
