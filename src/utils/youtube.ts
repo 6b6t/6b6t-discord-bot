@@ -52,11 +52,14 @@ export async function getLatestVideo(
         if (await isYoutubeVideoPosted(videoId)) continue;
 
         if (!whitelistedChannels.includes(channelId)) {
-          const hasIgnoredWord = ignoreWords.some(
-            (word) =>
-              title.toLowerCase().includes(word.toLowerCase()) ||
-              description.toLowerCase().includes(word.toLowerCase()),
-          );
+          const hasIgnoredWord = ignoreWords.some((word) => {
+            const lowerWord = word.toLowerCase();
+            return (
+              title.toLowerCase().includes(lowerWord) ||
+              description.toLowerCase().includes(lowerWord) ||
+              author.toLowerCase().includes(lowerWord)
+            );
+          });
           if (hasIgnoredWord) continue;
         }
 
