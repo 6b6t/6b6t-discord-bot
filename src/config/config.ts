@@ -74,6 +74,7 @@ const config = {
     "cobblestone.com",
     "crashing",
     "botting",
+    "bleepo",
   ],
   generalMessage:
     "Don't have a rank? Get lower /tpa & /home cooldowns and white username by [voting](<https://www.6b6t.org/vote?utm_source=discord&utm_medium=discord_channel&utm_campaign=evergreen_vote&utm_content=general_bot-vote-reminder&lang=en>)!",
