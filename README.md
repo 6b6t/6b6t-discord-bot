@@ -18,7 +18,7 @@ Bot for the [6b6t Discord Server](https://discord.6b6t.org)
 | Command | Description | Permissions |
 |---------|-------------|-------------|
 | `/ip` | Get the 6b6t server IP addresses | Everyone |
-| `/playercount` | Check current players online | Everyone |
+| `/playercount` | Check current players online and server uptime | Everyone |
 | `/version` | Get the current Minecraft version | Everyone |
 | `/shop` | Information about the 6b6t shop | Everyone |
 | `/boost` | Information about Discord boosting perks | Everyone |

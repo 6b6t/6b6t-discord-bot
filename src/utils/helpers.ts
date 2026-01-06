@@ -3,6 +3,8 @@ import type { RowDataPacket } from "mysql2";
 import { getAllUuidDiscordMappings } from "./link/storage";
 import { getStatsPool } from "./mysql-client";
 
+const SERVER_API = "https://www.6b6t.org/api";
+
 export type UserInfo = {
   topRank: string;
   firstJoinYear: number;
@@ -20,11 +22,30 @@ export type PlayerSummary = {
   username: string;
 };
 
+export type UptimeData = {
+  serverStartUnix?: number;
+  currentUptimeHours?: number;
+};
+
 export type ServerData = {
   playerCount: number;
   players: PlayerSummary[];
   version?: string;
+  uptime?: UptimeData;
 };
+
+export function formatDuration(totalSeconds: number): string {
+  const days = Math.floor(totalSeconds / 86400);
+  const hours = Math.floor((totalSeconds % 86400) / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  const parts: string[] = [];
+  if (days > 0) parts.push(`${days}d`);
+  if (hours > 0) parts.push(`${hours}h`);
+  if (minutes > 0) parts.push(`${minutes}m`);
+  if (seconds > 0) parts.push(`${seconds}s`);
+  return parts.join(" ") || "0s";
+}
 
 export async function getAllLinkedUsers(): Promise<UserLink[]> {
   const mappings = await getAllUuidDiscordMappings();
@@ -212,10 +233,11 @@ async function fetchPlayersFromCommandService(): Promise<ServerData | null> {
 }
 
 export async function getServerData(): Promise<ServerData | null> {
-  const versionUrl = `https://www.6b6t.org/api/version`;
+  const versionUrl = `${SERVER_API}/version`;
+  const uptimeUrl = `${SERVER_API}/uptime`;
 
   try {
-    const [players, version] = await Promise.all([
+    const [players, version, uptimeRes] = await Promise.all([
       fetchPlayersFromCommandService(),
       fetch(versionUrl)
         .then((res) => (res.ok ? res.json() : null))
@@ -223,11 +245,24 @@ export async function getServerData(): Promise<ServerData | null> {
           console.error("Error fetching version data:", error);
           return null;
         }),
+      fetch(uptimeUrl)
+        .then((res) => (res.ok ? res.json() : null))
+        .catch((error) => {
+          console.error("Error fetching uptime data:", error);
+          return null;
+        }),
     ]);
 
     if (!players) return null;
 
-    return { ...players, version: version?.version };
+    const uptime: UptimeData | undefined = uptimeRes?.statistics
+      ? {
+          serverStartUnix: uptimeRes.statistics.serverStartUnix,
+          currentUptimeHours: uptimeRes.statistics.currentUptimeHours,
+        }
+      : undefined;
+
+    return { ...players, version: version?.version, uptime };
   } catch (error) {
     console.error("Error fetching server data:", error);
     return null;
