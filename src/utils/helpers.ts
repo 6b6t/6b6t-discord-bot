@@ -177,9 +177,7 @@ export async function botHasRecentMessages(
   limit: number = 100,
 ) {
   const messages = await channel.messages.fetch({ limit });
-  if (messages.size === 0) return false;
-
-  return messages.some((msg) => msg.author.id === client.user?.id);
+  return messages.filter((msg) => msg.author.id === client.user?.id).size;
 }
 
 async function fetchPlayersFromCommandService(): Promise<ServerData | null> {

@@ -179,29 +179,26 @@ export const onReady = async (client: Client) => {
       return;
     }
 
-    const hasMessages = await botHasRecentMessages(reactionRoleChannel, client);
-    if (hasMessages) return;
-
-    const languageEmbed = new EmbedBuilder()
-      .setAuthor({
-        name: "6b6t.org",
-        iconURL: "https://www.6b6t.org/logo.png",
-      })
-      .setDescription(
-        `
+    const embeds = [
+      new EmbedBuilder()
+        .setAuthor({
+          name: "6b6t.org",
+          iconURL: "https://www.6b6t.org/logo.png",
+        })
+        .setDescription(
+          `
 Select your language.
       `,
-      )
-      .setColor("#07CFFA");
-
-    const notificationEmbed = new EmbedBuilder()
-      .setAuthor({
-        name: "6b6t.org",
-        iconURL: "https://www.6b6t.org/logo.png",
-      })
-      .setImage("https://www.6b6t.org/media/language-and-roles.gif")
-      .setDescription(
-        `
+        )
+        .setColor("#07CFFA"),
+      new EmbedBuilder()
+        .setAuthor({
+          name: "6b6t.org",
+          iconURL: "https://www.6b6t.org/logo.png",
+        })
+        .setImage("https://www.6b6t.org/media/language-and-roles.gif")
+        .setDescription(
+          `
 Select your notifications.
 
 ✨ - General changes to 6b6t
@@ -211,36 +208,34 @@ Select your notifications.
 🏄 - Help us test new features
 🎥 - Receive social media notifications
       `,
-      )
-      .setColor("#FFF11A");
-
-    const hytaleEmbed = new EmbedBuilder()
-      .setAuthor({
-        name: "6b6t.org",
-        iconURL: "https://www.6b6t.org/logo.png",
-      })
-      .setDescription(
-        `
+        )
+        .setColor("#FFF11A"),
+      new EmbedBuilder()
+        .setAuthor({
+          name: "6b6t.org",
+          iconURL: "https://www.6b6t.org/logo.png",
+        })
+        .setDescription(
+          `
 🎮 - Get notifications about Hytale.
       `,
-      )
-      .setColor("#82c0ef");
+        )
+        .setColor("#82c0ef"),
+    ];
 
-    await sendReactionRoleMenu(
+    const messageCount = await botHasRecentMessages(
       reactionRoleChannel,
-      config.languageMenuRoleIds,
-      languageEmbed,
+      client,
     );
-    await sendReactionRoleMenu(
-      reactionRoleChannel,
-      config.notificationMenuRoleIds,
-      notificationEmbed,
-    );
-    await sendReactionRoleMenu(
-      reactionRoleChannel,
-      config.hytaleMenuRoleIds,
-      hytaleEmbed,
-    );
+    if (messageCount !== embeds.length) return;
+
+    for (const embed of embeds) {
+      await sendReactionRoleMenu(
+        reactionRoleChannel,
+        config.languageMenuRoleIds,
+        embed,
+      );
+    }
   }
 
   async function updateStatus() {
