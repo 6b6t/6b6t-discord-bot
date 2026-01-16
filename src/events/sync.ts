@@ -149,13 +149,13 @@ export const sync = async (client: Client) => {
     );
 
     let addTriedCount = 0;
-    let addFailedCount = 0;
+    let addMissingCount = 0;
     let addSuccessCount = 0;
     for (const memberId of membersToAdd) {
       addTriedCount++;
       const member = guild.members.cache.get(memberId);
       if (!member) {
-        addFailedCount++;
+        addMissingCount++;
         continue;
       }
       addSuccessCount++;
@@ -164,17 +164,17 @@ export const sync = async (client: Client) => {
 
     linkLog(
       key,
-      `Add summary: tried=${addTriedCount}, succeeded=${addSuccessCount}, failed=${addFailedCount}`,
+      `Add summary: tried=${addTriedCount}, succeeded=${addSuccessCount}, missing=${addMissingCount}`,
     );
 
     let removeTriedCount = 0;
-    let removeFailedCount = 0;
+    let removeMissingCount = 0;
     let removeSuccessCount = 0;
     for (const memberId of membersToRemove) {
       removeTriedCount++;
       const member = guild.members.cache.get(memberId);
       if (!member) {
-        removeFailedCount++;
+        removeMissingCount++;
         continue;
       }
       removeSuccessCount++;
@@ -183,7 +183,7 @@ export const sync = async (client: Client) => {
 
     linkLog(
       key,
-      `Remove summary: tried=${removeTriedCount}, succeeded=${removeSuccessCount}, failed=${removeFailedCount}`,
+      `Remove summary: tried=${removeTriedCount}, succeeded=${removeSuccessCount}, missing=${removeMissingCount}`,
     );
   }
 
