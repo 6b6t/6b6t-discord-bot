@@ -241,17 +241,17 @@ Select your notifications.
       reactionRoleChannel,
       client,
     );
-    if (messageCount < embeds.length) {
+    if (messageCount >= embeds.length) {
       cronLog(
         "SendReactionRoleMenus",
-        `Found ${messageCount} existing messages (need ${embeds.length}), skipping`,
+        `Found ${messageCount} existing messages (need ${embeds.length}), already sent`,
       );
       return;
     }
 
     cronLog(
       "SendReactionRoleMenus",
-      `Sending ${embeds.length} reaction role menu(s)`,
+      `Found ${messageCount} existing messages (need ${embeds.length}), sending`,
     );
     for (const embed of embeds) {
       await sendReactionRoleMenu(
