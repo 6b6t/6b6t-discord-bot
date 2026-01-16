@@ -227,7 +227,7 @@ Select your notifications.
       reactionRoleChannel,
       client,
     );
-    if (messageCount !== embeds.length) return;
+    if (messageCount < embeds.length) return;
 
     for (const embed of embeds) {
       await sendReactionRoleMenu(
