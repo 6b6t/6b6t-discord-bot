@@ -148,25 +148,43 @@ export const sync = async (client: Client) => {
       `Allowed=${allowedUserIds.length}, current=${membersInRole.length}, add=${membersToAdd.length}, remove=${membersToRemove.length}`,
     );
 
+    let addTriedCount = 0;
+    let addFailedCount = 0;
+    let addSuccessCount = 0;
     for (const memberId of membersToAdd) {
-      linkLog(key, `Adding role to ${memberId}`);
+      addTriedCount++;
       const member = guild.members.cache.get(memberId);
       if (!member) {
-        linkLog(key, `Member ${memberId} not cached, skipping add`);
+        addFailedCount++;
         continue;
       }
+      addSuccessCount++;
       await member.roles.add(role);
     }
 
+    linkLog(
+      key,
+      `Add summary: tried=${addTriedCount}, succeeded=${addSuccessCount}, failed=${addFailedCount}`,
+    );
+
+    let removeTriedCount = 0;
+    let removeFailedCount = 0;
+    let removeSuccessCount = 0;
     for (const memberId of membersToRemove) {
-      linkLog(key, `Removing role from ${memberId}`);
+      removeTriedCount++;
       const member = guild.members.cache.get(memberId);
       if (!member) {
-        linkLog(key, `Member ${memberId} not cached, skipping remove`);
+        removeFailedCount++;
         continue;
       }
+      removeSuccessCount++;
       await member.roles.remove(role);
     }
+
+    linkLog(
+      key,
+      `Remove summary: tried=${removeTriedCount}, succeeded=${removeSuccessCount}, failed=${removeFailedCount}`,
+    );
   }
 
   linkLog("Assign", "Linked role sync complete");
