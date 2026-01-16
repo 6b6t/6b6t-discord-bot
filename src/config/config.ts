@@ -47,6 +47,7 @@ const config = {
     { emoji: "🇩🇪", id: "1325150138997543047" },
     { emoji: "🇵🇱", id: "1121818071384981607" },
   ],
+  hytaleMenuRoleIds: [{ emoji: "🎮", id: "1461432694041739388" }],
   youtubeQueries: ["6b6t.org", "6b6t"],
   youtubeWhitelistedIds: [
     "UCMLjKYJwRo7Z9-SkJUMw4rg",

@@ -25,6 +25,7 @@ export const onMessageReactionRemove = async (
   const roles = [
     ...config.languageMenuRoleIds,
     ...config.notificationMenuRoleIds,
+    ...config.hytaleMenuRoleIds,
   ];
 
   await handleReactionRemove(message, emoji, user.id, roles);

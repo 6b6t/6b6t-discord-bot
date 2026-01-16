@@ -25,6 +25,7 @@ export const onMessageReactionAdd = async (
   const roles = [
     ...config.languageMenuRoleIds,
     ...config.notificationMenuRoleIds,
+    ...config.hytaleMenuRoleIds,
   ];
 
   await handleReactionAdd(message, emoji, user.id, roles);

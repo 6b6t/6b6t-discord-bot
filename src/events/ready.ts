@@ -214,6 +214,18 @@ Select your notifications.
       )
       .setColor("#FFF11A");
 
+    const hytaleEmbed = new EmbedBuilder()
+      .setAuthor({
+        name: "6b6t.org",
+        iconURL: "https://www.6b6t.org/logo.png",
+      })
+      .setDescription(
+        `
+🎮 - Get notifications about Hytale.
+      `,
+      )
+      .setColor("#82c0ef");
+
     await sendReactionRoleMenu(
       reactionRoleChannel,
       config.languageMenuRoleIds,
@@ -223,6 +235,11 @@ Select your notifications.
       reactionRoleChannel,
       config.notificationMenuRoleIds,
       notificationEmbed,
+    );
+    await sendReactionRoleMenu(
+      reactionRoleChannel,
+      config.hytaleMenuRoleIds,
+      hytaleEmbed,
     );
   }
 
