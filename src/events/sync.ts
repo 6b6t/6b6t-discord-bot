@@ -100,7 +100,28 @@ export const sync = async (client: Client) => {
   const guild = await client.guilds.fetch(config.guildId);
   if (!guild) return console.error("Guild not found");
 
-  await guild.members.fetch(); // Ensure all members are cached
+  try {
+    await guild.members.fetch();
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      error.name === "GatewayRateLimitError" &&
+      "data" in error
+    ) {
+      const retryAfter = (error as { data: { retry_after: number } }).data
+        .retry_after;
+      linkLog(
+        "Guild",
+        `Rate limited fetching members, retrying after ${retryAfter}s`,
+      );
+      await new Promise((resolve) =>
+        setTimeout(resolve, retryAfter * 1000 + 100),
+      );
+      await guild.members.fetch();
+    } else {
+      throw error;
+    }
+  }
 
   // Build bypass set: members having the manually managed role
   const bypassMembers = new Set<string>();
