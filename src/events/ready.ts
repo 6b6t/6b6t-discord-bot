@@ -14,7 +14,11 @@ import { sendYoutubeNotification } from "../utils/youtube";
 import { sync } from "./sync";
 
 export const onReady = async (client: Client) => {
-  console.log(`Logged in as ${client.user?.tag}!`);
+  console.log("[Ready] Bot initialization starting...");
+  console.log(
+    `[Ready] Logged in as ${client.user?.tag} (ID: ${client.user?.id})`,
+  );
+  console.log(`[Ready] Connected to ${client.guilds.cache.size} guild(s)`);
 
   const cronLog = (job: string, message: string) =>
     console.log(`[Cron][${job}] ${message}`);
@@ -72,6 +76,7 @@ export const onReady = async (client: Client) => {
   }
 
   async function sendRoleMenuMsg() {
+    cronLog("SendRoleMenuMsg", "Fetching role menu channel");
     const roleChannel = await client.channels.fetch(config.roleMenuId);
     if (!roleChannel) {
       console.error(
@@ -87,10 +92,16 @@ export const onReady = async (client: Client) => {
       return;
     }
 
+    cronLog("SendRoleMenuMsg", "Checking if role menu already exists");
     const existsMenu = await existsRoleMenu(roleChannel);
-    if (existsMenu) return;
+    if (existsMenu) {
+      cronLog("SendRoleMenuMsg", "Role menu already exists, skipping");
+      return;
+    }
 
+    cronLog("SendRoleMenuMsg", "Sending role menu");
     await sendRoleMenu(roleChannel);
+    cronLog("SendRoleMenuMsg", "Finished");
   }
 
   async function cleanRoleMenuRoles() {
@@ -162,6 +173,7 @@ export const onReady = async (client: Client) => {
   }
 
   async function sendReactionRoleMenus() {
+    cronLog("SendReactionRoleMenus", "Fetching reaction role channel");
     const reactionRoleChannel = await client.channels.fetch(
       config.reactionRoleMenuId,
     );
@@ -179,6 +191,7 @@ export const onReady = async (client: Client) => {
       return;
     }
 
+    cronLog("SendReactionRoleMenus", "Building embed messages");
     const embeds = [
       new EmbedBuilder()
         .setAuthor({
@@ -223,12 +236,23 @@ Select your notifications.
         .setColor("#82c0ef"),
     ];
 
+    cronLog("SendReactionRoleMenus", "Checking for existing bot messages");
     const messageCount = await botHasRecentMessages(
       reactionRoleChannel,
       client,
     );
-    if (messageCount < embeds.length) return;
+    if (messageCount < embeds.length) {
+      cronLog(
+        "SendReactionRoleMenus",
+        `Found ${messageCount} existing messages (need ${embeds.length}), skipping`,
+      );
+      return;
+    }
 
+    cronLog(
+      "SendReactionRoleMenus",
+      `Sending ${embeds.length} reaction role menu(s)`,
+    );
     for (const embed of embeds) {
       await sendReactionRoleMenu(
         reactionRoleChannel,
@@ -236,6 +260,7 @@ Select your notifications.
         embed,
       );
     }
+    cronLog("SendReactionRoleMenus", "Finished");
   }
 
   async function updateStatus() {
@@ -260,8 +285,14 @@ Select your notifications.
     cronLog("UpdateStatus", "Finished");
   }
 
+  console.log("[Ready] Running initial status update...");
   await updateStatus();
+  console.log("[Ready] Initial status update complete");
+
+  console.log("[Ready] Scheduling cron jobs...");
   new cron.CronJob("*/5 * * * *", updateStatus, null, true, "Europe/Berlin");
+  console.log("[Ready] Scheduled UpdateStatus cron (every 5 minutes)");
+
   new cron.CronJob(
     "*/5 * * * *",
     cleanRoleMenuRoles,
@@ -269,18 +300,19 @@ Select your notifications.
     true,
     "Europe/Berlin",
   );
+  console.log("[Ready] Scheduled CleanRoleMenuRoles cron (every 5 minutes)");
 
   new cron.CronJob("0 10 * * *", sendReminder, null, true, "Europe/Berlin");
+  console.log("[Ready] Scheduled SendReminder cron (daily at 10:00)");
 
   new cron.CronJob("0 18 * * *", sendReminder, null, true, "Europe/Berlin");
+  console.log("[Ready] Scheduled SendReminder cron (daily at 18:00)");
 
   /*
   Free trial is 100 checks a day, which is 1 check every 15 minutes, 20 minutes to be safe
   This would ignore any video sent before those 20 minutes, but it can't be fixed without paying or using IFTTT
   */
 
-  // Run once at startup for debugging
-  void sendNotification();
   new cron.CronJob(
     "*/20 * * * *",
     sendNotification,
@@ -288,9 +320,19 @@ Select your notifications.
     true,
     "Europe/Berlin",
   );
+  console.log("[Ready] Scheduled SendNotification cron (every 20 minutes)");
 
+  console.log("[Ready] Starting initial background tasks...");
+  console.log("[Ready] Starting SendNotification...");
+  void sendNotification();
+  console.log("[Ready] Starting SendRoleMenuMsg...");
   void sendRoleMenuMsg();
+  console.log("[Ready] Starting CleanRoleMenuRoles...");
   void cleanRoleMenuRoles();
+  console.log("[Ready] Starting SendReactionRoleMenus...");
   void sendReactionRoleMenus();
+  console.log("[Ready] Starting RunSync...");
   void runSync();
+
+  console.log("[Ready] Bot initialization complete - all tasks started");
 };
