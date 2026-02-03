@@ -82,7 +82,7 @@ const config = {
   advertisingMessage:
     "To post here you need <@&1349026308390391839> or <@&1268345919003430942> or <@&1325147417322192927> or <@&1325147393372586054> rank from the [6b6t Shop](<https://www.6b6t.org/shop?utm_source=discord&utm_medium=discord_channel&utm_campaign=evergreen_shop&utm_content=advertising_bot&lang=en>). Ultra ranks are addons on top of the permanent ranks Prime and Elite.",
   merchMessage:
-    "Get your 6b6t Mousepad and 6b6t Mug which are included with the ranks from the [6b6t Shop](<https://www.6b6t.org/shop?utm_source=discord&utm_medium=discord_channel&utm_campaign=evergreen_shop&utm_content=merch_bot&lang=en>)!",
+    "Get your 6b6t Mousepad (included with the <@&1268345919003430942> rank) and 6b6t Mug (included with the <@&1349026308390391839> rank) in the [6b6t Shop](<https://www.6b6t.org/shop?utm_source=discord&utm_medium=discord_channel&utm_campaign=evergreen_shop&utm_content=merch_bot&lang=en>)!",
 };
 
 export default config;
