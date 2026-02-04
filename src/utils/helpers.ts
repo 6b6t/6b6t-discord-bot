@@ -95,15 +95,18 @@ export async function findPlayerInfoByUuid(
 
 export async function getTopRank(username: string): Promise<string | null> {
   const response = await (
-    await fetch(`${process.env.HTTP_MAIN_COMMAND_SERVICE_BASE_URL}/get-ranks`, {
-      method: "POST",
-      body: JSON.stringify({ username }),
-      headers: {
-        Accept: "application/json",
-        "Content-Type": "application/json",
-        Authorization: `${process.env.HTTP_MAIN_COMMAND_SERVICE_ACCESS_TOKEN}`,
+    await fetch(
+      `${process.env.HTTP_SLAVE1_COMMAND_SERVICE_BASE_URL}/get-ranks`,
+      {
+        method: "POST",
+        body: JSON.stringify({ username }),
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+          Authorization: `${process.env.HTTP_SLAVE1_COMMAND_SERVICE_ACCESS_TOKEN}`,
+        },
       },
-    })
+    )
   ).json();
   if (response.success !== true) {
     throw new Error(response.error);
