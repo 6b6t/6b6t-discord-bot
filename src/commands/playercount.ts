@@ -27,14 +27,12 @@ const PlayerCountCommand: Command = {
       uptimeStr = formatDuration(totalSeconds);
     }
 
-    if (!uptimeStr) {
-      await interaction.reply("The server is currently down.");
-      return;
+    let message = `There are currently ${data.playerCount} players online on 6b6t.`;
+    if (uptimeStr) {
+      message += ` The server has been up for ${uptimeStr}.`;
     }
 
-    await interaction.reply(
-      `There are currently ${data.playerCount} players online on 6b6t. The server has been up for ${uptimeStr}.`,
-    );
+    await interaction.reply(message);
   },
 };
 
