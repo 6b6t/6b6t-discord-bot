@@ -190,7 +190,7 @@ async function fetchPlayersFromCommandService(): Promise<ServerData | null> {
       {
         headers: {
           Accept: "application/json",
-          Authorization: `${process.env.HTTP_PROXY_COMMAND_SERVICE_ACCESS_TOKEN}`,
+          Authorization: `Bearer ${process.env.HTTP_PROXY_COMMAND_SERVICE_ACCESS_TOKEN}`,
         },
       },
     );
@@ -258,9 +258,9 @@ export async function getServerData(): Promise<ServerData | null> {
 
     const uptime: UptimeData | undefined = uptimeRes?.statistics
       ? {
-          serverStartUnix: uptimeRes.statistics.serverStartUnix,
-          currentUptimeHours: uptimeRes.statistics.currentUptimeHours,
-        }
+        serverStartUnix: uptimeRes.statistics.serverStartUnix,
+        currentUptimeHours: uptimeRes.statistics.currentUptimeHours,
+      }
       : undefined;
 
     return { ...players, version: version?.version, uptime };
