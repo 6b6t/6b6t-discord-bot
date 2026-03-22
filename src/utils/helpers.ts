@@ -34,6 +34,18 @@ export type ServerData = {
   uptime?: UptimeData;
 };
 
+export type HytalePlayerSummary = {
+  Name: string;
+  UUID: string;
+  World: string;
+};
+
+export type HytalePlayerCountData = {
+  playerCount: number;
+  maxPlayers: number;
+  players: HytalePlayerSummary[];
+};
+
 export function formatDuration(totalSeconds: number): string {
   const days = Math.floor(totalSeconds / 86400);
   const hours = Math.floor((totalSeconds % 86400) / 3600);
@@ -258,14 +270,82 @@ export async function getServerData(): Promise<ServerData | null> {
 
     const uptime: UptimeData | undefined = uptimeRes?.statistics
       ? {
-        serverStartUnix: uptimeRes.statistics.serverStartUnix,
-        currentUptimeHours: uptimeRes.statistics.currentUptimeHours,
-      }
+          serverStartUnix: uptimeRes.statistics.serverStartUnix,
+          currentUptimeHours: uptimeRes.statistics.currentUptimeHours,
+        }
       : undefined;
 
     return { ...players, version: version?.version, uptime };
   } catch (error) {
     console.error("Error fetching server data:", error);
     return null;
+  }
+}
+
+export async function getHytalePlayerCountData(): Promise<HytalePlayerCountData | null> {
+  const endpointUrl = process.env.HYTALE_QUERY_ENDPOINT_URL;
+  const username = process.env.HYTALE_QUERY_USERNAME;
+  const password = process.env.HYTALE_QUERY_PASSWORD;
+
+  if (!endpointUrl || !username || !password) {
+    console.error(
+      "HYTALE_QUERY_ENDPOINT_URL, HYTALE_QUERY_USERNAME, and HYTALE_QUERY_PASSWORD must be set",
+    );
+    return null;
+  }
+
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 5000);
+
+  try {
+    const response = await fetch(endpointUrl, {
+      headers: {
+        Accept: "application/json",
+        Authorization: `Basic ${Buffer.from(`${username}:${password}`).toString("base64")}`,
+      },
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      console.error(
+        "Error fetching Hytale player count:",
+        response.status,
+        response.statusText,
+      );
+      return null;
+    }
+
+    const payload = (await response.json()) as {
+      Server?: { MaxPlayers?: unknown };
+      Universe?: { CurrentPlayers?: unknown };
+      Players?: unknown;
+    };
+
+    if (
+      typeof payload.Server?.MaxPlayers !== "number" ||
+      typeof payload.Universe?.CurrentPlayers !== "number" ||
+      !Array.isArray(payload.Players)
+    ) {
+      console.error("Invalid Hytale player count response payload");
+      return null;
+    }
+
+    return {
+      playerCount: payload.Universe.CurrentPlayers,
+      maxPlayers: payload.Server.MaxPlayers,
+      players: payload.Players.filter(
+        (player): player is HytalePlayerSummary =>
+          typeof player === "object" &&
+          player !== null &&
+          typeof player.Name === "string" &&
+          typeof player.UUID === "string" &&
+          typeof player.World === "string",
+      ),
+    };
+  } catch (error) {
+    console.error("Error fetching Hytale player count:", error);
+    return null;
+  } finally {
+    clearTimeout(timeoutId);
   }
 }
