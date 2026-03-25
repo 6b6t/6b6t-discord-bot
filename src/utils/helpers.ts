@@ -40,10 +40,17 @@ export type HytalePlayerSummary = {
   World: string;
 };
 
+export type HytaleMetrics = {
+  tps: number | null;
+  entities: number | null;
+  chunks: number | null;
+};
+
 export type HytalePlayerCountData = {
   playerCount: number;
   maxPlayers: number;
   players: HytalePlayerSummary[];
+  metrics?: HytaleMetrics;
 };
 
 export function formatDuration(totalSeconds: number): string {
@@ -282,6 +289,28 @@ export async function getServerData(): Promise<ServerData | null> {
   }
 }
 
+function sumMetrics(text: string, metricName: string): number | null {
+  const regex = new RegExp(`^${metricName}(?:\\{.*?\\})? ([\\d.]+)`, "gm");
+  let sum = 0;
+  let found = false;
+  for (const match of text.matchAll(regex)) {
+    sum += parseFloat(match[1]);
+    found = true;
+  }
+  return found ? sum : null;
+}
+
+function getAverageMetric(text: string, metricName: string): number | null {
+  const regex = new RegExp(`^${metricName}(?:\\{.*?\\})? ([\\d.]+)`, "gm");
+  let sum = 0;
+  let count = 0;
+  for (const match of text.matchAll(regex)) {
+    sum += parseFloat(match[1]);
+    count++;
+  }
+  return count > 0 ? sum / count : null;
+}
+
 export async function getHytalePlayerCountData(): Promise<HytalePlayerCountData | null> {
   const endpointUrl = process.env.HYTALE_QUERY_ENDPOINT_URL;
   const username = process.env.HYTALE_QUERY_USERNAME;
@@ -294,17 +323,51 @@ export async function getHytalePlayerCountData(): Promise<HytalePlayerCountData 
     return null;
   }
 
+  const metricsUrl = new URL(
+    "/ApexHosting/PrometheusExporter/metrics",
+    endpointUrl,
+  ).toString();
+
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 5000);
 
   try {
-    const response = await fetch(endpointUrl, {
-      headers: {
-        Accept: "application/json",
-        Authorization: `Basic ${Buffer.from(`${username}:${password}`).toString("base64")}`,
-      },
-      signal: controller.signal,
-    });
+    const authHeader = `Basic ${Buffer.from(`${username}:${password}`).toString("base64")}`;
+
+    const [response, metricsResponse] = await Promise.all([
+      fetch(endpointUrl, {
+        headers: {
+          Accept: "application/json",
+          Authorization: authHeader,
+        },
+        signal: controller.signal,
+      }),
+      fetch(metricsUrl, {
+        headers: {
+          Authorization: authHeader,
+        },
+        signal: controller.signal,
+      }).catch((e) => {
+        console.error("Error fetching Hytale metrics:", e);
+        return null;
+      }),
+    ]);
+
+    let metrics: HytaleMetrics | undefined;
+    if (metricsResponse?.ok) {
+      const text = await metricsResponse.text();
+      metrics = {
+        tps: getAverageMetric(text, "hytale_world_tps_avg"),
+        entities: sumMetrics(text, "hytale_entities_active"),
+        chunks: sumMetrics(text, "hytale_chunks_active"),
+      };
+    } else if (metricsResponse && !metricsResponse.ok) {
+      console.error(
+        "Error fetching Hytale metrics:",
+        metricsResponse.status,
+        metricsResponse.statusText,
+      );
+    }
 
     if (!response.ok) {
       console.error(
@@ -341,6 +404,7 @@ export async function getHytalePlayerCountData(): Promise<HytalePlayerCountData 
           typeof player.UUID === "string" &&
           typeof player.World === "string",
       ),
+      metrics,
     };
   } catch (error) {
     console.error("Error fetching Hytale player count:", error);

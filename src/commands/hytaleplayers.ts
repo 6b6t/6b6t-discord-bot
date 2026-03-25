@@ -24,9 +24,21 @@ const HytalePlayersCommand: Command = {
 
     let message = `There are currently ${data.playerCount}/${data.maxPlayers} players online on 6b6t Hytale.`;
 
+    if (data.metrics) {
+      const { tps, entities, chunks } = data.metrics;
+      const metricsParts = [];
+      if (tps !== null) metricsParts.push(`**TPS**: ${tps.toFixed(1)}`);
+      if (entities !== null) metricsParts.push(`**Entities**: ${entities}`);
+      if (chunks !== null) metricsParts.push(`**Chunks**: ${chunks}`);
+
+      if (metricsParts.length > 0) {
+        message += `\n${metricsParts.join(" | ")}`;
+      }
+    }
+
     if (data.players.length > 0) {
       const names = data.players.map((player) => player.Name).join(", ");
-      message += ` Online players: ${names}`;
+      message += `\n**Online players**: ${names}`;
     }
 
     await interaction.editReply(message);
