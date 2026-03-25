@@ -1,7 +1,6 @@
 import {
   type ChatInputCommandInteraction,
   MessageFlags,
-  PermissionFlagsBits,
   SlashCommandBuilder,
 } from "discord.js";
 import type { Command } from "../types/command";
@@ -10,11 +9,9 @@ import { getHytalePlayerCountData } from "../utils/helpers";
 const HytalePlayersCommand: Command = {
   data: new SlashCommandBuilder()
     .setName("hytaleplayers")
-    .setDescription("Check the current 6b6t Hytale player count")
-    .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
+    .setDescription("Check the current 6b6t Hytale player count"),
 
   cooldown: 0,
-  admin: true,
 
   async execute(interaction: ChatInputCommandInteraction) {
     await interaction.deferReply({ flags: MessageFlags.Ephemeral });
