@@ -1,6 +1,5 @@
 import {
   type ChatInputCommandInteraction,
-  MessageFlags,
   SlashCommandBuilder,
 } from "discord.js";
 import type { Command } from "../types/command";
@@ -14,11 +13,12 @@ const HytalePlayersCommand: Command = {
   cooldown: 0,
 
   async execute(interaction: ChatInputCommandInteraction) {
-    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-
     const data = await getHytalePlayerCountData();
     if (!data) {
-      await interaction.editReply("Failed to get Hytale player count.");
+      await interaction.reply({
+        content: "Failed to get Hytale player count.",
+        ephemeral: true,
+      });
       return;
     }
 
@@ -41,7 +41,7 @@ const HytalePlayersCommand: Command = {
       message += `\n**Online players**: ${names}`;
     }
 
-    await interaction.editReply(message);
+    await interaction.reply(message);
   },
 };
 
