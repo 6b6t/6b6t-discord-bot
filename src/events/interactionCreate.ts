@@ -1,4 +1,8 @@
-import { type Interaction, PermissionsBitField } from "discord.js";
+import {
+  type Interaction,
+  MessageFlags,
+  PermissionsBitField,
+} from "discord.js";
 import config from "../config/config";
 import type { CommandManager } from "../utils/commandManager";
 
@@ -121,10 +125,55 @@ async function handleRoleMenu(interaction: Interaction) {
   }
 }
 
+async function handleButtonInteraction(
+  commandManager: CommandManager,
+  interaction: Interaction,
+) {
+  if (!interaction.isButton()) return;
+
+  const customId = interaction.customId;
+  let commandName: string | null = null;
+
+  if (
+    customId.startsWith("banner_approve_") ||
+    customId.startsWith("banner_reject_")
+  ) {
+    commandName = "discordbannerset";
+  } else if (
+    customId.startsWith("ban_approve_") ||
+    customId.startsWith("ban_reject_")
+  ) {
+    commandName = "terminatorban";
+  }
+
+  if (!commandName) return;
+
+  const command = commandManager.getCommands().get(commandName);
+  if (!command?.handleButton) return;
+
+  try {
+    await command.handleButton(interaction);
+  } catch (error) {
+    console.error(`[Button Error] ${commandName}:`, error);
+    if (interaction.replied || interaction.deferred) {
+      await interaction.followUp({
+        content: "❌ An error occurred while processing this action.",
+        flags: MessageFlags.Ephemeral,
+      });
+    } else {
+      await interaction.reply({
+        content: "❌ An error occurred while processing this action.",
+        flags: MessageFlags.Ephemeral,
+      });
+    }
+  }
+}
+
 export const onInteractionCreate = async (
   commandManager: CommandManager,
   interaction: Interaction,
 ) => {
   await handleCommand(commandManager, interaction);
   await handleRoleMenu(interaction);
+  await handleButtonInteraction(commandManager, interaction);
 };
