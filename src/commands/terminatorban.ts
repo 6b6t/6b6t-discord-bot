@@ -18,7 +18,11 @@ import {
   removeBanRequest,
   setBanMessageId,
 } from "../utils/pendingBans";
-import { hasAuthorizedRole, isAdmin, isTerminator } from "../utils/roles";
+import {
+  hasAdministratorPermission,
+  hasAuthorizedRole,
+  isTerminator,
+} from "../utils/roles";
 
 const TerminatorBanCommand: Command = {
   data: new SlashCommandBuilder()
@@ -50,7 +54,7 @@ const TerminatorBanCommand: Command = {
   async execute(interaction: ChatInputCommandInteraction) {
     const member = interaction.member as GuildMember;
 
-    if (!isAdmin(member) && !hasAuthorizedRole(member)) {
+    if (!hasAdministratorPermission(member) && !hasAuthorizedRole(member)) {
       await interaction.reply({
         content:
           "❌ You do not have permission to use this command. Required roles: **Terminator**, **Marketer**, **Dev**.",
@@ -92,7 +96,7 @@ const TerminatorBanCommand: Command = {
     if (targetMember) {
       if (
         targetMember.roles.highest.position >= member.roles.highest.position &&
-        !isAdmin(member)
+        !hasAdministratorPermission(member)
       ) {
         await interaction.reply({
           content:
@@ -125,7 +129,7 @@ const TerminatorBanCommand: Command = {
       }
     }
 
-    if (isAdmin(member)) {
+    if (hasAdministratorPermission(member)) {
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
       try {

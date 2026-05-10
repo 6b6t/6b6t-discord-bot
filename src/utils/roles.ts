@@ -21,12 +21,3 @@ export function isTerminator(member: GuildMember): boolean {
 export function hasAdministratorPermission(member: GuildMember): boolean {
   return member.permissions.has(PermissionFlagsBits.Administrator);
 }
-
-/**
- * @deprecated Use `hasAdministratorPermission()` when checking the Discord
- * Administrator permission bit. This helper does not represent the bot's
- * role-based admin gate (`config.commandAdminRoleId`).
- */
-export function isAdmin(member: GuildMember): boolean {
-  return hasAdministratorPermission(member);
-}

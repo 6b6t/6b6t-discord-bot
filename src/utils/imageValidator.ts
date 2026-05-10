@@ -60,8 +60,8 @@ export function validateBannerImage(
     }
 
     const isAnimated =
-      attachment.contentType?.includes("gif") ||
-      attachment.name?.endsWith(".gif") ||
+      attachment.contentType?.toLowerCase().includes("gif") ||
+      attachment.name?.toLowerCase().endsWith(".gif") ||
       false;
 
     return { valid: true, imageUrl: attachment.url, isAnimated };

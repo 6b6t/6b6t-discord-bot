@@ -20,7 +20,11 @@ import {
   setMessageId,
   TTL_MS,
 } from "../utils/pendingBanners";
-import { hasAuthorizedRole, isAdmin, isTerminator } from "../utils/roles";
+import {
+  hasAdministratorPermission,
+  hasAuthorizedRole,
+  isTerminator,
+} from "../utils/roles";
 
 const DiscordBannerSetCommand: Command = {
   data: new SlashCommandBuilder()
@@ -48,7 +52,7 @@ const DiscordBannerSetCommand: Command = {
   async execute(interaction: ChatInputCommandInteraction) {
     const member = interaction.member as GuildMember;
 
-    if (!isAdmin(member) && !hasAuthorizedRole(member)) {
+    if (!hasAdministratorPermission(member) && !hasAuthorizedRole(member)) {
       await interaction.reply({
         content:
           "❌ You do not have permission to use this command. Required roles: **Terminator**, **Marketer**, **Dev**.",
@@ -86,7 +90,7 @@ const DiscordBannerSetCommand: Command = {
       return;
     }
 
-    if (isAdmin(member)) {
+    if (hasAdministratorPermission(member)) {
       await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
       try {
