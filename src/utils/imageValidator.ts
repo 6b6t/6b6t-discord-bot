@@ -31,14 +31,24 @@ export function validateBannerImage(
 
   if (attachment) {
     const contentType = attachment.contentType?.split(";")[0];
-    if (
-      contentType &&
-      !(ALLOWED_CONTENT_TYPES as readonly string[]).includes(contentType)
-    ) {
-      return {
-        valid: false,
-        error: `Invalid file type: \`${attachment.contentType}\`. Allowed types: PNG, JPG, GIF, WebP.`,
-      };
+    if (contentType) {
+      if (!(ALLOWED_CONTENT_TYPES as readonly string[]).includes(contentType)) {
+        return {
+          valid: false,
+          error: `Invalid file type: \`${attachment.contentType}\`. Allowed types: PNG, JPG, GIF, WebP.`,
+        };
+      }
+    } else {
+      // contentType is missing — fall back to file extension check
+      const validExtensions = [".png", ".jpg", ".jpeg", ".gif", ".webp"];
+      const fileName = attachment.name?.toLowerCase() ?? "";
+      if (!validExtensions.some((ext) => fileName.endsWith(ext))) {
+        return {
+          valid: false,
+          error:
+            "Could not determine file type. Please upload a PNG, JPG, GIF, or WebP image.",
+        };
+      }
     }
 
     if (attachment.size > MAX_FILE_SIZE) {

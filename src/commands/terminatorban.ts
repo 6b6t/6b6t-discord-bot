@@ -65,7 +65,8 @@ const TerminatorBanCommand: Command = {
     const deleteMessageDays =
       interaction.options.getInteger("delete_messages") ?? 0;
 
-    const guild = interaction.guild!;
+    const guild = interaction.guild;
+    if (!guild) return;
 
     if (targetUser.id === member.id) {
       await interaction.reply({
@@ -101,7 +102,8 @@ const TerminatorBanCommand: Command = {
         return;
       }
 
-      const botMember = guild.members.me!;
+      const botMember = guild.members.me;
+      if (!botMember) return;
       if (
         targetMember.roles.highest.position >= botMember.roles.highest.position
       ) {
@@ -124,7 +126,7 @@ const TerminatorBanCommand: Command = {
     }
 
     if (isAdmin(member)) {
-      await interaction.deferReply();
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
       try {
         await guild.members.ban(targetUser.id, {
@@ -202,7 +204,7 @@ const TerminatorBanCommand: Command = {
       reason,
       deleteMessageDays,
       guildId: guild.id,
-      channelId: voteChannelId!,
+      channelId: voteChannelId as string,
     });
 
     const expiresAt = Math.floor((Date.now() + BAN_TTL_MS) / 1000);
@@ -300,10 +302,20 @@ const TerminatorBanCommand: Command = {
     if (!isApproval) {
       removeBanRequest(requestId);
 
-      const embedFields = interaction.message.embeds[0].fields;
+      const originalEmbed = interaction.message.embeds[0];
+      if (!originalEmbed) {
+        await interaction.reply({
+          content:
+            "❌ Could not process this request — the original embed is missing.",
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
+
+      const embedFields = originalEmbed.fields;
       const statusIndex = embedFields.findIndex((f) => f.name === "Status");
 
-      const rejectedEmbed = EmbedBuilder.from(interaction.message.embeds[0])
+      const rejectedEmbed = EmbedBuilder.from(originalEmbed)
         .setColor(0x95a5a6)
         .setTitle("❌ Ban Request Rejected");
 
@@ -346,10 +358,21 @@ const TerminatorBanCommand: Command = {
       return;
     }
 
+    const originalEmbed = interaction.message.embeds[0];
+    if (!originalEmbed) {
+      await interaction.reply({
+        content:
+          "❌ Could not process this request — the original embed is missing.",
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+
     await interaction.deferUpdate();
 
     try {
-      const guild = interaction.guild!;
+      const guild = interaction.guild;
+      if (!guild) return;
       await guild.members.ban(request.targetId, {
         deleteMessageSeconds: request.deleteMessageDays * 86400,
         reason: `Banned by ${request.submitterTag}, approved by ${clicker.user.tag} — ${request.reason}`,
@@ -357,10 +380,10 @@ const TerminatorBanCommand: Command = {
 
       removeBanRequest(requestId);
 
-      const embedFields = interaction.message.embeds[0].fields;
+      const embedFields = originalEmbed.fields;
       const statusIndex = embedFields.findIndex((f) => f.name === "Status");
 
-      const approvedEmbed = EmbedBuilder.from(interaction.message.embeds[0])
+      const approvedEmbed = EmbedBuilder.from(originalEmbed)
         .setColor(0xed4245)
         .setTitle("🔨 Ban Approved & Executed");
 

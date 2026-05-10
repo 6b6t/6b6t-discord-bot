@@ -71,7 +71,8 @@ const DiscordBannerSetCommand: Command = {
 
     const { imageUrl, isAnimated } = validation;
 
-    const guild = interaction.guild!;
+    const guild = interaction.guild;
+    if (!guild) return;
     const requiredTier = isAnimated
       ? GuildPremiumTier.Tier3
       : GuildPremiumTier.Tier2;
@@ -86,17 +87,17 @@ const DiscordBannerSetCommand: Command = {
     }
 
     if (isAdmin(member)) {
-      await interaction.deferReply();
+      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
       try {
-        await guild.setBanner(imageUrl!);
+        await guild.setBanner(imageUrl as string);
 
         const successEmbed = new EmbedBuilder()
           .setTitle("✅ Server Banner Updated")
           .setDescription(
             `Banner set by ${member} via **admin bypass** (no confirmation needed).`,
           )
-          .setImage(imageUrl!)
+          .setImage(imageUrl as string)
           .setColor(0x57f287)
           .setTimestamp();
 
@@ -106,7 +107,7 @@ const DiscordBannerSetCommand: Command = {
           guildId: guild.id,
           submitterTag: member.user.tag,
           submitterId: member.id,
-          imageUrl: imageUrl!,
+          imageUrl: imageUrl as string,
           adminBypass: true,
         });
       } catch (error) {
@@ -140,9 +141,9 @@ const DiscordBannerSetCommand: Command = {
     const requestId = createRequest({
       submitterId: member.id,
       submitterTag: member.user.tag,
-      imageUrl: imageUrl!,
+      imageUrl: imageUrl as string,
       guildId: guild.id,
-      channelId: voteChannelId!,
+      channelId: voteChannelId as string,
     });
 
     const expiresAt = Math.floor((Date.now() + TTL_MS) / 1000);
@@ -154,7 +155,7 @@ const DiscordBannerSetCommand: Command = {
           `A **different Terminator** must approve this request.\n` +
           `Expires: <t:${expiresAt}:R>`,
       )
-      .setImage(imageUrl!)
+      .setImage(imageUrl as string)
       .setColor(0xfee75c)
       .addFields(
         {
@@ -229,14 +230,30 @@ const DiscordBannerSetCommand: Command = {
     if (!isApproval) {
       removeRequest(requestId);
 
-      const rejectedEmbed = EmbedBuilder.from(interaction.message.embeds[0])
+      const originalEmbed = interaction.message.embeds[0];
+      if (!originalEmbed) {
+        await interaction.reply({
+          content:
+            "❌ Could not process this request — the original embed is missing.",
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
+
+      const embedFields = originalEmbed.fields;
+      const statusIndex = embedFields.findIndex((f) => f.name === "Status");
+
+      const rejectedEmbed = EmbedBuilder.from(originalEmbed)
         .setColor(0xed4245)
-        .setTitle("❌ Banner Change Rejected")
-        .spliceFields(1, 1, {
+        .setTitle("❌ Banner Change Rejected");
+
+      if (statusIndex !== -1) {
+        rejectedEmbed.spliceFields(statusIndex, 1, {
           name: "Status",
           value: `❌ Rejected by ${clicker}`,
           inline: true,
         });
+      }
 
       const disabledRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
         new ButtonBuilder()
@@ -269,22 +286,39 @@ const DiscordBannerSetCommand: Command = {
       return;
     }
 
+    const originalEmbed = interaction.message.embeds[0];
+    if (!originalEmbed) {
+      await interaction.reply({
+        content:
+          "❌ Could not process this request — the original embed is missing.",
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+
     await interaction.deferUpdate();
 
     try {
-      const guild = interaction.guild!;
+      const guild = interaction.guild;
+      if (!guild) return;
       await guild.setBanner(request.imageUrl);
 
       removeRequest(requestId);
 
-      const approvedEmbed = EmbedBuilder.from(interaction.message.embeds[0])
+      const embedFields = originalEmbed.fields;
+      const statusIndex = embedFields.findIndex((f) => f.name === "Status");
+
+      const approvedEmbed = EmbedBuilder.from(originalEmbed)
         .setColor(0x57f287)
-        .setTitle("✅ Banner Change Approved")
-        .spliceFields(1, 1, {
+        .setTitle("✅ Banner Change Approved");
+
+      if (statusIndex !== -1) {
+        approvedEmbed.spliceFields(statusIndex, 1, {
           name: "Status",
           value: `✅ Approved by ${clicker}`,
           inline: true,
         });
+      }
 
       const disabledRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
         new ButtonBuilder()
