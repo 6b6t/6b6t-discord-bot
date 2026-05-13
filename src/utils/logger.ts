@@ -24,7 +24,7 @@ export async function logBannerChange(
 
   try {
     const channel = await client.channels.fetch(logChannelId);
-    if (!channel || !channel.isTextBased() || !("send" in channel)) {
+    if (!channel?.isTextBased() || !("send" in channel)) {
       console.warn(
         `[Logger] Channel ${logChannelId} not found or not text-based.`,
       );
@@ -94,7 +94,7 @@ export async function logBanAction(
 
   try {
     const channel = await client.channels.fetch(logChannelId);
-    if (!channel || !channel.isTextBased() || !("send" in channel)) {
+    if (!channel?.isTextBased() || !("send" in channel)) {
       console.warn(
         `[Logger] Channel ${logChannelId} not found or not text-based.`,
       );

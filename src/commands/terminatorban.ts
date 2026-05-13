@@ -187,11 +187,7 @@ const TerminatorBanCommand: Command = {
       ? await interaction.client.channels.fetch(voteChannelId).catch(() => null)
       : null;
 
-    if (
-      !voteChannel ||
-      !voteChannel.isTextBased() ||
-      !("send" in voteChannel)
-    ) {
+    if (!voteChannel?.isTextBased() || !("send" in voteChannel)) {
       await interaction.reply({
         content:
           "❌ Vote channel is not configured or not found. Please set `VOTE_CHANNEL_ID` in `.env`.",
