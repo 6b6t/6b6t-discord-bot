@@ -33,5 +33,5 @@
       "biome check --write --unsafe --no-errors-on-unmatched --files-ignore-unknown=true"
     ]
   },
-  "packageManager": "pnpm@11.1.2"
+  "packageManager": "pnpm@11.2.2"
 }
