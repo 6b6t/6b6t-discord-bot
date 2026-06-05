@@ -19,6 +19,7 @@ import {
   setBanMessageId,
 } from "../utils/pendingBans";
 import {
+  CONFIRMER_ROLE_ID,
   hasAdministratorPermission,
   hasAuthorizedRole,
   isTerminator,
@@ -258,6 +259,13 @@ const TerminatorBanCommand: Command = {
     );
 
     const voteMessage = await voteChannel.send({
+      content: `<@&${CONFIRMER_ROLE_ID}> a ban vote needs approval.`,
+      allowedMentions: {
+        parse: [],
+        roles: [CONFIRMER_ROLE_ID],
+        users: [],
+        repliedUser: false,
+      },
       embeds: [confirmEmbed],
       components: [row],
     });
