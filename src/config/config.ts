@@ -9,6 +9,9 @@ const config = {
   youtubeId: "1353453116007252050",
   commandAdminRoleId: "917520262939938915",
   statusHost: "play.6b6t.org",
+  mediaChannelNames: ["screenshots", "memes", "hytale-screenshots"],
+  mediaChannelMessage:
+    "To talk in this channel, please link your 6b6t Minecraft account by joining `play.6b6t.org` (anarchy server) and running the command `/link.`",
   reviewId: "1413604129707917372",
   reviewIgnoreRoleIds: ["917520262939938915", "1268946626387378189"],
   roleMenuId: "1418899432790954058",

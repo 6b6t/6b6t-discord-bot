@@ -144,6 +144,11 @@ async function handleButtonInteraction(
     customId.startsWith("ban_reject_")
   ) {
     commandName = "terminatorban";
+  } else if (
+    customId.startsWith("mediafreq_approve_") ||
+    customId.startsWith("mediafreq_reject_")
+  ) {
+    commandName = "mediachannelsfreq";
   }
 
   if (!commandName) return;

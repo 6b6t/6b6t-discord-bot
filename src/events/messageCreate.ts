@@ -7,6 +7,12 @@ import {
 } from "discord.js";
 import config from "../config/config";
 import { deleteLatestMessage } from "../utils/helpers";
+import {
+  deleteLatestMediaChannelReminder,
+  getMediaChannelFrequency,
+  isMediaChannel,
+  shouldSendMediaChannelReminder,
+} from "../utils/mediaChannels";
 
 async function handleChannel(
   client: Client,
@@ -29,6 +35,34 @@ async function handleChannel(
     });
   } catch (error) {
     console.error(`Could not send message in channel (${channelId}): `, error);
+  }
+}
+
+async function handleMediaChannel(
+  client: Client,
+  channel: TextChannel,
+  message: Message,
+) {
+  if (channel.type !== ChannelType.GuildText) return;
+  if (!isMediaChannel(channel)) return;
+  if (message.author.bot) return;
+
+  const frequency = await getMediaChannelFrequency();
+  if (!shouldSendMediaChannelReminder(channel.id, frequency)) return;
+
+  await deleteLatestMediaChannelReminder(client, channel);
+
+  try {
+    await channel.send({
+      content: config.mediaChannelMessage,
+      allowedMentions: { users: [], roles: [], repliedUser: false },
+      flags: [MessageFlags.SuppressNotifications],
+    });
+  } catch (error) {
+    console.error(
+      `Could not send media channel reminder in channel (${channel.id}): `,
+      error,
+    );
   }
 }
 
@@ -64,4 +98,5 @@ export const onMessageCreate = async (client: Client, message: Message) => {
     config.merchId,
     config.merchMessage,
   );
+  await handleMediaChannel(client, message.channel, message);
 };
