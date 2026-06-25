@@ -5,6 +5,11 @@ import {
 } from "discord.js";
 import config from "../config/config";
 import type { CommandManager } from "../utils/commandManager";
+import {
+  handleMotdReviewButton,
+  handleMotdReviewModal,
+  isMotdReviewInteraction,
+} from "../utils/motdReview";
 
 async function handleCommand(
   commandManager: CommandManager,
@@ -132,6 +137,26 @@ async function handleButtonInteraction(
   if (!interaction.isButton()) return;
 
   const customId = interaction.customId;
+  if (isMotdReviewInteraction(customId)) {
+    try {
+      await handleMotdReviewButton(interaction);
+    } catch (error) {
+      console.error("[Button Error] motd review:", error);
+      if (interaction.replied || interaction.deferred) {
+        await interaction.followUp({
+          content: "An error occurred while processing this MOTD action.",
+          flags: MessageFlags.Ephemeral,
+        });
+      } else {
+        await interaction.reply({
+          content: "An error occurred while processing this MOTD action.",
+          flags: MessageFlags.Ephemeral,
+        });
+      }
+    }
+    return;
+  }
+
   let commandName: string | null = null;
 
   if (
@@ -174,6 +199,28 @@ async function handleButtonInteraction(
   }
 }
 
+async function handleModalInteraction(interaction: Interaction) {
+  if (!interaction.isModalSubmit()) return;
+  if (!isMotdReviewInteraction(interaction.customId)) return;
+
+  try {
+    await handleMotdReviewModal(interaction);
+  } catch (error) {
+    console.error("[Modal Error] motd review:", error);
+    if (interaction.replied || interaction.deferred) {
+      await interaction.followUp({
+        content: "An error occurred while processing this MOTD action.",
+        flags: MessageFlags.Ephemeral,
+      });
+    } else {
+      await interaction.reply({
+        content: "An error occurred while processing this MOTD action.",
+        flags: MessageFlags.Ephemeral,
+      });
+    }
+  }
+}
+
 export const onInteractionCreate = async (
   commandManager: CommandManager,
   interaction: Interaction,
@@ -181,4 +228,5 @@ export const onInteractionCreate = async (
   await handleCommand(commandManager, interaction);
   await handleRoleMenu(interaction);
   await handleButtonInteraction(commandManager, interaction);
+  await handleModalInteraction(interaction);
 };
