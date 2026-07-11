@@ -6,7 +6,12 @@ import {
   type UserInfo,
   type UserLinkAndInfo,
 } from "../utils/helpers";
+import { mapWithConcurrency } from "../utils/map-with-concurrency";
 import { buildRoleSyncPlan } from "./role-sync-plan";
+
+const USER_INFO_CONCURRENCY = 8;
+const USER_INFO_CACHE_TTL_MS = 5 * 60_000;
+const userInfoCache = new Map<string, { value: UserInfo; expiresAt: number }>();
 
 const roles: Record<
   string,
@@ -220,32 +225,69 @@ export const sync = async (client: Client) => {
   );
 
   linkLog("CollectInfo", "Collecting user info");
-  const userLinksAndInfos: UserLinkAndInfo[] = (
-    await Promise.all(
-      linkedUsers.map(async (linkedUser) => {
-        try {
-          const userInfo = await collectUserInfo(linkedUser.minecraftUuid);
-          if (userInfo === null) {
-            linkLog(
-              "CollectInfo",
-              `Skipping ${linkedUser.discordId}: unable to resolve Minecraft data`,
-            );
-            return null;
-          }
+  const collectionResults = await mapWithConcurrency(
+    linkedUsers,
+    USER_INFO_CONCURRENCY,
+    async (linkedUser) => {
+      const cached = userInfoCache.get(linkedUser.minecraftUuid);
+      if (cached && cached.expiresAt > Date.now()) {
+        return {
+          status: "resolved" as const,
+          user: { ...linkedUser, ...cached.value } satisfies UserLinkAndInfo,
+        };
+      }
 
-          return { ...linkedUser, ...userInfo } satisfies UserLinkAndInfo;
-        } catch (error) {
-          console.error(
-            `[LinkedRoles][CollectInfo] Failed to resolve ${linkedUser.discordId}:`,
-            error,
-          );
-          return null;
+      if (cached) {
+        userInfoCache.delete(linkedUser.minecraftUuid);
+      }
+
+      try {
+        const userInfo = await collectUserInfo(linkedUser.minecraftUuid);
+        if (userInfo === null) {
+          return { status: "unresolved" as const, linkedUser };
         }
-      }),
-    )
-  ).filter((user) => user !== null);
 
-  linkLog("CollectInfo", `Resolved ${userLinksAndInfos.length} player records`);
+        userInfoCache.set(linkedUser.minecraftUuid, {
+          value: userInfo,
+          expiresAt: Date.now() + USER_INFO_CACHE_TTL_MS,
+        });
+        return {
+          status: "resolved" as const,
+          user: { ...linkedUser, ...userInfo } satisfies UserLinkAndInfo,
+        };
+      } catch (error) {
+        return { status: "failed" as const, linkedUser, error };
+      }
+    },
+  );
+
+  const userLinksAndInfos = collectionResults.flatMap((result) =>
+    result.status === "resolved" ? [result.user] : [],
+  );
+  const unresolvedCount = collectionResults.filter(
+    (result) => result.status === "unresolved",
+  ).length;
+  const failedResults = collectionResults.filter(
+    (result) => result.status === "failed",
+  );
+
+  for (const result of failedResults.slice(0, 5)) {
+    console.error(
+      `[LinkedRoles][CollectInfo] Failed to resolve ${result.linkedUser.discordId}:`,
+      result.error,
+    );
+  }
+  if (failedResults.length > 5) {
+    linkLog(
+      "CollectInfo",
+      `Suppressed ${failedResults.length - 5} additional lookup errors`,
+    );
+  }
+
+  linkLog(
+    "CollectInfo",
+    `Resolved=${userLinksAndInfos.length}, unresolved=${unresolvedCount}, failed=${failedResults.length}, concurrency=${USER_INFO_CONCURRENCY}`,
+  );
 
   const resolvedUserIds = new Set(
     userLinksAndInfos.map((user) => user.discordId),

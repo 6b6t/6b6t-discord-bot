@@ -5,6 +5,27 @@ import { getStatsPool } from "./mysql-client";
 
 const SERVER_API = "https://www.6b6t.org/api";
 const RANK_LOOKUP_TIMEOUT_MS = 10_000;
+const RANK_LOOKUP_MAX_ATTEMPTS = 2;
+const RANK_CIRCUIT_FAILURE_THRESHOLD = 5;
+const RANK_CIRCUIT_COOLDOWN_MS = 60_000;
+let consecutiveRankServiceFailures = 0;
+let rankCircuitOpenUntil = 0;
+
+function isTransientRankStatus(status: number) {
+  return status === 429 || status >= 500;
+}
+
+function registerRankServiceFailure() {
+  consecutiveRankServiceFailures++;
+  if (consecutiveRankServiceFailures >= RANK_CIRCUIT_FAILURE_THRESHOLD) {
+    rankCircuitOpenUntil = Date.now() + RANK_CIRCUIT_COOLDOWN_MS;
+  }
+}
+
+function registerRankServiceSuccess() {
+  consecutiveRankServiceFailures = 0;
+  rankCircuitOpenUntil = 0;
+}
 
 export type UserInfo = {
   topRank: string;
@@ -120,19 +141,50 @@ export async function getTopRank(username: string): Promise<string | null> {
     throw new Error("Rank command service is not configured");
   }
 
-  const rankResponse = await fetch(`${baseUrl}/get-ranks`, {
-    method: "POST",
-    body: JSON.stringify({ username }),
-    headers: {
-      Accept: "application/json",
-      "Content-Type": "application/json",
-      Authorization: accessToken,
-    },
-    signal: AbortSignal.timeout(RANK_LOOKUP_TIMEOUT_MS),
-  });
-  if (!rankResponse.ok) {
+  if (rankCircuitOpenUntil > Date.now()) {
+    throw new Error("Rank command service circuit breaker is open");
+  }
+
+  let rankResponse: Response | null = null;
+  for (let attempt = 1; attempt <= RANK_LOOKUP_MAX_ATTEMPTS; attempt++) {
+    try {
+      rankResponse = await fetch(`${baseUrl}/get-ranks`, {
+        method: "POST",
+        body: JSON.stringify({ username }),
+        headers: {
+          Accept: "application/json",
+          "Content-Type": "application/json",
+          Authorization: accessToken,
+        },
+        signal: AbortSignal.timeout(RANK_LOOKUP_TIMEOUT_MS),
+      });
+
+      if (rankResponse.ok) {
+        registerRankServiceSuccess();
+        break;
+      }
+
+      if (!isTransientRankStatus(rankResponse.status)) {
+        throw new Error(
+          `Rank command service returned HTTP ${rankResponse.status}`,
+        );
+      }
+    } catch (error) {
+      if (attempt === RANK_LOOKUP_MAX_ATTEMPTS) {
+        registerRankServiceFailure();
+        throw error;
+      }
+    }
+
+    if (attempt < RANK_LOOKUP_MAX_ATTEMPTS) {
+      await new Promise((resolve) => setTimeout(resolve, 250 * attempt));
+    }
+  }
+
+  if (!rankResponse?.ok) {
+    registerRankServiceFailure();
     throw new Error(
-      `Rank command service returned HTTP ${rankResponse.status}`,
+      `Rank command service returned HTTP ${rankResponse?.status ?? "unknown"}`,
     );
   }
 
