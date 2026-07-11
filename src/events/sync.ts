@@ -6,6 +6,7 @@ import {
   type UserInfo,
   type UserLinkAndInfo,
 } from "../utils/helpers";
+import { buildRoleSyncPlan } from "./role-sync-plan";
 
 const roles: Record<
   string,
@@ -14,10 +15,6 @@ const roles: Record<
     predicate: (check: UserInfo) => boolean;
   }
 > = {
-  linked: {
-    id: "1325507259307921428",
-    predicate: () => true,
-  },
   prime: {
     id: "1268337190144835718",
     predicate: (info) => info.topRank === "prime",
@@ -64,6 +61,8 @@ const roles: Record<
   },
 };
 
+const LINKED_ROLE_ID = "1325507259307921428";
+
 export const sync = async (client: Client) => {
   const linkLog = (step: string, message: string) =>
     console.log(`[LinkedRoles][${step}] ${message}`);
@@ -72,29 +71,7 @@ export const sync = async (client: Client) => {
   const linkedUsers = await getAllLinkedUsers();
   linkLog("Bootstrap", `Fetched ${linkedUsers.length} linked users`);
 
-  linkLog("CollectInfo", "Collecting user info");
-  const userLinksAndInfos: UserLinkAndInfo[] = (
-    await Promise.all(
-      linkedUsers.map(async (linkedUser) => {
-        const userInfo = await collectUserInfo(linkedUser.minecraftUuid);
-        if (userInfo === null) {
-          linkLog(
-            "CollectInfo",
-            `Skipping ${linkedUser.discordId}: unable to resolve Minecraft data`,
-          );
-          return null;
-        }
-
-        const result: UserLinkAndInfo = {
-          ...linkedUser,
-          ...userInfo,
-        };
-        return result;
-      }),
-    )
-  ).filter((user) => user !== null);
-
-  linkLog("CollectInfo", `Resolved ${userLinksAndInfos.length} player records`);
+  const linkedUserIds = new Set(linkedUsers.map((user) => user.discordId));
 
   linkLog("Guild", "Fetching guild info");
   const guild = await client.guilds.fetch(config.guildId);
@@ -141,70 +118,150 @@ export const sync = async (client: Client) => {
     `Bypassing ${bypassMembers.size} manually managed member(s)`,
   );
 
-  linkLog("Assign", "Assigning guild roles");
-  for (const [key, { id, predicate }] of Object.entries(roles)) {
+  const syncRole = async (
+    key: string,
+    id: Snowflake,
+    allowedUserIds: string[],
+    shouldRemove: (memberId: string) => boolean,
+  ) => {
     linkLog(key, `Preparing role ${id}`);
     const role = await guild.roles.fetch(id);
     if (!role) {
       linkLog(key, "Role not found, skipping");
-      continue;
+      return;
     }
 
-    const allowedUserIds = userLinksAndInfos
-      .filter((user) => predicate(user))
-      .map((user) => user.discordId)
-      .filter((id) => !bypassMembers.has(id));
-    const membersInRole = role.members
-      .map((member) => member.id)
-      .filter((id) => !bypassMembers.has(id));
-    const membersToAdd = allowedUserIds.filter(
-      (user) => !membersInRole.includes(user),
+    if (!role.editable) {
+      console.error(
+        `[LinkedRoles][${key}] Role ${id} is not editable. Move the bot role above it and grant Manage Roles.`,
+      );
+      return;
+    }
+
+    const removableMemberIds = new Set(
+      role.members
+        .map((member) => member.id)
+        .filter((memberId) => shouldRemove(memberId)),
     );
-    const membersToRemove = membersInRole.filter(
-      (member) => !allowedUserIds.includes(member),
-    );
+    const plan = buildRoleSyncPlan({
+      allowedUserIds,
+      currentMemberIds: role.members.map((member) => member.id),
+      bypassMemberIds: bypassMembers,
+      removableMemberIds,
+    });
+    const { add: membersToAdd, remove: membersToRemove } = plan;
 
     linkLog(
       key,
-      `Allowed=${allowedUserIds.length}, current=${membersInRole.length}, add=${membersToAdd.length}, remove=${membersToRemove.length}`,
+      `Allowed=${plan.allowed.size}, current=${role.members.size}, add=${membersToAdd.length}, remove=${membersToRemove.length}`,
     );
 
-    let addTriedCount = 0;
-    let addMissingCount = 0;
     let addSuccessCount = 0;
+    let addMissingCount = 0;
+    let addFailureCount = 0;
     for (const memberId of membersToAdd) {
-      addTriedCount++;
       const member = guild.members.cache.get(memberId);
       if (!member) {
         addMissingCount++;
         continue;
       }
-      addSuccessCount++;
-      await member.roles.add(role);
+
+      try {
+        await member.roles.add(role, `6b6t ${key} role sync`);
+        addSuccessCount++;
+      } catch (error) {
+        addFailureCount++;
+        console.error(
+          `[LinkedRoles][${key}] Failed to add role ${id} to ${memberId}:`,
+          error,
+        );
+      }
     }
 
     linkLog(
       key,
-      `Add summary: tried=${addTriedCount}, succeeded=${addSuccessCount}, missing=${addMissingCount}`,
+      `Add summary: tried=${membersToAdd.length}, succeeded=${addSuccessCount}, missing=${addMissingCount}, failed=${addFailureCount}`,
     );
 
-    let removeTriedCount = 0;
-    let removeMissingCount = 0;
     let removeSuccessCount = 0;
+    let removeMissingCount = 0;
+    let removeFailureCount = 0;
     for (const memberId of membersToRemove) {
-      removeTriedCount++;
       const member = guild.members.cache.get(memberId);
       if (!member) {
         removeMissingCount++;
         continue;
       }
-      removeSuccessCount++;
-      await member.roles.remove(role);
+
+      try {
+        await member.roles.remove(role, `6b6t ${key} role sync`);
+        removeSuccessCount++;
+      } catch (error) {
+        removeFailureCount++;
+        console.error(
+          `[LinkedRoles][${key}] Failed to remove role ${id} from ${memberId}:`,
+          error,
+        );
+      }
     }
 
     linkLog(
       key,
-      `Remove summary: tried=${removeTriedCount}, succeeded=${removeSuccessCount}, missing=${removeMissingCount}`,
+      `Remove summary: tried=${membersToRemove.length}, succeeded=${removeSuccessCount}, missing=${removeMissingCount}, failed=${removeFailureCount}`,
+    );
+  };
+
+  linkLog("Assign", "Assigning guild roles");
+  await syncRole(
+    "linked",
+    LINKED_ROLE_ID,
+    [...linkedUserIds],
+    (memberId) => !linkedUserIds.has(memberId),
+  );
+
+  linkLog("CollectInfo", "Collecting user info");
+  const userLinksAndInfos: UserLinkAndInfo[] = (
+    await Promise.all(
+      linkedUsers.map(async (linkedUser) => {
+        try {
+          const userInfo = await collectUserInfo(linkedUser.minecraftUuid);
+          if (userInfo === null) {
+            linkLog(
+              "CollectInfo",
+              `Skipping ${linkedUser.discordId}: unable to resolve Minecraft data`,
+            );
+            return null;
+          }
+
+          return { ...linkedUser, ...userInfo } satisfies UserLinkAndInfo;
+        } catch (error) {
+          console.error(
+            `[LinkedRoles][CollectInfo] Failed to resolve ${linkedUser.discordId}:`,
+            error,
+          );
+          return null;
+        }
+      }),
+    )
+  ).filter((user) => user !== null);
+
+  linkLog("CollectInfo", `Resolved ${userLinksAndInfos.length} player records`);
+
+  const resolvedUserIds = new Set(
+    userLinksAndInfos.map((user) => user.discordId),
+  );
+
+  for (const [key, { id, predicate }] of Object.entries(roles)) {
+    const allowedUserIds = userLinksAndInfos
+      .filter((user) => predicate(user))
+      .map((user) => user.discordId);
+
+    await syncRole(
+      key,
+      id,
+      allowedUserIds,
+      (memberId) =>
+        !linkedUserIds.has(memberId) || resolvedUserIds.has(memberId),
     );
   }
 

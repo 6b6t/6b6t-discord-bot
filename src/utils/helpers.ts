@@ -4,6 +4,7 @@ import { getAllUuidDiscordMappings } from "./link/storage";
 import { getStatsPool } from "./mysql-client";
 
 const SERVER_API = "https://www.6b6t.org/api";
+const RANK_LOOKUP_TIMEOUT_MS = 10_000;
 
 export type UserInfo = {
   topRank: string;
@@ -113,20 +114,29 @@ export async function findPlayerInfoByUuid(
 }
 
 export async function getTopRank(username: string): Promise<string | null> {
-  const response = await (
-    await fetch(
-      `${process.env.HTTP_SLAVE1_COMMAND_SERVICE_BASE_URL}/get-ranks`,
-      {
-        method: "POST",
-        body: JSON.stringify({ username }),
-        headers: {
-          Accept: "application/json",
-          "Content-Type": "application/json",
-          Authorization: `${process.env.HTTP_SLAVE1_COMMAND_SERVICE_ACCESS_TOKEN}`,
-        },
-      },
-    )
-  ).json();
+  const baseUrl = process.env.HTTP_SLAVE1_COMMAND_SERVICE_BASE_URL;
+  const accessToken = process.env.HTTP_SLAVE1_COMMAND_SERVICE_ACCESS_TOKEN;
+  if (!baseUrl || !accessToken) {
+    throw new Error("Rank command service is not configured");
+  }
+
+  const rankResponse = await fetch(`${baseUrl}/get-ranks`, {
+    method: "POST",
+    body: JSON.stringify({ username }),
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+      Authorization: accessToken,
+    },
+    signal: AbortSignal.timeout(RANK_LOOKUP_TIMEOUT_MS),
+  });
+  if (!rankResponse.ok) {
+    throw new Error(
+      `Rank command service returned HTTP ${rankResponse.status}`,
+    );
+  }
+
+  const response = await rankResponse.json();
   if (response.success !== true) {
     throw new Error(response.error);
   } else if (response["user-not-found"] === true) {
