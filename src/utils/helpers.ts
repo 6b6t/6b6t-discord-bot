@@ -135,8 +135,12 @@ export async function findPlayerInfoByUuid(
 }
 
 export async function getTopRank(username: string): Promise<string | null> {
-  const baseUrl = process.env.HTTP_SLAVE1_COMMAND_SERVICE_BASE_URL;
-  const accessToken = process.env.HTTP_SLAVE1_COMMAND_SERVICE_ACCESS_TOKEN;
+  const baseUrl =
+    process.env.HTTP_SLAVE1_COMMAND_SERVICE_BASE_URL ??
+    process.env.HTTP_PROXY_COMMAND_SERVICE_BASE_URL;
+  const accessToken =
+    process.env.HTTP_SLAVE1_COMMAND_SERVICE_ACCESS_TOKEN ??
+    process.env.HTTP_PROXY_COMMAND_SERVICE_ACCESS_TOKEN;
   if (!baseUrl || !accessToken) {
     throw new Error("Rank command service is not configured");
   }
