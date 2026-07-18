@@ -1,3 +1,4 @@
+import "dotenv/config";
 import {
   Client,
   GatewayIntentBits,
@@ -13,31 +14,45 @@ import {
   type User,
 } from "discord.js";
 import config from "./config/config";
-import { onReady } from "./events/ready";
-import { CommandManager } from "./utils/commandManager";
-import "dotenv/config";
 import { onInteractionCreate } from "./events/interactionCreate";
 import { onMessageCreate } from "./events/messageCreate";
 import { onMessageReactionAdd } from "./events/messageReactionAdd";
 import { onMessageReactionRemove } from "./events/messageReactionRemove";
 import { onMessageUpdate } from "./events/messageUpdate";
+import { onReady } from "./events/ready";
+import { CommandManager } from "./utils/commandManager";
 import { closeAllMysqlPools } from "./utils/mysql-pool";
+import { telegramCrosspostService } from "./utils/telegram-crosspost/service";
+
+const gatewayIntents = [
+  GatewayIntentBits.Guilds,
+  GatewayIntentBits.GuildMembers,
+  GatewayIntentBits.GuildMessages,
+  GatewayIntentBits.GuildMessageReactions,
+];
+if (process.env.TELEGRAM_CROSSPOST_ROUTES?.trim()) {
+  gatewayIntents.push(GatewayIntentBits.MessageContent);
+}
 
 const client = new Client({
   allowedMentions: {
     // Prevent @everyone pings
     parse: ["users", "roles"],
   },
-  intents: [
-    GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMembers,
-    GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.GuildMessageReactions,
-  ],
+  intents: gatewayIntents,
   partials: [Partials.Message, Partials.Channel, Partials.Reaction],
 });
 
 const commandManager = new CommandManager();
+
+async function runEventHandlers(label: string, handlers: Promise<unknown>[]) {
+  const results = await Promise.allSettled(handlers);
+  for (const result of results) {
+    if (result.status === "rejected") {
+      console.error(`[${label}] Handler failed:`, result.reason);
+    }
+  }
+}
 
 async function initializeBot() {
   try {
@@ -71,23 +86,38 @@ async function initializeBot() {
   }
 }
 
-client.once("clientReady", onReady);
-client.on(
-  "messageCreate",
-  async (message: Message) => await onMessageCreate(client, message),
-);
+client.once("clientReady", async (readyClient) => {
+  await runEventHandlers("Ready", [
+    onReady(readyClient),
+    telegramCrosspostService.onReady(readyClient),
+  ]);
+});
+client.on("messageCreate", async (message: Message) => {
+  await runEventHandlers("MessageCreate", [
+    onMessageCreate(client, message),
+    telegramCrosspostService.onMessageCreate(message),
+  ]);
+});
 client.on(
   "messageUpdate",
   async (
     oldMessage: Message | PartialMessage,
     newMessage: Message | PartialMessage,
-  ) => await onMessageUpdate(client, oldMessage, newMessage),
+  ) => {
+    await runEventHandlers("MessageUpdate", [
+      onMessageUpdate(client, oldMessage, newMessage),
+      telegramCrosspostService.onMessageUpdate(newMessage),
+    ]);
+  },
 );
 client.on(
   "interactionCreate",
   async (interaction: Interaction) =>
     await onInteractionCreate(commandManager, interaction),
 );
+client.on("messageDelete", async (message: Message | PartialMessage) => {
+  await telegramCrosspostService.onMessageDelete(message);
+});
 client.on(
   "messageReactionAdd",
   async (
@@ -107,6 +137,9 @@ async function gracefulShutdown() {
   console.log("Shutting down gracefully...");
 
   try {
+    console.log("Waiting for Telegram crosspost jobs...");
+    await telegramCrosspostService.shutdown();
+
     if (client.isReady()) {
       console.log("Logging out of Discord...");
       await client.destroy();

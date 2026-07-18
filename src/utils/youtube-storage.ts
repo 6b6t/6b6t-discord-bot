@@ -1,5 +1,5 @@
-import { readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 
 const STORAGE_PATH = join(join(process.cwd(), "data"), "youtube-posted.json");
 
@@ -13,6 +13,7 @@ async function getPostedVideoIds(): Promise<string[]> {
 }
 
 async function savePostedVideoIds(videoIds: string[]): Promise<void> {
+  await mkdir(dirname(STORAGE_PATH), { recursive: true });
   await writeFile(STORAGE_PATH, JSON.stringify(videoIds, null, 2));
 }
 
