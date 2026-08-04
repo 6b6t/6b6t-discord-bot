@@ -174,6 +174,11 @@ async function handleButtonInteraction(
     customId.startsWith("mediafreq_reject_")
   ) {
     commandName = "mediachannelsfreq";
+  } else if (
+    customId.startsWith("mini_approve_") ||
+    customId.startsWith("mini_reject_")
+  ) {
+    commandName = "miniterminator";
   }
 
   if (!commandName) return;

@@ -8,6 +8,7 @@ const config = {
   generalId: "982192297645056040",
   youtubeId: "1353453116007252050",
   commandAdminRoleId: "917520262939938915",
+  miniterminatorRoleId: "1533970494284365854",
   statusHost: "play.6b6t.org",
   mediaChannelNames: ["screenshots", "memes", "hytale-screenshots"],
   mediaChannelMessage:
