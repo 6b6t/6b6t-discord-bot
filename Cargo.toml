@@ -16,7 +16,8 @@ google-youtube3 = { version = "7.0.0", default-features = false, features = ["ri
 html-escape = "0.2.13"
 poise = "0.6.2"
 regex = "1.12.2"
-reqwest = { version = "0.13.4", default-features = false, features = ["brotli", "gzip", "http2", "json", "query", "rustls-no-provider"] }
+reqwest = { version = "0.13.4", default-features = false, features = ["brotli", "gzip", "http2", "json", "query", "rustls"] }
+rustls = { version = "0.23.43", default-features = false, features = ["ring"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 sha2 = "0.10.9"

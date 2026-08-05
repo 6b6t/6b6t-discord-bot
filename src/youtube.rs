@@ -186,11 +186,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn client_initializes_with_selected_crypto_provider() {
-        YoutubeService::new(None).expect("the YouTube client should initialize");
-    }
-
-    #[test]
     fn selection_skips_posted_and_ignored_results() {
         let posted = HashSet::from(["posted".to_owned()]);
         let selected = find_video(

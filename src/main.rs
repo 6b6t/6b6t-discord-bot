@@ -17,6 +17,7 @@ use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    install_crypto_provider()?;
     dotenvy::dotenv().ok();
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -30,4 +31,27 @@ async fn main() -> Result<()> {
         .await
         .context("failed to initialize bot services")?;
     runtime::start(state).await
+}
+
+fn install_crypto_provider() -> Result<()> {
+    if rustls::crypto::CryptoProvider::get_default().is_some() {
+        return Ok(());
+    }
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .map_err(|_| anyhow!("failed to install the Rustls Ring crypto provider"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn http_clients_initialize_after_crypto_provider_installation() {
+        install_crypto_provider().expect("the crypto provider should install");
+        reqwest::Client::builder()
+            .build()
+            .expect("the shared HTTP client should initialize");
+        crate::youtube::YoutubeService::new(None).expect("the YouTube client should initialize");
+    }
 }
