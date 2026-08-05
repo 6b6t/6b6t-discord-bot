@@ -726,7 +726,7 @@ fn payload_hash(payload: &Payload) -> String {
         hasher.update(stable_url(&attachment.url).as_bytes());
         hasher.update([0]);
     }
-    format!("{:x}", hasher.finalize())
+    hex::encode(hasher.finalize())
 }
 
 fn stable_url(value: &str) -> String {
