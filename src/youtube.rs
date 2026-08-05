@@ -1,9 +1,20 @@
 use std::{collections::HashSet, path::PathBuf, sync::Arc};
 
 use anyhow::{Context as _, Result};
+use google_youtube3::{
+    YouTube,
+    api::SearchResult,
+    common::NoToken,
+    hyper_rustls::{HttpsConnector, HttpsConnectorBuilder},
+    hyper_util::{
+        client::legacy::{Client, connect::HttpConnector},
+        rt::TokioExecutor,
+    },
+};
 use poise::serenity_prelude as serenity;
-use serde::Deserialize;
 use tokio::sync::Mutex;
+
+type YoutubeHub = YouTube<HttpsConnector<HttpConnector>>;
 
 const QUERIES: &[&str] = &["6b6t.org", "6b6t"];
 const WHITELISTED_CHANNELS: &[&str] = &[
@@ -37,30 +48,14 @@ const IGNORE_WORDS: &[&str] = &[
 
 #[derive(Clone)]
 pub struct YoutubeService {
-    http: reqwest::Client,
+    hub: Arc<YoutubeHub>,
     api_key: Option<String>,
     posted: Arc<Mutex<Option<HashSet<String>>>>,
     path: PathBuf,
 }
 
-#[derive(Deserialize)]
-struct SearchResponse {
-    #[serde(default)]
-    items: Vec<SearchItem>,
-}
-#[derive(Deserialize)]
-struct SearchItem {
-    id: SearchId,
-    snippet: SearchSnippet,
-}
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct SearchId {
-    video_id: Option<String>,
-}
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct SearchSnippet {
+struct YoutubeVideo {
+    id: String,
     title: String,
     description: String,
     channel_title: String,
@@ -68,13 +63,20 @@ struct SearchSnippet {
 }
 
 impl YoutubeService {
-    pub fn new(http: reqwest::Client, api_key: Option<String>) -> Self {
-        Self {
-            http,
+    pub fn new(api_key: Option<String>) -> Result<Self> {
+        let connector = HttpsConnectorBuilder::new()
+            .with_native_roots()
+            .context("failed to load native root certificates for YouTube")?
+            .https_only()
+            .enable_http2()
+            .build();
+        let client = Client::builder(TokioExecutor::new()).build(connector);
+        Ok(Self {
+            hub: Arc::new(YouTube::new(client, NoToken)),
             api_key,
             posted: Arc::new(Mutex::new(None)),
             path: PathBuf::from("data/youtube-posted.json"),
-        }
+        })
     }
 
     pub async fn notify(
@@ -85,61 +87,34 @@ impl YoutubeService {
         let Some(api_key) = &self.api_key else {
             return Ok(());
         };
-        let response = self
-            .http
-            .get("https://www.googleapis.com/youtube/v3/search")
-            .query(&[
-                ("key", api_key.as_str()),
-                ("part", "snippet"),
-                ("order", "date"),
-                ("maxResults", "5"),
-                ("type", "video"),
-                ("q", "6b6t.org OR 6b6t"),
-            ])
-            .send()
-            .await?
-            .error_for_status()?
-            .json::<SearchResponse>()
-            .await?;
+        let parts = vec!["snippet".to_owned()];
+        let (_, response) = self
+            .hub
+            .search()
+            .list(&parts)
+            .q("6b6t.org OR 6b6t")
+            .order("date")
+            .max_results(5)
+            .add_type("video")
+            .param("key", api_key)
+            .clear_scopes()
+            .doit()
+            .await
+            .context("YouTube search request failed")?;
         let mut posted_guard = self.posted.lock().await;
         if posted_guard.is_none() {
             *posted_guard = Some(load_posted(&self.path).await?);
         }
         let posted = posted_guard.as_mut().expect("posted set was initialized");
-        let video = response.items.into_iter().find(|item| {
-            let Some(id) = &item.id.video_id else {
-                return false;
-            };
-            if posted.contains(id) {
-                return false;
-            }
-            let haystack = format!(
-                "{} {} {}",
-                item.snippet.title, item.snippet.description, item.snippet.channel_title
-            )
-            .to_ascii_lowercase();
-            let has_query = QUERIES
-                .iter()
-                .any(|query| haystack.contains(&query.to_ascii_lowercase()));
-            let ignored = !WHITELISTED_CHANNELS.contains(&item.snippet.channel_id.as_str())
-                && IGNORE_WORDS.iter().any(|word| haystack.contains(word));
-            has_query && !ignored
-        });
+        let video = find_video(response.items.unwrap_or_default(), posted);
         let Some(video) = video else { return Ok(()) };
-        let video_id = video
-            .id
-            .video_id
-            .context("selected YouTube item had no video ID")?;
-        posted.insert(video_id.clone());
+        posted.insert(video.id.clone());
         save_posted(&self.path, posted).await?;
         drop(posted_guard);
-        let title = html_escape::decode_html_entities(&video.snippet.title);
-        let url = format!("https://www.youtube.com/watch?v={video_id}");
+        let title = html_escape::decode_html_entities(&video.title);
+        let url = format!("https://www.youtube.com/watch?v={}", video.id);
         let message = channel_id
-            .say(
-                ctx,
-                format!("**{title}** - {}\n{url}", video.snippet.channel_title),
-            )
+            .say(ctx, format!("**{title}** - {}\n{url}", video.channel_title))
             .await?;
         let http = ctx.http.clone();
         tokio::spawn(async move {
@@ -150,6 +125,38 @@ impl YoutubeService {
         });
         Ok(())
     }
+}
+
+fn find_video(items: Vec<SearchResult>, posted: &HashSet<String>) -> Option<YoutubeVideo> {
+    items
+        .into_iter()
+        .filter_map(|item| {
+            let id = item.id?.video_id?;
+            let snippet = item.snippet?;
+            Some(YoutubeVideo {
+                id,
+                title: snippet.title.unwrap_or_default(),
+                description: snippet.description.unwrap_or_default(),
+                channel_title: snippet.channel_title.unwrap_or_default(),
+                channel_id: snippet.channel_id.unwrap_or_default(),
+            })
+        })
+        .find(|video| {
+            if posted.contains(&video.id) {
+                return false;
+            }
+            let haystack = format!(
+                "{} {} {}",
+                video.title, video.description, video.channel_title
+            )
+            .to_ascii_lowercase();
+            let has_query = QUERIES
+                .iter()
+                .any(|query| haystack.contains(&query.to_ascii_lowercase()));
+            let ignored = !WHITELISTED_CHANNELS.contains(&video.channel_id.as_str())
+                && IGNORE_WORDS.iter().any(|word| haystack.contains(word));
+            has_query && !ignored
+        })
 }
 
 async fn load_posted(path: &PathBuf) -> Result<HashSet<String>> {
@@ -170,4 +177,58 @@ async fn save_posted(path: &PathBuf, posted: &HashSet<String>) -> Result<()> {
     tokio::fs::write(path, serde_json::to_string_pretty(&values)?)
         .await
         .context("failed to save YouTube storage")
+}
+
+#[cfg(test)]
+mod tests {
+    use google_youtube3::api::{ResourceId, SearchResultSnippet};
+
+    use super::*;
+
+    #[test]
+    fn selection_skips_posted_and_ignored_results() {
+        let posted = HashSet::from(["posted".to_owned()]);
+        let selected = find_video(
+            vec![
+                result("posted", "6b6t update", "channel"),
+                result("ignored", "6b6t versus 2b2t", "channel"),
+                result("selected", "6b6t base tour", "channel"),
+            ],
+            &posted,
+        )
+        .expect("an eligible result should be selected");
+
+        assert_eq!(selected.id, "selected");
+    }
+
+    #[test]
+    fn whitelisted_channels_can_use_other_server_names() {
+        let selected = find_video(
+            vec![result(
+                "whitelisted",
+                "6b6t and 2b2t comparison",
+                WHITELISTED_CHANNELS[0],
+            )],
+            &HashSet::new(),
+        )
+        .expect("a whitelisted result should be selected");
+
+        assert_eq!(selected.id, "whitelisted");
+    }
+
+    fn result(id: &str, title: &str, channel_id: &str) -> SearchResult {
+        SearchResult {
+            id: Some(ResourceId {
+                video_id: Some(id.to_owned()),
+                ..Default::default()
+            }),
+            snippet: Some(SearchResultSnippet {
+                title: Some(title.to_owned()),
+                channel_id: Some(channel_id.to_owned()),
+                channel_title: Some("Creator".to_owned()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
 }

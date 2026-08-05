@@ -52,7 +52,7 @@ impl AppState {
 
         Ok(Self {
             server: ServerService::new(http.clone(), Arc::clone(&environment), databases.clone()),
-            youtube: YoutubeService::new(http.clone(), environment.youtube_api_key.clone()),
+            youtube: YoutubeService::new(environment.youtube_api_key.clone())?,
             environment,
             http,
             databases,

@@ -12,6 +12,7 @@ chrono = "0.4.42"
 chrono-tz = "0.10.4"
 dotenvy = "0.15.7"
 futures = "0.3.31"
+google-youtube3 = { version = "7.0.0", default-features = false, features = ["ring"] }
 html-escape = "0.2.13"
 poise = "0.6.2"
 regex = "1.12.2"
