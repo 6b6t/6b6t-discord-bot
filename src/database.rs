@@ -100,12 +100,13 @@ async fn create_database(pool: &MySqlPool, database: &str) -> Result<()> {
     {
         anyhow::bail!("MySQL database names may only contain letters, numbers, and underscores");
     }
-    sqlx::query(&format!(
+    let statement = format!(
         "CREATE DATABASE IF NOT EXISTS `{database}` DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
-    ))
-    .execute(pool)
-    .await
-    .with_context(|| format!("failed to create MySQL database {database}"))?;
+    );
+    sqlx::query(sqlx::AssertSqlSafe(statement))
+        .execute(pool)
+        .await
+        .with_context(|| format!("failed to create MySQL database {database}"))?;
     Ok(())
 }
 
