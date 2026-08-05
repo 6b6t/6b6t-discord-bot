@@ -1,53 +1,107 @@
+# 6b6t Discord Bot
 
-# 6b6t-discord-bot
+The 6b6t Discord bot runs the server's commands, role automation, moderation
+approvals, scheduled messages, YouTube notifications, and Discord-to-Telegram
+crossposting in one Rust process.
 
-Bot for the [6b6t Discord Server](https://discord.6b6t.org)
+The implementation follows the same runtime conventions as Steward: Rust 2024,
+Poise and Serenity for Discord, Tokio for background work, typed configuration,
+and structured tracing.
 
-## Discord Server Features
+## Requirements
 
-- **Minecraft Server Info**: Minecraft server IP and player count in the bots status
-- **Reaction Role** - Role selection with reactions
-- **Role Menu** - Role selection menu for Legend rank role
-- **Automatic Reminder**: Send a reminder about ranks in the general channel at 10 AM and 6 PM CET
-- **Latest Message**: Makes sure the latest message in #advertising and #6b6t-merch is of the bot
-- **YouTube Channel**: Send new youtube videos about 6b6t
-- **Sync Linked Users**: Sync linked Minecraft users with their Discord account
-- **Telegram Crossposting**: Reliably mirror selected Discord announcement and changelog channels to Telegram
+- Rust 1.95 or newer
+- A Discord application with Server Members, Message Content, and Message
+  Reactions intents enabled
+- MariaDB access for account linking, role synchronization, and Telegram
+  delivery state
+- The external 6b6t command services used by player and rank lookups
 
-## Commands
+## Run locally
 
-| Command | Description | Permissions |
-|---------|-------------|-------------|
-| `/ip` | Get the 6b6t server IP addresses | Everyone |
-| `/playercount` | Check current players online and server uptime | Everyone |
-| `/version` | Get the current Minecraft version | Everyone |
-| `/shop` | Information about the 6b6t shop | Everyone |
-| `/boost` | Information about Discord boosting perks | Everyone |
-| `/getuser` | Look up Minecraft account info by Discord user | Administrator |
-| `/banreason` | Look up who banned and the user and the reason | Moderator |
+Create a `.env` file or export the required environment variables, then run:
 
-## Discord to Telegram crossposting
+```bash
+cargo run --release
+```
 
-Crossposting is disabled until both `TELEGRAM_CROSSPOST_BOT_TOKEN` and at
-least one route in `TELEGRAM_CROSSPOST_ROUTES` are configured. Routes are a
-JSON array:
+The bot registers its commands in the configured 6b6t guild during startup.
+Guild registration makes command changes available immediately.
+
+## Configuration
+
+### Core Discord settings
+
+| Variable | Required | Purpose |
+| --- | --- | --- |
+| `DISCORD_TOKEN` | Yes | Discord bot token |
+| `VOTE_CHANNEL_ID` | For approval commands | Channel for two-person moderation approvals |
+| `LOG_CHANNEL_ID` | No | Moderation audit log channel |
+| `RUST_LOG` | No | Tracing filter, such as `sixbsixt_discord_bot=debug,info` |
+
+Discord application, guild, channel, and role IDs that define the 6b6t server
+layout are typed constants in [`src/config.rs`](src/config.rs).
+
+### MariaDB
+
+| Variable | Required | Purpose |
+| --- | --- | --- |
+| `MYSQL_DB_HOST` | For database features | MariaDB host |
+| `MYSQL_DB_PORT` | No | MariaDB port, defaults to `3306` |
+| `MYSQL_DB_USER` | With `MYSQL_DB_HOST` | MariaDB user |
+| `MYSQL_DB_PASS` | With `MYSQL_DB_HOST` | MariaDB password |
+| `MYSQL_DB_LINK` | No | Link database, defaults to `6b6t_link` |
+| `MYSQL_DB_LINKS` | No | Legacy fallback name for the link database |
+| `MYSQL_DB_STATS` | With `MYSQL_DB_HOST` | Player statistics database |
+
+The process creates the link database and missing link or Telegram tables. It
+does not alter the external player statistics schema.
+
+### Minecraft and Hytale services
+
+| Variable | Required | Purpose |
+| --- | --- | --- |
+| `HTTP_PROXY_COMMAND_SERVICE_BASE_URL` | For player status | Player service base URL |
+| `HTTP_PROXY_COMMAND_SERVICE_ACCESS_TOKEN` | For player status | Player service bearer token |
+| `HTTP_SLAVE1_COMMAND_SERVICE_BASE_URL` | No | Preferred rank service base URL |
+| `HTTP_SLAVE1_COMMAND_SERVICE_ACCESS_TOKEN` | No | Preferred rank service token |
+| `HYTALE_QUERY_ENDPOINT_URL` | For `/hytaleplayers` | Hytale query endpoint |
+| `HYTALE_QUERY_USERNAME` | For `/hytaleplayers` | Hytale query username |
+| `HYTALE_QUERY_PASSWORD` | For `/hytaleplayers` | Hytale query password |
+
+Rank lookup falls back to the proxy command service variables when the slave
+variables are not set.
+
+### YouTube and MOTD review
+
+| Variable | Required | Purpose |
+| --- | --- | --- |
+| `YOUTUBE_API_KEY` | For notifications | YouTube Data API key |
+| `MOTD_REVIEW_BOT_SECRET` | For MOTD review | Shared website API secret |
+| `MOTD_REVIEW_API_URL` | No | Explicit MOTD review endpoint |
+| `WEBSITE_BASE_URL` | No | Website base URL used to derive the review endpoint |
+
+### Telegram crossposting
+
+Crossposting is enabled when both `TELEGRAM_CROSSPOST_BOT_TOKEN` and at least
+one route are configured.
 
 ```env
 TELEGRAM_CROSSPOST_BOT_TOKEN=123456:replace-me
 TELEGRAM_CROSSPOST_ROUTES=[{"id":"announcements","discordChannelId":"982190978142195712","telegramChatId":"@org6b6t","telegramThreadId":3721},{"id":"changelog","discordChannelId":"1314292152360112148","telegramChatId":"@org6b6t","telegramThreadId":3724}]
 ```
 
-Route fields:
+Each route supports these fields:
 
-| Field | Required | Description |
-|-------|----------|-------------|
-| `id` | Yes | Stable unique route name containing letters, numbers, `_` or `-` |
-| `discordChannelId` | Yes | Source Discord text or announcement channel ID |
-| `telegramChatId` | Yes | Destination Telegram channel ID (`-100...`) or public `@username` |
+| Field | Required | Purpose |
+| --- | --- | --- |
+| `id` | Yes | Stable route name using letters, numbers, `_`, or `-` |
+| `discordChannelId` | Yes | Source Discord channel |
+| `telegramChatId` | Yes | Destination numeric chat ID or public `@username` |
 | `telegramThreadId` | No | Telegram forum topic ID |
-| `includeAuthor` | No | Include the Discord author's display name; defaults to `false` |
+| `includeAuthor` | No | Include the Discord author's name |
 
-Optional settings:
+Optional behavior settings:
 
 ```env
 TELEGRAM_CROSSPOST_SYNC_EDITS=true
@@ -56,21 +110,42 @@ TELEGRAM_CROSSPOST_BACKFILL_ON_FIRST_RUN=false
 TELEGRAM_CROSSPOST_RETRY_ATTEMPTS=6
 ```
 
-Crossposts contain the sanitized Discord content directly. Route headings and
-Discord/Telegram mentions are not included in Telegram output.
+The service stores delivery mappings and route checkpoints in MariaDB. On
+restart it retries incomplete deliveries and backfills Discord messages newer
+than each route checkpoint. Edit synchronization replaces the previous
+Telegram delivery. Delete synchronization remains disabled by default.
 
-The Discord application must have the **Message Content Intent** enabled in
-the Discord Developer Portal. Its guild role needs **View Channel** and
-**Read Message History** in every configured source channel.
+## Commands
 
-The Telegram bot must be an administrator in every destination channel with
-**Post Messages**. Edit synchronization replaces the old Telegram delivery,
-so it also needs **Delete Messages** when edit syncing is enabled. Delete
-synchronization is deliberately disabled by default.
+| Command | Access | Purpose |
+| --- | --- | --- |
+| `/ip` | Everyone | Show Java and Bedrock addresses |
+| `/playercount` | Everyone | Show player count and uptime |
+| `/version` | Everyone | Show the current Minecraft version |
+| `/shop` | Everyone | Link to the 6b6t shop |
+| `/boost` | Everyone | Explain Discord boost perks |
+| `/hytaleplayers` | Everyone | Show Hytale players and metrics |
+| `/getuser` | Administrator | Look up a linked Minecraft account |
+| `/banreason` | Moderation roles | Show a user's current ban details |
+| `/discordbannerset` | Authorized roles | Set a banner with approval or administrator bypass |
+| `/terminatorban` | Authorized roles | Ban with approval or administrator bypass |
+| `/miniterminator` | Terminator | Add or remove the Mini-Terminator role with approval |
+| `/mediachannelsfreq` | Terminator | Change reminder frequency with approval |
 
-Delivery records and route checkpoints are created automatically in the
-existing link MariaDB database. They provide duplicate prevention, retries,
-restart recovery, edit/delete mapping, and offline message backfill. On the
-first deployment, historical messages are not sent unless
-`TELEGRAM_CROSSPOST_BACKFILL_ON_FIRST_RUN=true`; with that option enabled,
-only the latest existing message per route is posted.
+Non-administrator moderation changes require approval from a different member
+with the Terminator role. Pending approvals expire after one hour.
+
+## Validate changes
+
+```bash
+cargo fmt --all --check
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test --all-targets
+cargo build --release --locked
+```
+
+## Deploy with Railpack
+
+Railpack detects the root `Cargo.toml`, builds the release binary, and starts
+`./bin/sixbsixt-discord-bot`. Configure the environment variables in the
+deployment service and deploy the repository root.

@@ -1,0 +1,33 @@
+name: Rust
+
+on: [push, pull_request]
+
+jobs:
+  build:
+    if: "${{ github.event_name != 'pull_request' || github.repository != github.event.pull_request.head.repo.full_name }}"
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.95.0
+          components: clippy,rustfmt
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check formatting
+        run: cargo fmt --all --check
+
+      - name: Run Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+
+      - name: Run tests
+        run: cargo test --all-targets
+
+      - name: Build release binary
+        run: cargo build --release --locked
