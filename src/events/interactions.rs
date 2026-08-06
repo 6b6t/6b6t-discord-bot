@@ -62,13 +62,26 @@ async fn legend_role(
     let selected = values.first().context("role menu selection was empty")?;
     let guild_id = interaction.guild_id.context("missing guild")?;
     let member = guild_id.member(ctx, interaction.user.id).await?;
+    let had_color_role = member
+        .roles
+        .iter()
+        .any(|role| config::ROLE_MENU_ROLE_IDS.contains(role));
     for role in config::ROLE_MENU_ROLE_IDS {
         if member.roles.contains(role) {
             member.remove_role(ctx, *role).await?;
         }
     }
     if matches!(selected.as_str(), "clear_top" | "clear_bottom") {
-        reply_ephemeral(ctx, interaction, "Your color role has been removed.").await?;
+        reply_ephemeral(
+            ctx,
+            interaction,
+            if had_color_role {
+                "Your color role has been removed."
+            } else {
+                "You do not currently have a color role."
+            },
+        )
+        .await?;
     } else {
         let role_id = selected.parse::<u64>().context("invalid role menu value")?;
         let role_id = serenity::RoleId::new(role_id);
@@ -126,22 +139,66 @@ async fn approval(
         return Ok(());
     }
     if !approve {
-        data.pending.remove(id).await;
+        let embed = resolved_approval_embed(interaction, "Rejected", 0x00ED_4245);
+        let mut response = serenity::CreateInteractionResponseMessage::new()
+            .content(format!("Request rejected by <@{}>.", interaction.user.id))
+            .components(vec![moderation::approval_buttons(prefix, id, true)]);
+        if let Some(embed) = embed {
+            response = response.embed(embed);
+        }
         interaction
             .create_response(
                 ctx,
-                serenity::CreateInteractionResponse::UpdateMessage(
-                    serenity::CreateInteractionResponseMessage::new()
-                        .content(format!("Request rejected by <@{}>.", interaction.user.id))
-                        .components(vec![moderation::approval_buttons(prefix, id, true)]),
-                ),
+                serenity::CreateInteractionResponse::UpdateMessage(response),
             )
             .await?;
+        data.pending.remove(id).await;
         return Ok(());
     }
     interaction
         .create_response(ctx, serenity::CreateInteractionResponse::Acknowledge)
         .await?;
+    let action_result = execute_approval_action(ctx, data, &request, interaction).await;
+    if let Err(error) = action_result {
+        tracing::error!(%error, request_id = %id, approver_id = %interaction.user.id, "approval action failed");
+        let embed =
+            resolved_approval_embed(interaction, "Action failed; retry available", 0x00ED_4245);
+        let mut edit = serenity::EditInteractionResponse::new()
+            .content("The approval action failed. The request is still available to retry.")
+            .components(vec![moderation::approval_buttons(prefix, id, false)]);
+        if let Some(embed) = embed {
+            edit = edit.embed(embed);
+        }
+        interaction
+            .create_followup(
+                ctx,
+                serenity::CreateInteractionResponseFollowup::new()
+                    .content(format!("The approval action failed: {error}"))
+                    .ephemeral(true),
+            )
+            .await?;
+        interaction.edit_response(ctx, edit).await?;
+        return Ok(());
+    }
+    data.pending.remove(id).await;
+    let embed = resolved_approval_embed(interaction, "Approved", 0x0057_F287);
+    let mut edit = serenity::EditInteractionResponse::new()
+        .content(format!("Request approved by <@{}>.", interaction.user.id))
+        .components(vec![moderation::approval_buttons(prefix, id, true)]);
+    if let Some(embed) = embed {
+        edit = edit.embed(embed);
+    }
+    interaction.edit_response(ctx, edit).await?;
+    log_approval(ctx, data, &request, interaction).await;
+    Ok(())
+}
+
+async fn execute_approval_action(
+    ctx: &serenity::Context,
+    data: &AppState,
+    request: &crate::moderation::ApprovalRequest,
+    interaction: &serenity::ComponentInteraction,
+) -> Result<()> {
     match &request.action {
         ApprovalAction::Banner { image_url } => {
             command_moderation::set_banner(&ctx.http, &data.http, request.guild_id, image_url)
@@ -151,7 +208,6 @@ async fn approval(
             target_id,
             reason,
             delete_message_days,
-            ..
         } => {
             request
                 .guild_id
@@ -163,7 +219,7 @@ async fn approval(
                 )
                 .await?;
         }
-        ApprovalAction::Unban { target_id } => {
+        ApprovalAction::Unban { target_id, .. } => {
             request
                 .guild_id
                 .unban(&ctx.http, *target_id)
@@ -173,22 +229,28 @@ async fn approval(
         ApprovalAction::MediaFrequency { requested, .. } => {
             data.media.set_frequency(*requested).await?;
         }
-        ApprovalAction::MiniTerminator { target_id, add, .. } => {
+        ApprovalAction::MiniTerminator { target_id, add } => {
             command_moderation::apply_mini_role(&ctx.http, request.guild_id, *target_id, *add)
                 .await?;
         }
     }
-    data.pending.remove(id).await;
-    interaction
-        .edit_response(
-            ctx,
-            serenity::EditInteractionResponse::new()
-                .content(format!("Request approved by <@{}>.", interaction.user.id))
-                .components(vec![moderation::approval_buttons(prefix, id, true)]),
-        )
-        .await?;
-    log_approval(ctx, data, &request, interaction).await;
     Ok(())
+}
+
+fn resolved_approval_embed(
+    interaction: &serenity::ComponentInteraction,
+    status: &str,
+    colour: u32,
+) -> Option<serenity::CreateEmbed> {
+    let mut embed = interaction.message.embeds.first()?.clone();
+    if let Some(field) = embed.fields.iter_mut().find(|field| field.name == "Status") {
+        status.clone_into(&mut field.value);
+    } else {
+        embed
+            .fields
+            .push(serenity::EmbedField::new("Status", status, true));
+    }
+    Some(serenity::CreateEmbed::from(embed).colour(colour))
 }
 
 fn parse_approval_id(custom_id: &str) -> Option<(&str, bool, Uuid)> {
@@ -426,7 +488,8 @@ async fn log_approval(
         return;
     };
     let description = format!(
-        "Submitted by <@{}> ({})\nApproved by <@{}> ({})",
+        "{}\nSubmitted by <@{}> ({})\nApproved by <@{}> ({})",
+        approval_details(&request.action),
         request.submitter_id,
         request.submitter_tag,
         interaction.user.id,
@@ -437,7 +500,7 @@ async fn log_approval(
             ctx,
             serenity::CreateMessage::new().embed(
                 serenity::CreateEmbed::new()
-                    .title("Moderation Request Approved")
+                    .title(approval_title(&request.action))
                     .description(description)
                     .colour(0x0057_F287),
             ),
@@ -445,6 +508,41 @@ async fn log_approval(
         .await
     {
         tracing::error!(%error, "failed to send approval audit log");
+    }
+}
+
+fn approval_title(action: &ApprovalAction) -> &'static str {
+    match action {
+        ApprovalAction::Banner { .. } => "Server Banner Changed",
+        ApprovalAction::Ban { .. } => "User Banned",
+        ApprovalAction::Unban { .. } => "User Unbanned",
+        ApprovalAction::MediaFrequency { .. } => "Media Frequency Changed",
+        ApprovalAction::MiniTerminator { .. } => "Mini-Terminator Role Changed",
+    }
+}
+
+fn approval_details(action: &ApprovalAction) -> String {
+    match action {
+        ApprovalAction::Banner { image_url } => format!("[View image]({image_url})"),
+        ApprovalAction::Ban {
+            target_id,
+            reason,
+            delete_message_days,
+        } => format!(
+            "Target: <@{target_id}>\nReason: {reason}\nMessages deleted: {delete_message_days} day(s)"
+        ),
+        ApprovalAction::Unban { target_id, reason } => {
+            format!("Target: <@{target_id}>\nReason: {reason}")
+        }
+        ApprovalAction::MediaFrequency { current, requested } => {
+            format!(
+                "Previous frequency: every {current} message(s)\nNew frequency: every {requested} message(s)"
+            )
+        }
+        ApprovalAction::MiniTerminator { target_id, add } => format!(
+            "Target: <@{target_id}>\nAction: {}",
+            if *add { "grant" } else { "remove" }
+        ),
     }
 }
 

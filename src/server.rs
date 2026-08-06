@@ -266,10 +266,7 @@ impl ServerService {
             .hytale_password
             .as_deref()
             .context("HYTALE_QUERY_PASSWORD is not configured")?;
-        let metrics_url = format!(
-            "{}/ApexHosting/PrometheusExporter/metrics",
-            endpoint.trim_end_matches('/')
-        );
+        let metrics_url = hytale_metrics_url(endpoint)?;
         let (query, metrics) = tokio::join!(
             self.http
                 .get(endpoint)
@@ -413,9 +410,16 @@ fn metric_average(text: &str, name: &str) -> Option<f64> {
     })
 }
 
+fn hytale_metrics_url(endpoint: &str) -> Result<reqwest::Url> {
+    reqwest::Url::parse(endpoint)
+        .context("HYTALE_QUERY_ENDPOINT_URL is invalid")?
+        .join("/ApexHosting/PrometheusExporter/metrics")
+        .context("failed to build the Hytale metrics URL")
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{format_duration, highest_rank, metric_average, metric_sum};
+    use super::{format_duration, highest_rank, hytale_metrics_url, metric_average, metric_sum};
     #[test]
     fn duration_formats_nonzero_units() {
         assert_eq!(format_duration(90_061), "1d 1h 1m 1s");
@@ -431,5 +435,14 @@ mod tests {
         let data = "metric{x=\"a\"} 2\nmetric{x=\"b\"} 4\n";
         assert_eq!(metric_sum(data, "metric"), Some(6.0));
         assert_eq!(metric_average(data, "metric"), Some(3.0));
+    }
+    #[test]
+    fn hytale_metrics_use_the_endpoint_origin() {
+        assert_eq!(
+            hytale_metrics_url("https://example.com/query/status")
+                .expect("valid metrics URL")
+                .as_str(),
+            "https://example.com/ApexHosting/PrometheusExporter/metrics"
+        );
     }
 }

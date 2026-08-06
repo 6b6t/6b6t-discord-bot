@@ -43,12 +43,7 @@ async fn playercount(ctx: Context<'_>) -> Result<(), Error> {
         Ok(data) => data,
         Err(error) => {
             tracing::error!(%error, "failed to fetch server data");
-            ctx.send(
-                CreateReply::default()
-                    .ephemeral(true)
-                    .content("Failed to get server data"),
-            )
-            .await?;
+            finish_deferred(ctx, "Failed to get server data", true).await?;
             return Ok(());
         }
     };
@@ -71,7 +66,7 @@ async fn playercount(ctx: Context<'_>) -> Result<(), Error> {
             format_duration(uptime)
         );
     }
-    ctx.say(message).await?;
+    finish_deferred(ctx, message, false).await?;
     Ok(())
 }
 
@@ -87,15 +82,10 @@ async fn version(ctx: Context<'_>) -> Result<(), Error> {
         .ok()
         .and_then(|data| data.version);
     let Some(version) = version else {
-        ctx.send(
-            CreateReply::default()
-                .ephemeral(true)
-                .content("Failed to get server version"),
-        )
-        .await?;
+        finish_deferred(ctx, "Failed to get server version", true).await?;
         return Ok(());
     };
-    ctx.say(format!("The current version of 6b6t is {version}. Connect to 6b6t using the IP `play.6b6t.org` on Java Edition and `bedrock.6b6t.org` with the port 19132 on Bedrock Edition.")).await?;
+    finish_deferred(ctx, format!("The current version of 6b6t is {version}. Connect to 6b6t using the IP `play.6b6t.org` on Java Edition and `bedrock.6b6t.org` with the port 19132 on Bedrock Edition."), false).await?;
     Ok(())
 }
 
@@ -109,7 +99,7 @@ async fn shop(ctx: Context<'_>) -> Result<(), Error> {
 /// See the perks for boosting the 6b6t Discord.
 #[poise::command(slash_command, user_cooldown = 60)]
 async fn boost(ctx: Context<'_>) -> Result<(), Error> {
-    ctx.send(CreateReply::default().content("Boosting the 6b6t Discord gives you the <@&933418896692768820> role, nickname changing permissions, embed, media and emoji permissions in general and free access to priority support in the Discord channel #📜premium-tickets.").allowed_mentions(serenity::CreateAllowedMentions::new())).await?;
+    send_suppressed(ctx, "Boosting the 6b6t Discord gives you the <@&933418896692768820> role, nickname changing permissions, embed, media and emoji permissions in general and free access to priority support in the Discord channel #📜premium-tickets.").await?;
     Ok(())
 }
 
@@ -121,12 +111,7 @@ async fn hytaleplayers(ctx: Context<'_>) -> Result<(), Error> {
         Ok(data) => data,
         Err(error) => {
             tracing::error!(%error, "failed to fetch Hytale player data");
-            ctx.send(
-                CreateReply::default()
-                    .ephemeral(true)
-                    .content("Failed to get Hytale player count."),
-            )
-            .await?;
+            finish_deferred(ctx, "Failed to get Hytale player count.", true).await?;
             return Ok(());
         }
     };
@@ -160,7 +145,7 @@ async fn hytaleplayers(ctx: Context<'_>) -> Result<(), Error> {
                 .join(", ")
         );
     }
-    ctx.say(message).await?;
+    finish_deferred(ctx, message, false).await?;
     Ok(())
 }
 
@@ -276,4 +261,69 @@ async fn command_admin(ctx: &Context<'_>) -> bool {
     ctx.author_member()
         .await
         .is_some_and(|member| member.roles.contains(&config::COMMAND_ADMIN_ROLE_ID))
+}
+
+async fn finish_deferred(
+    ctx: Context<'_>,
+    content: impl Into<String>,
+    ephemeral: bool,
+) -> Result<(), Error> {
+    let content = content.into();
+    let poise::Context::Application(application) = ctx else {
+        ctx.say(content).await?;
+        return Ok(());
+    };
+    if ephemeral {
+        application
+            .interaction
+            .create_followup(
+                application.serenity_context,
+                serenity::CreateInteractionResponseFollowup::new()
+                    .content(content)
+                    .ephemeral(true)
+                    .allowed_mentions(serenity::CreateAllowedMentions::new()),
+            )
+            .await?;
+        if let Err(error) = application
+            .interaction
+            .delete_response(application.serenity_context)
+            .await
+        {
+            tracing::warn!(%error, "failed to remove public deferred response");
+        }
+    } else {
+        application
+            .interaction
+            .edit_response(
+                application.serenity_context,
+                serenity::EditInteractionResponse::new()
+                    .content(content)
+                    .allowed_mentions(serenity::CreateAllowedMentions::new()),
+            )
+            .await?;
+    }
+    Ok(())
+}
+
+async fn send_suppressed(ctx: Context<'_>, content: &str) -> Result<(), Error> {
+    let poise::Context::Application(application) = ctx else {
+        ctx.say(content).await?;
+        return Ok(());
+    };
+    application
+        .interaction
+        .create_response(
+            application.serenity_context,
+            serenity::CreateInteractionResponse::Message(
+                serenity::CreateInteractionResponseMessage::new()
+                    .content(content)
+                    .allowed_mentions(serenity::CreateAllowedMentions::new())
+                    .flags(serenity::InteractionResponseFlags::SUPPRESS_NOTIFICATIONS),
+            ),
+        )
+        .await?;
+    application
+        .has_sent_initial_response
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    Ok(())
 }

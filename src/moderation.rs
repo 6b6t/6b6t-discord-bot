@@ -18,8 +18,10 @@ pub enum ApprovalAction {
     },
     Unban {
         target_id: serenity::UserId,
+        reason: String,
     },
     MediaFrequency {
+        current: u16,
         requested: u16,
     },
     MiniTerminator {
@@ -59,10 +61,9 @@ impl PendingApprovals {
             action,
             created_at: std::time::Instant::now(),
         };
-        self.requests
-            .lock()
-            .await
-            .insert(request.id, request.clone());
+        let mut requests = self.requests.lock().await;
+        requests.retain(|_, request| request.created_at.elapsed() <= APPROVAL_TTL);
+        requests.insert(request.id, request.clone());
         request
     }
 
@@ -74,6 +75,13 @@ impl PendingApprovals {
 
     pub async fn remove(&self, id: Uuid) -> Option<ApprovalRequest> {
         self.requests.lock().await.remove(&id)
+    }
+
+    pub async fn cleanup_expired(&self) -> usize {
+        let mut requests = self.requests.lock().await;
+        let previous_len = requests.len();
+        requests.retain(|_, request| request.created_at.elapsed() <= APPROVAL_TTL);
+        previous_len - requests.len()
     }
 }
 

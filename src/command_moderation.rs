@@ -26,11 +26,9 @@ pub async fn discordbannerset(
         deny(ctx, "You do not have permission to use this command. Required roles: Terminator, Marketer, or Dev.").await?;
         return Ok(());
     }
-    let image_url = validate_banner(image.as_ref(), url.as_deref())?;
-    let is_animated = image_url
-        .split('?')
-        .next()
-        .is_some_and(|path| path.to_ascii_lowercase().ends_with(".gif"));
+    let banner = validate_banner(image.as_ref(), url.as_deref())?;
+    let image_url = banner.url;
+    let is_animated = banner.is_animated;
     let premium_tier = ctx.guild().map(|guild| guild.premium_tier);
     let required_tier = if is_animated {
         serenity::PremiumTier::Tier3
@@ -118,12 +116,25 @@ pub async fn terminatorban(
         return Ok(());
     }
     let guild_id = ctx.guild_id().context("missing guild")?;
+    let guild = guild_id.to_partial_guild(ctx.http()).await?;
+    if guild.owner_id == user.id {
+        deny(ctx, "The server owner cannot be banned.").await?;
+        return Ok(());
+    }
+    let bot_member = guild_id.member(ctx.http(), ctx.framework().bot_id).await?;
+    if !guild.member_permissions(&bot_member).ban_members() {
+        deny(
+            ctx,
+            "I cannot ban members because I do not have the Ban Members permission.",
+        )
+        .await?;
+        return Ok(());
+    }
     let reason = reason.unwrap_or_else(|| "No reason provided".into());
     let delete_message_days = delete_messages.unwrap_or(0);
     if let Ok(target_member) = guild_id.member(ctx.http(), user.id).await {
-        let roles = guild_id.roles(ctx.http()).await?;
-        let target_position = highest_role_position(&target_member.roles, &roles);
-        let requester_position = highest_role_position(&member.roles, &roles);
+        let target_position = highest_role_position(&target_member.roles, &guild.roles);
+        let requester_position = highest_role_position(&member.roles, &guild.roles);
         if !moderation::is_administrator(&member) && target_position >= requester_position {
             deny(
                 ctx,
@@ -132,8 +143,7 @@ pub async fn terminatorban(
             .await?;
             return Ok(());
         }
-        let bot_member = guild_id.member(ctx.http(), ctx.framework().bot_id).await?;
-        if target_position >= highest_role_position(&bot_member.roles, &roles) {
+        if target_position >= highest_role_position(&bot_member.roles, &guild.roles) {
             deny(
                 ctx,
                 "I cannot ban this user because their role is higher than or equal to mine.",
@@ -226,7 +236,10 @@ pub async fn terminatorunban(
             ctx.author().id,
             ctx.author().tag(),
             guild_id,
-            ApprovalAction::Unban { target_id: user.id },
+            ApprovalAction::Unban {
+                target_id: user.id,
+                reason: reason.clone(),
+            },
         )
         .await;
     send_vote(&ctx, "unban", &request, serenity::CreateEmbed::new().title("Unban Request").description(format!("<@{}> wants to unban <@{}>. A different Terminator must approve this request.\nExpires: <t:{}:R>", request.submitter_id, user.id, chrono::Utc::now().timestamp() + 3_600)).field("Reason", reason, false)).await?;
@@ -474,7 +487,10 @@ pub async fn mediachannelsfreq(
             ctx.author().id,
             ctx.author().tag(),
             guild_id,
-            ApprovalAction::MediaFrequency { requested: number },
+            ApprovalAction::MediaFrequency {
+                current,
+                requested: number,
+            },
         )
         .await;
     send_vote(&ctx, "mediafreq", &request, serenity::CreateEmbed::new().title("Media Channel Frequency Change").description(format!("<@{}> wants to change the reminder frequency. A different Terminator must approve this request.\nExpires: <t:{}:R>", request.submitter_id, chrono::Utc::now().timestamp() + 3_600)).field("Current Frequency", current.to_string(), true).field("New Frequency", number.to_string(), true)).await?;
@@ -543,24 +559,33 @@ async fn send_vote(
     Ok(())
 }
 
-fn validate_banner(image: Option<&serenity::Attachment>, url: Option<&str>) -> Result<String> {
+struct ValidatedBanner {
+    url: String,
+    is_animated: bool,
+}
+
+fn validate_banner(
+    image: Option<&serenity::Attachment>,
+    url: Option<&str>,
+) -> Result<ValidatedBanner> {
     if let Some(image) = image {
-        let valid_type = image.content_type.as_deref().is_some_and(|kind| {
-            matches!(
-                kind.split(';').next(),
-                Some("image/png" | "image/jpeg" | "image/jpg" | "image/gif" | "image/webp")
-            )
-        });
-        let valid_extension = [".png", ".jpg", ".jpeg", ".gif", ".webp"]
-            .iter()
-            .any(|extension| image.filename.to_ascii_lowercase().ends_with(extension));
-        if !valid_type && !valid_extension {
+        let filename = image.filename.to_ascii_lowercase();
+        let content_type = image
+            .content_type
+            .as_deref()
+            .and_then(|kind| kind.split(';').next());
+        let valid_extension = has_image_extension(&filename);
+        let valid_type = content_type.is_some_and(is_supported_image_type);
+        if content_type.map_or(!valid_extension, |_| !valid_type) {
             bail!("invalid image type; use PNG, JPG, GIF, or WebP")
         }
         if image.size > 10 * 1024 * 1024 {
             bail!("banner images may not exceed 10 MB")
         }
-        return Ok(image.url.clone());
+        return Ok(ValidatedBanner {
+            url: image.url.clone(),
+            is_animated: content_type == Some("image/gif") || is_gif_filename(&filename),
+        });
     }
     let url = url.context("provide either an image attachment or an image URL")?;
     let parsed = reqwest::Url::parse(url).context("invalid image URL")?;
@@ -568,13 +593,32 @@ fn validate_banner(image: Option<&serenity::Attachment>, url: Option<&str>) -> R
         bail!("image URL must use HTTP or HTTPS")
     }
     let path = parsed.path().to_ascii_lowercase();
-    if ![".png", ".jpg", ".jpeg", ".gif", ".webp"]
-        .iter()
-        .any(|extension| path.ends_with(extension))
-    {
+    if !has_image_extension(&path) {
         bail!("image URL must end in PNG, JPG, GIF, or WebP")
     }
-    Ok(url.to_owned())
+    Ok(ValidatedBanner {
+        url: url.to_owned(),
+        is_animated: is_gif_filename(&path),
+    })
+}
+
+fn is_supported_image_type(content_type: &str) -> bool {
+    matches!(
+        content_type,
+        "image/png" | "image/jpeg" | "image/jpg" | "image/gif" | "image/webp"
+    )
+}
+
+fn has_image_extension(filename: &str) -> bool {
+    [".png", ".jpg", ".jpeg", ".gif", ".webp"]
+        .iter()
+        .any(|extension| filename.ends_with(extension))
+}
+
+fn is_gif_filename(filename: &str) -> bool {
+    std::path::Path::new(filename)
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("gif"))
 }
 
 pub async fn set_banner(
@@ -610,7 +654,14 @@ pub async fn apply_mini_role(
     target_id: serenity::UserId,
     add: bool,
 ) -> Result<()> {
-    let member = guild_id.member(http, target_id).await?;
+    let member = match guild_id.member(http, target_id).await {
+        Ok(member) => member,
+        Err(error) if !add => {
+            tracing::info!(%error, %target_id, "Mini-Terminator removal target is no longer in the server");
+            return Ok(());
+        }
+        Err(error) => return Err(error.into()),
+    };
     if add {
         member
             .add_role(http, config::MINI_TERMINATOR_ROLE_ID)
@@ -640,5 +691,17 @@ pub async fn log_action(ctx: &Context<'_>, title: &str, description: String) {
         .await
     {
         tracing::error!(%error, "failed to send moderation audit log");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{has_image_extension, is_supported_image_type};
+
+    #[test]
+    fn banner_types_require_supported_mime_when_present() {
+        assert!(is_supported_image_type("image/gif"));
+        assert!(!is_supported_image_type("text/plain"));
+        assert!(has_image_extension("banner.webp"));
     }
 }

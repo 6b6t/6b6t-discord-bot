@@ -26,7 +26,10 @@ impl MediaState {
             Ok(content) => serde_json::from_str::<MediaSettings>(&content)
                 .map_or(DEFAULT_FREQUENCY, |settings| normalize(settings.frequency)),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => DEFAULT_FREQUENCY,
-            Err(error) => return Err(error).context("failed to read media channel settings"),
+            Err(error) => {
+                tracing::warn!(%error, path = %path.display(), "failed to read media channel settings; using the default frequency");
+                DEFAULT_FREQUENCY
+            }
         };
         Ok(Self {
             frequency: RwLock::new(frequency),

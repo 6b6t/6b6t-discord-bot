@@ -1,4 +1,4 @@
-use std::{collections::HashSet, time::Duration};
+use std::{collections::HashSet, future::Future, time::Duration};
 
 use anyhow::Result;
 use chrono::{Datelike as _, Timelike as _};
@@ -23,12 +23,25 @@ pub async fn handle(
     *started = true;
     drop(started);
 
-    update_status(ctx, data).await;
     if let Some(telegram) = &data.telegram {
-        telegram.ready(ctx).await?;
+        let ctx = ctx.clone();
+        let telegram = telegram.clone();
+        spawn_startup_retry("Telegram initialization", move || {
+            let ctx = ctx.clone();
+            let telegram = telegram.clone();
+            async move { telegram.ready(&ctx).await }
+        });
     }
-    ensure_role_menu(ctx).await?;
-    ensure_reaction_menus(ctx).await?;
+    let role_menu_ctx = ctx.clone();
+    spawn_startup_retry("role menu initialization", move || {
+        let ctx = role_menu_ctx.clone();
+        async move { ensure_role_menu(&ctx).await }
+    });
+    let reaction_menu_ctx = ctx.clone();
+    spawn_startup_retry("reaction menu initialization", move || {
+        let ctx = reaction_menu_ctx.clone();
+        async move { ensure_reaction_menus(&ctx).await }
+    });
 
     spawn_interval(
         ctx.clone(),
@@ -54,8 +67,32 @@ pub async fn handle(
         Duration::from_secs(30),
         |ctx, data| Box::pin(role_sync::run(ctx, data)),
     );
+    spawn_interval(
+        ctx.clone(),
+        data.clone(),
+        Duration::from_mins(10),
+        |_ctx, data| Box::pin(clean_pending_approvals(data)),
+    );
     spawn_reminders(ctx.clone());
     Ok(())
+}
+
+fn spawn_startup_retry<F, Fut>(label: &'static str, task: F)
+where
+    F: Fn() -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = Result<()>> + Send + 'static,
+{
+    tokio::spawn(async move {
+        loop {
+            match task().await {
+                Ok(()) => return,
+                Err(error) => {
+                    tracing::error!(%error, task = label, "startup task failed; retrying");
+                    tokio::time::sleep(Duration::from_mins(1)).await;
+                }
+            }
+        }
+    });
 }
 
 fn spawn_interval<F>(ctx: serenity::Context, data: AppState, interval: Duration, task: F)
@@ -111,6 +148,13 @@ async fn update_status(ctx: &serenity::Context, data: &AppState) {
 async fn youtube_notification(ctx: &serenity::Context, data: &AppState) {
     if let Err(error) = data.youtube.notify(ctx, config::YOUTUBE_ID).await {
         tracing::error!(%error, "YouTube notification check failed");
+    }
+}
+
+async fn clean_pending_approvals(data: &AppState) {
+    let removed = data.pending.cleanup_expired().await;
+    if removed > 0 {
+        tracing::info!(removed, "expired pending approval requests");
     }
 }
 

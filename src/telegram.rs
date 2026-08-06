@@ -1,4 +1,8 @@
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap,
+    sync::{Arc, atomic::AtomicBool},
+    time::Duration,
+};
 
 use anyhow::{Context as _, Result};
 use poise::serenity_prelude as serenity;
@@ -6,7 +10,7 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest as _, Sha256};
-use tokio::sync::Mutex;
+use tokio::{sync::Mutex, task::JoinSet};
 
 use crate::{
     config::{TelegramConfig, TelegramRoute},
@@ -21,6 +25,13 @@ pub struct TelegramService {
     config: Arc<TelegramConfig>,
     databases: Option<Databases>,
     jobs: Arc<Mutex<()>>,
+    tasks: Arc<Mutex<TaskQueue>>,
+    shutting_down: Arc<AtomicBool>,
+}
+
+struct TaskQueue {
+    accepting: bool,
+    tasks: JoinSet<()>,
 }
 
 #[derive(Clone)]
@@ -111,10 +122,64 @@ impl TelegramService {
             config: Arc::new(config),
             databases,
             jobs: Arc::new(Mutex::new(())),
+            tasks: Arc::new(Mutex::new(TaskQueue {
+                accepting: true,
+                tasks: JoinSet::new(),
+            })),
+            shutting_down: Arc::new(AtomicBool::new(false)),
         }
     }
 
+    pub async fn queue_message_create(&self, message: serenity::Message) {
+        let mut queue = self.tasks.lock().await;
+        if !queue.accepting || self.is_shutting_down() {
+            return;
+        }
+        reap_completed_tasks(&mut queue.tasks);
+        let service = self.clone();
+        queue.tasks.spawn(async move {
+            if let Err(error) = service.message_create(&message).await {
+                tracing::error!(%error, message_id = %message.id, "Telegram create crosspost failed");
+            }
+        });
+    }
+
+    pub async fn queue_message_update(&self, message: serenity::Message) {
+        let mut queue = self.tasks.lock().await;
+        if !queue.accepting || self.is_shutting_down() {
+            return;
+        }
+        reap_completed_tasks(&mut queue.tasks);
+        let service = self.clone();
+        queue.tasks.spawn(async move {
+            if let Err(error) = service.message_update(&message).await {
+                tracing::error!(%error, message_id = %message.id, "Telegram update crosspost failed");
+            }
+        });
+    }
+
+    pub async fn queue_message_delete(
+        &self,
+        channel_id: serenity::ChannelId,
+        message_id: serenity::MessageId,
+    ) {
+        let mut queue = self.tasks.lock().await;
+        if !queue.accepting || self.is_shutting_down() {
+            return;
+        }
+        reap_completed_tasks(&mut queue.tasks);
+        let service = self.clone();
+        queue.tasks.spawn(async move {
+            if let Err(error) = service.message_delete(channel_id, message_id).await {
+                tracing::error!(%error, %channel_id, %message_id, "Telegram delete crosspost failed");
+            }
+        });
+    }
+
     pub async fn ready(&self, ctx: &serenity::Context) -> Result<()> {
+        if self.is_shutting_down() {
+            return Ok(());
+        }
         let identity: TelegramIdentity = self
             .client
             .request("getMe", "connection", serde_json::json!({}))
@@ -130,33 +195,60 @@ impl TelegramService {
             );
             return Ok(());
         }
+        let mut failed = false;
         for route in &self.config.routes {
-            self.initialize_route(ctx, route).await?;
+            if self.is_shutting_down() {
+                return Ok(());
+            }
+            if let Err(error) = self.initialize_route(ctx, route).await {
+                failed = true;
+                tracing::error!(%error, route = route.id, "failed to initialize Telegram route");
+            }
         }
-        self.recover(ctx).await?;
+        if let Err(error) = self.recover(ctx).await {
+            failed = true;
+            tracing::error!(%error, "failed to recover Telegram crossposts");
+        }
+        if failed {
+            anyhow::bail!("one or more Telegram routes failed to initialize")
+        }
         Ok(())
     }
 
     pub async fn message_create(&self, message: &serenity::Message) -> Result<()> {
+        let mut failed = false;
         for route in self
             .config
             .routes
             .iter()
             .filter(|route| route.discord_channel_id == message.channel_id)
         {
-            self.deliver(route, message, false).await?;
+            if let Err(error) = self.deliver(route, message, false).await {
+                failed = true;
+                tracing::error!(%error, route = route.id, message_id = %message.id, "Telegram route delivery failed");
+            }
+        }
+        if failed {
+            anyhow::bail!("one or more Telegram routes failed to deliver the message")
         }
         Ok(())
     }
     pub async fn message_update(&self, message: &serenity::Message) -> Result<()> {
         if self.config.sync_edits {
+            let mut failed = false;
             for route in self
                 .config
                 .routes
                 .iter()
                 .filter(|route| route.discord_channel_id == message.channel_id)
             {
-                self.deliver(route, message, true).await?;
+                if let Err(error) = self.deliver(route, message, true).await {
+                    failed = true;
+                    tracing::error!(%error, route = route.id, message_id = %message.id, "Telegram route update failed");
+                }
+            }
+            if failed {
+                anyhow::bail!("one or more Telegram routes failed to update the message")
             }
         }
         Ok(())
@@ -173,23 +265,55 @@ impl TelegramService {
             return Ok(());
         };
         let _guard = self.jobs.lock().await;
+        let mut failed = false;
         for route in self
             .config
             .routes
             .iter()
             .filter(|route| route.discord_channel_id == channel_id)
         {
-            let Some(row) = self.crosspost(route, message_id).await? else {
-                continue;
-            };
-            let references = parse_references(row.telegram_messages.as_deref());
-            self.client
-                .delete(&route.telegram_chat_id, &references)
-                .await?;
-            sqlx::query("UPDATE telegram_crossposts SET status = 'deleted', last_error = NULL WHERE route_id = ? AND discord_message_id = ?")
-                .bind(&route.id).bind(message_id.to_string()).execute(&database.link).await?;
+            let result: Result<()> = async {
+                let Some(row) = self.crosspost(route, message_id).await? else {
+                    return Ok(());
+                };
+                let references = parse_references(row.telegram_messages.as_deref());
+                self.client
+                    .delete(&route.telegram_chat_id, &references)
+                    .await?;
+                sqlx::query("UPDATE telegram_crossposts SET status = 'deleted', last_error = NULL WHERE route_id = ? AND discord_message_id = ?")
+                    .bind(&route.id).bind(message_id.to_string()).execute(&database.link).await?;
+                Ok(())
+            }
+            .await;
+            if let Err(error) = result {
+                failed = true;
+                tracing::error!(%error, route = route.id, %message_id, "Telegram route deletion failed");
+            }
+        }
+        if failed {
+            anyhow::bail!("one or more Telegram routes failed to delete the message")
         }
         Ok(())
+    }
+
+    pub async fn shutdown(&self) {
+        self.shutting_down
+            .store(true, std::sync::atomic::Ordering::Release);
+        let mut queue = self.tasks.lock().await;
+        queue.accepting = false;
+        while let Some(result) = queue.tasks.join_next().await {
+            if let Err(error) = result {
+                tracing::error!(%error, "Telegram delivery task failed while shutting down");
+            }
+        }
+        drop(queue);
+        let _guard = self.jobs.lock().await;
+        tracing::info!("Telegram delivery queue drained");
+    }
+
+    fn is_shutting_down(&self) -> bool {
+        self.shutting_down
+            .load(std::sync::atomic::Ordering::Acquire)
     }
 
     async fn deliver(
@@ -206,9 +330,6 @@ impl TelegramService {
         };
         let _guard = self.jobs.lock().await;
         let payload = build_payload(route, message);
-        if payload.text.is_empty() && payload.attachments.is_empty() {
-            return Ok(());
-        }
         let hash = payload_hash(&payload);
         let existing = self.crosspost(route, message.id).await?;
         if existing.as_ref().is_some_and(|row| row.status == "deleted") {
@@ -344,6 +465,9 @@ impl TelegramService {
         mut after: serenity::MessageId,
     ) -> Result<()> {
         loop {
+            if self.is_shutting_down() {
+                return Ok(());
+            }
             let mut messages = route
                 .discord_channel_id
                 .messages(ctx, serenity::GetMessages::new().after(after).limit(100))
@@ -354,6 +478,9 @@ impl TelegramService {
             messages.sort_by_key(|message| message.id);
             let page_size = messages.len();
             for message in messages {
+                if self.is_shutting_down() {
+                    return Ok(());
+                }
                 after = message.id;
                 if let Err(error) = self.deliver(route, &message, false).await {
                     tracing::error!(%error, route = route.id, message_id = %message.id, "failed to backfill Telegram crosspost");
@@ -372,6 +499,9 @@ impl TelegramService {
             .context("Telegram storage is unavailable")?;
         let rows: Vec<(String, String, String, String, Option<String>)> = sqlx::query_as("SELECT route_id, discord_message_id, discord_channel_id, telegram_chat_id, telegram_messages FROM telegram_crossposts WHERE status IN ('pending', 'failed') ORDER BY updated_at ASC LIMIT 200").fetch_all(&database.link).await?;
         for (route_id, message_id, channel_id, telegram_chat_id, telegram_messages) in rows {
+            if self.is_shutting_down() {
+                return Ok(());
+            }
             let Some(route) = self.config.routes.iter().find(|route| route.id == route_id) else {
                 continue;
             };
@@ -392,18 +522,34 @@ impl TelegramService {
                 }
                 Err(error) => {
                     tracing::warn!(%error, route = route.id, message_id, "could not fetch Discord message for Telegram recovery");
-                    self.client
+                    if let Err(delete_error) = self
+                        .client
                         .delete(
                             &telegram_chat_id,
                             &parse_references(telegram_messages.as_deref()),
                         )
-                        .await?;
-                    sqlx::query("UPDATE telegram_crossposts SET status = 'deleted', last_error = NULL WHERE route_id = ? AND discord_message_id = ?")
-                        .bind(&route.id).bind(message_id.to_string()).execute(&database.link).await?;
+                        .await
+                    {
+                        tracing::error!(%delete_error, route = route.id, message_id, "failed to delete orphaned Telegram crosspost");
+                        continue;
+                    }
+                    if let Err(database_error) = sqlx::query("UPDATE telegram_crossposts SET status = 'deleted', last_error = NULL WHERE route_id = ? AND discord_message_id = ?")
+                        .bind(&route.id).bind(message_id.to_string()).execute(&database.link).await
+                    {
+                        tracing::error!(%database_error, route = route.id, message_id, "failed to mark Telegram crosspost deleted");
+                    }
                 }
             }
         }
         Ok(())
+    }
+}
+
+fn reap_completed_tasks(tasks: &mut JoinSet<()>) {
+    while let Some(result) = tasks.try_join_next() {
+        if let Err(error) = result {
+            tracing::error!(%error, "Telegram delivery task failed");
+        }
     }
 }
 
@@ -661,10 +807,19 @@ fn normalize_markdown(value: &str) -> String {
                 "$1$2$3$4",
             ),
             (
-                Regex::new(r"(?i)@(everyone|here)\b|@[A-Za-z0-9_]{5,32}\b").expect("valid regex"),
-                "",
+                Regex::new(r"(?im)(^|[\s(\[{:])@(everyone|here)\b").expect("valid regex"),
+                "$1",
+            ),
+            (
+                Regex::new(r"(?m)(^|[\s(\[{:])@[A-Za-z0-9_]{5,32}\b").expect("valid regex"),
+                "$1",
+            ),
+            (
+                Regex::new(r"(?m)(^|\s)[*_]([^*_\n]+)[*_](\s|$)").expect("valid regex"),
+                "$1$2$3",
             ),
             (Regex::new(r"[ \t]{2,}").expect("valid regex"), " "),
+            (Regex::new(r"[ \t]+\n").expect("valid regex"), "\n"),
             (Regex::new(r"\n{3,}").expect("valid regex"), "\n\n"),
         ]
     });
@@ -781,6 +936,15 @@ mod tests {
         assert_eq!(
             normalize_markdown("**Update** <@123> [Shop](https://www.6b6t.org/shop)"),
             "Update Shop (https://www.6b6t.org/shop)"
+        );
+    }
+    #[test]
+    fn markdown_preserves_emails_and_strips_safe_mentions_and_italics() {
+        assert_eq!(
+            normalize_markdown(
+                "mail@example.com @everyone *important update* @username  \nnext line"
+            ),
+            "mail@example.com important update\nnext line"
         );
     }
     #[test]

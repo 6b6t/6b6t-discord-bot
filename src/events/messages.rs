@@ -8,10 +8,8 @@ pub async fn create(
     data: &AppState,
     message: &serenity::Message,
 ) -> Result<()> {
-    if let Some(telegram) = &data.telegram
-        && let Err(error) = telegram.message_create(message).await
-    {
-        tracing::error!(%error, message_id = %message.id, "Telegram create crosspost failed");
+    if let Some(telegram) = &data.telegram {
+        telegram.queue_message_create(message.clone()).await;
     }
     if message.author.bot || message.guild_id.is_none() {
         return Ok(());
@@ -46,15 +44,25 @@ pub async fn create(
     Ok(())
 }
 
-pub async fn update(
+pub async fn update_event(
     ctx: &serenity::Context,
     data: &AppState,
-    message: &serenity::Message,
+    event: &serenity::MessageUpdateEvent,
+    cached: Option<&serenity::Message>,
 ) -> Result<()> {
-    if let Some(telegram) = &data.telegram
-        && let Err(error) = telegram.message_update(message).await
-    {
-        tracing::error!(%error, message_id = %message.id, "Telegram update crosspost failed");
+    let fetched;
+    let message = if let Some(message) = cached {
+        message
+    } else {
+        fetched = event
+            .channel_id
+            .message(ctx, event.id)
+            .await
+            .context("failed to fetch updated message")?;
+        &fetched
+    };
+    if let Some(telegram) = &data.telegram {
+        telegram.queue_message_update(message.clone()).await;
     }
     if message.channel_id != config::REVIEW_ID || message.author.bot {
         return Ok(());
@@ -93,6 +101,9 @@ pub async fn reaction(
         .guild_id
         .context("reaction role event was not in a guild")?;
     let member = guild_id.member(ctx, user_id).await?;
+    if member.user.bot {
+        return Ok(());
+    }
     if add {
         member.add_role(ctx, role_id).await?;
     } else {

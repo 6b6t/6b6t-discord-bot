@@ -19,9 +19,9 @@ pub async fn handle(
         serenity::FullEvent::Message { new_message } => {
             messages::create(ctx, data, new_message).await
         }
-        serenity::FullEvent::MessageUpdate {
-            new: Some(message), ..
-        } => messages::update(ctx, data, message).await,
+        serenity::FullEvent::MessageUpdate { event, new, .. } => {
+            messages::update_event(ctx, data, event, new.as_ref()).await
+        }
         serenity::FullEvent::ReactionAdd { add_reaction } => {
             messages::reaction(ctx, add_reaction, true).await
         }
@@ -38,11 +38,10 @@ pub async fn handle(
         } => {
             if let Some(telegram) = &data.telegram {
                 telegram
-                    .message_delete(*channel_id, *deleted_message_id)
-                    .await
-            } else {
-                Ok(())
+                    .queue_message_delete(*channel_id, *deleted_message_id)
+                    .await;
             }
+            Ok(())
         }
         _ => Ok(()),
     };

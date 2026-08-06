@@ -38,7 +38,13 @@ impl AppState {
             .build()
             .context("failed to build HTTP client")?;
         let databases = if let Some(config) = &environment.database {
-            Some(Databases::connect(config).await?)
+            match Databases::connect(config).await {
+                Ok(databases) => Some(databases),
+                Err(error) => {
+                    tracing::error!(%error, "MySQL initialization failed; database features are disabled");
+                    None
+                }
+            }
         } else {
             tracing::warn!(
                 "MySQL is not configured; linking, role sync, and Telegram storage are disabled"
@@ -62,6 +68,16 @@ impl AppState {
             role_sync_cache: Arc::new(RwLock::new(HashMap::new())),
             ready_started: Arc::new(Mutex::new(false)),
         })
+    }
+
+    pub async fn shutdown(&self) {
+        if let Some(telegram) = &self.telegram {
+            telegram.shutdown().await;
+        }
+        if let Some(databases) = &self.databases {
+            databases.link.close().await;
+            databases.stats.close().await;
+        }
     }
 }
 

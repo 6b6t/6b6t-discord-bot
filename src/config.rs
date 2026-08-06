@@ -133,8 +133,14 @@ impl Environment {
     pub fn load() -> Result<Self> {
         let discord_token =
             env::var("DISCORD_TOKEN").context("DISCORD_TOKEN must be configured")?;
-        let telegram = parse_telegram_config()?;
-        let database = parse_database_config()?;
+        let telegram = parse_telegram_config().unwrap_or_else(|error| {
+            tracing::error!(%error, "Telegram configuration is invalid; crossposting is disabled");
+            None
+        });
+        let database = parse_database_config().unwrap_or_else(|error| {
+            tracing::error!(%error, "MySQL configuration is invalid; database features are disabled");
+            None
+        });
         let website =
             env::var("WEBSITE_BASE_URL").unwrap_or_else(|_| "https://www.6b6t.org".into());
 

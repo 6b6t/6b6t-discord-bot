@@ -37,15 +37,46 @@ pub async fn start(state: AppState) -> Result<()> {
         .await
         .context("failed to create Discord client")?;
 
-    tokio::select! {
-        result = client.start() => result.context("Discord client stopped with an error")?,
-        signal = tokio::signal::ctrl_c() => {
-            signal.context("failed to listen for shutdown signal")?;
-            tracing::info!("received shutdown signal");
-            client.shard_manager.shutdown_all().await;
+    let result = tokio::select! {
+        result = client.start() => result.context("Discord client stopped with an error"),
+        signal = shutdown_signal() => {
+            match signal {
+                Ok(signal) => {
+                    tracing::info!(signal, "received shutdown signal");
+                    client.shard_manager.shutdown_all().await;
+                    Ok(())
+                }
+                Err(error) => Err(error),
+            }
         }
+    };
+    state.shutdown().await;
+    result
+}
+
+#[cfg(unix)]
+async fn shutdown_signal() -> Result<&'static str> {
+    let mut terminate = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        .context("failed to listen for SIGTERM")?;
+    let mut user_defined =
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::user_defined2())
+            .context("failed to listen for SIGUSR2")?;
+    tokio::select! {
+        signal = tokio::signal::ctrl_c() => {
+            signal.context("failed to listen for Ctrl+C")?;
+            Ok("SIGINT")
+        }
+        _ = terminate.recv() => Ok("SIGTERM"),
+        _ = user_defined.recv() => Ok("SIGUSR2"),
     }
-    Ok(())
+}
+
+#[cfg(not(unix))]
+async fn shutdown_signal() -> Result<&'static str> {
+    tokio::signal::ctrl_c()
+        .await
+        .context("failed to listen for Ctrl+C")?;
+    Ok("Ctrl+C")
 }
 
 async fn handle_framework_error(error: poise::FrameworkError<'_, AppState, Error>) {

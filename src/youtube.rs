@@ -114,7 +114,12 @@ impl YoutubeService {
         let title = html_escape::decode_html_entities(&video.title);
         let url = format!("https://www.youtube.com/watch?v={}", video.id);
         let message = channel_id
-            .say(ctx, format!("**{title}** - {}\n{url}", video.channel_title))
+            .send_message(
+                ctx,
+                serenity::CreateMessage::new()
+                    .content(format!("**{title}** - {}\n{url}", video.channel_title))
+                    .allowed_mentions(serenity::CreateAllowedMentions::new()),
+            )
             .await?;
         let http = ctx.http.clone();
         tokio::spawn(async move {
@@ -145,16 +150,17 @@ fn find_video(items: Vec<SearchResult>, posted: &HashSet<String>) -> Option<Yout
             if posted.contains(&video.id) {
                 return false;
             }
-            let haystack = format!(
-                "{} {} {}",
-                video.title, video.description, video.channel_title
-            )
-            .to_ascii_lowercase();
+            let query_haystack =
+                format!("{} {}", video.title, video.description).to_ascii_lowercase();
             let has_query = QUERIES
                 .iter()
-                .any(|query| haystack.contains(&query.to_ascii_lowercase()));
+                .any(|query| query_haystack.contains(&query.to_ascii_lowercase()));
+            let moderation_haystack =
+                format!("{query_haystack} {}", video.channel_title).to_ascii_lowercase();
             let ignored = !WHITELISTED_CHANNELS.contains(&video.channel_id.as_str())
-                && IGNORE_WORDS.iter().any(|word| haystack.contains(word));
+                && IGNORE_WORDS
+                    .iter()
+                    .any(|word| moderation_haystack.contains(word));
             has_query && !ignored
         })
 }
@@ -214,6 +220,15 @@ mod tests {
         .expect("a whitelisted result should be selected");
 
         assert_eq!(selected.id, "whitelisted");
+    }
+
+    #[test]
+    fn channel_name_alone_does_not_match_a_query() {
+        let mut unrelated = result("unrelated", "A completely unrelated video", "channel");
+        unrelated.snippet.as_mut().expect("snippet").channel_title =
+            Some("6b6t creator".to_owned());
+
+        assert!(find_video(vec![unrelated], &HashSet::new()).is_none());
     }
 
     fn result(id: &str, title: &str, channel_id: &str) -> SearchResult {
