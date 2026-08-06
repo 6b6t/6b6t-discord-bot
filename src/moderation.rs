@@ -16,6 +16,9 @@ pub enum ApprovalAction {
         reason: String,
         delete_message_days: u8,
     },
+    Unban {
+        target_id: serenity::UserId,
+    },
     MediaFrequency {
         requested: u16,
     },

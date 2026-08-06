@@ -186,6 +186,58 @@ pub async fn terminatorban(
     Ok(())
 }
 
+/// Unban a user with two-person approval.
+#[poise::command(slash_command, guild_only)]
+pub async fn terminatorunban(
+    ctx: Context<'_>,
+    #[description = "The user to unban"] user: serenity::User,
+    #[description = "Reason for the unban"] reason: Option<String>,
+) -> Result<(), Error> {
+    let member = ctx
+        .author_member()
+        .await
+        .context("missing command member")?;
+    if !moderation::is_administrator(&member)
+        && !moderation::has_any_role(&member, config::AUTHORIZED_ROLE_IDS)
+    {
+        deny(ctx, "You do not have permission to use this command. Required roles: Terminator, Marketer, or Dev.").await?;
+        return Ok(());
+    }
+    let guild_id = ctx.guild_id().context("missing guild")?;
+    if moderation::is_administrator(&member) {
+        ctx.defer_ephemeral().await?;
+        guild_id
+            .unban(ctx.http(), user.id)
+            .await
+            .context("failed to unban user")?;
+        ctx.say(format!(
+            "{} was unbanned with the administrator bypass.",
+            user.tag()
+        ))
+        .await?;
+        log_action(&ctx, "User Unbanned", format!("Target: <@{}> ({})\nSubmitted by: <@{}>\nReason: {}\nApproved via administrator bypass", user.id, user.tag(), ctx.author().id, reason.as_deref().unwrap_or("No reason provided"))).await;
+        return Ok(());
+    }
+    let reason = reason.unwrap_or_else(|| "No reason provided".into());
+    let request = ctx
+        .data()
+        .pending
+        .create(
+            ctx.author().id,
+            ctx.author().tag(),
+            guild_id,
+            ApprovalAction::Unban { target_id: user.id },
+        )
+        .await;
+    send_vote(&ctx, "unban", &request, serenity::CreateEmbed::new().title("Unban Request").description(format!("<@{}> wants to unban <@{}>. A different Terminator must approve this request.\nExpires: <t:{}:R>", request.submitter_id, user.id, chrono::Utc::now().timestamp() + 3_600)).field("Reason", reason, false)).await?;
+    ctx.send(CreateReply::default().ephemeral(true).content(format!(
+        "Your unban request for {} has been submitted for approval.",
+        user.tag()
+    )))
+    .await?;
+    Ok(())
+}
+
 /// Change the Mini-Terminator role with two-person approval.
 #[poise::command(slash_command, guild_only, subcommands("mini_add", "mini_remove"))]
 #[allow(clippy::unused_async)]

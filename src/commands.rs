@@ -21,6 +21,7 @@ pub fn all() -> Vec<poise::Command<AppState, Error>> {
         banreason(),
         command_moderation::discordbannerset(),
         command_moderation::terminatorban(),
+        command_moderation::terminatorunban(),
         command_moderation::miniterminator(),
         command_moderation::mediachannelsfreq(),
     ]

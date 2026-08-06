@@ -129,6 +129,7 @@ Telegram delivery. Delete synchronization remains disabled by default.
 | `/banreason` | Moderation roles | Show a user's current ban details |
 | `/discordbannerset` | Authorized roles | Set a banner with approval or administrator bypass |
 | `/terminatorban` | Authorized roles | Ban with approval or administrator bypass |
+| `/terminatorunban` | Authorized roles | Unban with approval or administrator bypass |
 | `/miniterminator` | Terminator | Add or remove the Mini-Terminator role with approval |
 | `/mediachannelsfreq` | Terminator | Change reminder frequency with approval |
 

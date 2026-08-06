@@ -163,6 +163,13 @@ async fn approval(
                 )
                 .await?;
         }
+        ApprovalAction::Unban { target_id } => {
+            request
+                .guild_id
+                .unban(&ctx.http, *target_id)
+                .await
+                .context("failed to unban user")?;
+        }
         ApprovalAction::MediaFrequency { requested, .. } => {
             data.media.set_frequency(*requested).await?;
         }
@@ -185,7 +192,7 @@ async fn approval(
 }
 
 fn parse_approval_id(custom_id: &str) -> Option<(&str, bool, Uuid)> {
-    for prefix in ["banner", "ban", "mediafreq", "mini"] {
+    for prefix in ["banner", "ban", "unban", "mediafreq", "mini"] {
         for (action, approve) in [("approve", true), ("reject", false)] {
             if let Some(value) = custom_id.strip_prefix(&format!("{prefix}_{action}_")) {
                 return Uuid::parse_str(value).ok().map(|id| (prefix, approve, id));
