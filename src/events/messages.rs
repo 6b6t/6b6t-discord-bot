@@ -86,11 +86,7 @@ pub async fn reaction(
     if user_id == ctx.cache.current_user().id {
         return Ok(());
     }
-    let emoji = reaction.emoji.as_data();
-    let Some((_, role_id)) = config::REACTION_ROLES
-        .iter()
-        .find(|(configured, _)| *configured == emoji)
-    else {
+    let Some(role_id) = reaction_role(&reaction.emoji) else {
         return Ok(());
     };
     let guild_id = reaction
@@ -98,11 +94,17 @@ pub async fn reaction(
         .context("reaction role event was not in a guild")?;
     let member = guild_id.member(ctx, user_id).await?;
     if add {
-        member.add_role(ctx, *role_id).await?;
+        member.add_role(ctx, role_id).await?;
     } else {
-        member.remove_role(ctx, *role_id).await?;
+        member.remove_role(ctx, role_id).await?;
     }
     Ok(())
+}
+
+fn reaction_role(emoji: &serenity::ReactionType) -> Option<serenity::RoleId> {
+    config::REACTION_ROLES
+        .iter()
+        .find_map(|(configured, role_id)| emoji.unicode_eq(configured).then_some(*role_id))
 }
 
 async fn is_media_channel(ctx: &serenity::Context, message: &serenity::Message) -> bool {
@@ -154,9 +156,19 @@ async fn replace_bot_reminder(
 
 #[cfg(test)]
 mod tests {
-    use super::normalize_channel_name;
+    use super::{normalize_channel_name, reaction_role};
+    use crate::config;
+    use poise::serenity_prelude as serenity;
+
     #[test]
     fn channel_names_ignore_decorative_prefixes() {
         assert_eq!(normalize_channel_name("📷-Screenshots"), "screenshots");
+    }
+
+    #[test]
+    fn unicode_reactions_match_configured_roles() {
+        let emoji = serenity::ReactionType::Unicode("🇷🇺".to_owned());
+
+        assert_eq!(reaction_role(&emoji), Some(config::REACTION_ROLES[7].1));
     }
 }
