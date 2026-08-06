@@ -284,19 +284,21 @@ pub async fn purge(
 
     let cutoff = chrono::Utc::now().timestamp() - 14 * 24 * 60 * 60;
     let target = user.map(|user| user.id);
-    let mut cursor = serenity::MessageId::new(u64::MAX);
+    let mut cursor: Option<serenity::MessageId> = None;
     let mut fresh = Vec::new();
     let mut old = Vec::new();
     let mut collected = 0usize;
 
     while collected < amount as usize {
-        let messages = channel_id
-            .messages(ctx, serenity::GetMessages::new().before(cursor).limit(100))
-            .await?;
+        let mut request = serenity::GetMessages::new().limit(100);
+        if let Some(cursor) = cursor {
+            request = request.before(cursor);
+        }
+        let messages = channel_id.messages(ctx, request).await?;
         if messages.is_empty() {
             break;
         }
-        cursor = messages[messages.len() - 1].id;
+        cursor = Some(messages[messages.len() - 1].id);
         for message in messages {
             if collected >= amount as usize {
                 break;
