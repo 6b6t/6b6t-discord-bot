@@ -24,6 +24,7 @@ pub fn all() -> Vec<poise::Command<AppState, Error>> {
         command_moderation::terminatorunban(),
         command_moderation::miniterminator(),
         command_moderation::mediachannelsfreq(),
+        command_moderation::purge(),
     ]
 }
 

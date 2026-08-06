@@ -238,6 +238,99 @@ pub async fn terminatorunban(
     Ok(())
 }
 
+/// Bulk delete recent messages to clean up spam.
+#[poise::command(slash_command, guild_only)]
+pub async fn purge(
+    ctx: Context<'_>,
+    #[description = "Number of messages to delete (1-1000)"]
+    #[min = 1]
+    #[max = 1000]
+    amount: u16,
+    #[description = "Only delete messages from this user"] user: Option<serenity::User>,
+) -> Result<(), Error> {
+    let member = ctx
+        .author_member()
+        .await
+        .context("missing command member")?;
+    if !moderation::is_administrator(&member)
+        && !moderation::has_any_role(&member, config::AUTHORIZED_ROLE_IDS)
+    {
+        deny(ctx, "You do not have permission to use this command. Required roles: Terminator, Marketer, or Dev.").await?;
+        return Ok(());
+    }
+    let channel_id = ctx
+        .channel_id()
+        .to_channel(ctx)
+        .await
+        .context("missing channel")?
+        .guild()
+        .map(|channel| channel.id)
+        .context("purge must be used in a guild text channel")?;
+    let bot_id = ctx.framework().bot_id;
+    ctx.defer_ephemeral().await?;
+
+    let cutoff = chrono::Utc::now().timestamp() - 14 * 24 * 60 * 60;
+    let target = user.map(|user| user.id);
+    let mut cursor = serenity::MessageId::new(u64::MAX);
+    let mut fresh = Vec::new();
+    let mut old = Vec::new();
+    let mut collected = 0usize;
+
+    while collected < amount as usize {
+        let messages = channel_id
+            .messages(ctx, serenity::GetMessages::new().before(cursor).limit(100))
+            .await?;
+        if messages.is_empty() {
+            break;
+        }
+        cursor = messages[messages.len() - 1].id;
+        for message in messages {
+            if collected >= amount as usize {
+                break;
+            }
+            if message.author.id == bot_id {
+                continue;
+            }
+            if target.is_some_and(|id| message.author.id != id) {
+                continue;
+            }
+            if message.id.created_at().unix_timestamp() >= cutoff {
+                fresh.push(message.id);
+            } else {
+                old.push(message.id);
+            }
+            collected += 1;
+        }
+    }
+
+    let mut deleted = 0usize;
+    for chunk in fresh.chunks(100) {
+        if let Err(error) = channel_id.delete_messages(ctx, chunk).await {
+            tracing::error!(%error, channel_id = %channel_id, "failed to bulk delete messages");
+            for id in chunk {
+                if let Err(error) = channel_id.delete_message(ctx, *id).await {
+                    tracing::error!(%error, channel_id = %channel_id, message_id = %id, "failed to delete message");
+                } else {
+                    deleted += 1;
+                }
+            }
+        } else {
+            deleted += chunk.len();
+        }
+    }
+    for id in &old {
+        if let Err(error) = channel_id.delete_message(ctx, *id).await {
+            tracing::error!(%error, channel_id = %channel_id, message_id = %id, "failed to delete old message");
+        } else {
+            deleted += 1;
+        }
+    }
+
+    ctx.say(format!("Purged {deleted} message(s) in <#{channel_id}>."))
+        .await?;
+    Ok(())
+}
+
 /// Change the Mini-Terminator role with two-person approval.
 #[poise::command(slash_command, guild_only, subcommands("mini_add", "mini_remove"))]
 #[allow(clippy::unused_async)]

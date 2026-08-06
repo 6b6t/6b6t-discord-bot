@@ -130,6 +130,7 @@ Telegram delivery. Delete synchronization remains disabled by default.
 | `/discordbannerset` | Authorized roles | Set a banner with approval or administrator bypass |
 | `/terminatorban` | Authorized roles | Ban with approval or administrator bypass |
 | `/terminatorunban` | Authorized roles | Unban with approval or administrator bypass |
+| `/purge` | Authorized roles | Bulk delete recent messages (optionally from one user) |
 | `/miniterminator` | Terminator | Add or remove the Mini-Terminator role with approval |
 | `/mediachannelsfreq` | Terminator | Change reminder frequency with approval |
 
