@@ -20,7 +20,7 @@ pub struct LinkMapping {
 #[derive(Clone, Debug, sqlx::FromRow)]
 pub struct PlayerInfo {
     pub name: String,
-    pub first_join: chrono::NaiveDateTime,
+    pub first_join_millis: i64,
 }
 
 impl Databases {
@@ -66,7 +66,7 @@ impl Databases {
 
     pub async fn player_info(&self, uuid: &str) -> Result<Option<PlayerInfo>> {
         sqlx::query_as::<_, PlayerInfo>(
-            "SELECT name, first_join FROM player_info WHERE uuid = ? LIMIT 1",
+            "SELECT name, first_join AS first_join_millis FROM player_info WHERE uuid = ? LIMIT 1",
         )
         .bind(uuid)
         .fetch_optional(&self.stats)

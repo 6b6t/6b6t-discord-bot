@@ -143,11 +143,12 @@ impl ServerService {
         let Some(top_rank) = self.top_rank(&player.name).await? else {
             return Ok(None);
         };
+        let first_join_year = year_from_epoch_millis(player.first_join_millis)?;
         Ok(Some((
             player.name,
             UserInfo {
                 top_rank,
-                first_join_year: player.first_join.year(),
+                first_join_year,
             },
         )))
     }
@@ -164,7 +165,7 @@ impl ServerService {
         };
         Ok(Some(UserInfo {
             top_rank,
-            first_join_year: player.first_join.year(),
+            first_join_year: year_from_epoch_millis(player.first_join_millis)?,
         }))
     }
 
@@ -388,6 +389,12 @@ fn highest_rank(ranks: &[String]) -> &'static str {
     .unwrap_or("default")
 }
 
+fn year_from_epoch_millis(timestamp: i64) -> Result<i32> {
+    chrono::DateTime::from_timestamp_millis(timestamp)
+        .map(|date| date.year())
+        .with_context(|| format!("invalid first_join timestamp: {timestamp}"))
+}
+
 fn metric_values(text: &str, name: &str) -> Vec<f64> {
     text.lines()
         .filter_map(|line| {
@@ -419,7 +426,10 @@ fn hytale_metrics_url(endpoint: &str) -> Result<reqwest::Url> {
 
 #[cfg(test)]
 mod tests {
-    use super::{format_duration, highest_rank, hytale_metrics_url, metric_average, metric_sum};
+    use super::{
+        format_duration, highest_rank, hytale_metrics_url, metric_average, metric_sum,
+        year_from_epoch_millis,
+    };
     #[test]
     fn duration_formats_nonzero_units() {
         assert_eq!(format_duration(90_061), "1d 1h 1m 1s");
@@ -429,6 +439,14 @@ mod tests {
     fn ranks_follow_role_priority() {
         assert_eq!(highest_rank(&["prime".into(), "apex".into()]), "apex");
         assert_eq!(highest_rank(&[]), "default");
+    }
+    #[test]
+    fn first_join_year_uses_epoch_milliseconds() {
+        assert_eq!(
+            year_from_epoch_millis(1_786_118_048_395).expect("valid timestamp"),
+            2026
+        );
+        assert!(year_from_epoch_millis(i64::MAX).is_err());
     }
     #[test]
     fn prometheus_metrics_are_aggregated() {
