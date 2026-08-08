@@ -92,7 +92,7 @@ are configured.
 | --- | --- | --- |
 | `ANARCHY_ANALYTICS_CHANNEL_ID` | For analytics | Channel receiving the hourly report |
 | `REDIS_URI` | Either this or host | Full Redis connection string, e.g. `redis://default:pass@host:6379` |
-| `REDIS_HOST` | For analytics | Redis host (when `REDIS_URI` is not set) |
+| `REDIS_HOST` | For analytics | Redis host (when `REDIS_URI` is not set); a full `redis://` URI here is also accepted |
 | `REDIS_PORT` | No | Redis port, defaults to `6379` |
 | `REDIS_PASSWORD` | No | Redis password |
 | `REDIS_DB` | No | Redis database number, defaults to `0` |

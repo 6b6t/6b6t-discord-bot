@@ -303,7 +303,23 @@ fn parse_database_config() -> Result<Option<DatabaseConfig>> {
 }
 
 fn parse_redis_config() -> Result<Option<RedisConfig>> {
-    if let Some(uri) = optional_env("REDIS_URI") {
+    redis_config_from_env(
+        optional_env("REDIS_URI"),
+        optional_env("REDIS_HOST"),
+        optional_env("REDIS_PORT"),
+        optional_env("REDIS_PASSWORD"),
+        optional_env("REDIS_DB"),
+    )
+}
+
+fn redis_config_from_env(
+    uri: Option<String>,
+    host: Option<String>,
+    port: Option<String>,
+    password: Option<String>,
+    database: Option<String>,
+) -> Result<Option<RedisConfig>> {
+    if let Some(uri) = uri.or_else(|| host.as_ref().filter(|host| host.contains("://")).cloned()) {
         return Ok(Some(RedisConfig {
             uri: Some(uri),
             host: String::new(),
@@ -312,14 +328,15 @@ fn parse_redis_config() -> Result<Option<RedisConfig>> {
             database: 0,
         }));
     }
-    let Some(host) = optional_env("REDIS_HOST") else {
+    let Some(host) = host else {
         return Ok(None);
     };
-    let port = env::var("REDIS_PORT")
-        .unwrap_or_else(|_| "6379".into())
-        .parse()
-        .context("REDIS_PORT must be a port number")?;
-    let database = optional_env("REDIS_DB")
+    let port = port
+        .map(|value| value.parse())
+        .transpose()
+        .context("REDIS_PORT must be a port number")?
+        .unwrap_or(6379);
+    let database = database
         .map(|value| value.parse())
         .transpose()
         .context("REDIS_DB must be a database number")?
@@ -331,7 +348,7 @@ fn parse_redis_config() -> Result<Option<RedisConfig>> {
         uri: None,
         host,
         port,
-        password: optional_env("REDIS_PASSWORD"),
+        password,
         database,
     }))
 }
@@ -511,5 +528,29 @@ mod tests {
                 "URI should parse successfully: {uri}"
             );
         }
+    }
+
+    #[test]
+    fn redis_host_accepts_a_full_uri_or_a_plain_host() {
+        let uri_config = super::redis_config_from_env(
+            None,
+            Some("redis://default:oupxphqjxxdeei35@178.156.151.149:6379".to_owned()),
+            None,
+            None,
+            None,
+        )
+        .expect("URI host should parse")
+        .expect("Redis should be enabled");
+        assert!(uri_config.uri.is_some());
+        assert!(redis::Client::open(uri_config.connection_url()).is_ok());
+
+        let host_config =
+            super::redis_config_from_env(None, Some("redis.internal".to_owned()), None, None, None)
+                .expect("plain host should parse")
+                .expect("Redis should be enabled");
+        assert_eq!(
+            host_config.connection_url(),
+            "redis://redis.internal:6379/0"
+        );
     }
 }
