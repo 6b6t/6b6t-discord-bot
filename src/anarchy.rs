@@ -53,7 +53,7 @@ pub struct AnarchyService {
 impl AnarchyService {
     pub fn new(config: &RedisConfig, channel_id: serenity::ChannelId) -> Result<Self> {
         let client = redis::Client::open(config.connection_url())
-            .context("failed to build the Redis client")?;
+            .context("failed to parse the Redis connection URI; check REDIS_URI/REDIS_HOST and make sure the password contains no raw '#' or '?' characters")?;
         Ok(Self { client, channel_id })
     }
 

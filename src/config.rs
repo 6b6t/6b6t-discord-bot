@@ -124,7 +124,7 @@ pub struct RedisConfig {
 impl RedisConfig {
     pub fn connection_url(&self) -> String {
         if let Some(uri) = &self.uri {
-            return uri.clone();
+            return normalize_redis_uri(uri);
         }
         let authority = match &self.password {
             Some(password) => format!(
@@ -137,6 +137,60 @@ impl RedisConfig {
         };
         format!("redis://{authority}/{}", self.database)
     }
+}
+
+fn normalize_redis_uri(uri: &str) -> String {
+    let Some((scheme, rest)) = uri.split_once("://") else {
+        return uri.to_owned();
+    };
+    if !matches!(scheme.to_ascii_lowercase().as_str(), "redis" | "valkey") {
+        return uri.to_owned();
+    }
+    // The userinfo is everything before the final '@'; only afterwards do the
+    // path, query, and fragment delimiters apply. Splitting at the final '@'
+    // first keeps special characters inside the password intact.
+    let (userinfo, host_port) = match rest.rsplit_once('@') {
+        Some((userinfo, host_port)) => (Some(userinfo), host_port),
+        None => (None, rest),
+    };
+    let (host_port, fragment) = match host_port.split_once('#') {
+        Some((head, fragment)) => (head, Some(fragment)),
+        None => (host_port, None),
+    };
+    let (host_port, query) = match host_port.split_once('?') {
+        Some((head, query)) => (head, Some(query)),
+        None => (host_port, None),
+    };
+    let (host, path) = match host_port.split_once('/') {
+        Some((host, path)) => (host, Some(path)),
+        None => (host_port, None),
+    };
+    let mut prefix = String::new();
+    if let Some(userinfo) = userinfo {
+        match userinfo.split_once(':') {
+            Some((user, password)) => {
+                prefix.push_str(user);
+                prefix.push(':');
+                prefix.push_str(&encode_redis_password(password));
+            }
+            None => prefix.push_str(userinfo),
+        }
+        prefix.push('@');
+    }
+    let mut result = format!("{scheme}://{prefix}{host}");
+    if let Some(path) = path {
+        result.push('/');
+        result.push_str(path);
+    }
+    if let Some(query) = query {
+        result.push('?');
+        result.push_str(query);
+    }
+    if let Some(fragment) = fragment {
+        result.push('#');
+        result.push_str(fragment);
+    }
+    result
 }
 
 #[derive(Clone, Debug)]
@@ -365,7 +419,6 @@ fn env_bool(name: &str, fallback: bool) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{RedisConfig, encode_redis_password, env_bool};
-
     #[test]
     fn absent_boolean_uses_fallback() {
         assert!(env_bool("SIXBSIXT_TEST_MISSING_BOOLEAN", true));
@@ -411,5 +464,52 @@ mod tests {
     fn redis_password_keeps_unreserved_characters() {
         assert_eq!(encode_redis_password("simple-pass_1"), "simple-pass_1");
         assert_eq!(encode_redis_password("a b"), "a%20b");
+    }
+
+    #[test]
+    fn redis_uri_keeps_delimiters_outside_the_password() {
+        let config = |uri: &str| RedisConfig {
+            uri: Some(uri.to_owned()),
+            host: String::new(),
+            port: 0,
+            password: None,
+            database: 0,
+        };
+
+        assert_eq!(
+            config("redis://user:pa@ss#w?rd/1@host:6380/2?protocol=resp3#frag").connection_url(),
+            "redis://user:pa%40ss%23w%3Frd%2F1@host:6380/2?protocol=resp3#frag"
+        );
+        assert_eq!(
+            config("valkey://:pass@host:6379").connection_url(),
+            "valkey://:pass@host:6379"
+        );
+    }
+
+    #[test]
+    fn redis_uri_parses_with_the_redis_client() {
+        let candidates = [
+            "redis://default:xxxxx@178.156.151.149:6379",
+            "redis://default:pa@ss@178.156.151.149:6379",
+            "redis://default:pa#ss@178.156.151.149:6379",
+            "redis://default:pa ss@178.156.151.149:6379",
+            "redis://:pass@178.156.151.149:6379/3",
+            "valkey://user:p?ss@host:6380/2",
+            "redis://host:6379/0?protocol=resp3",
+        ];
+        for uri in candidates {
+            let normalized = RedisConfig {
+                uri: Some(uri.to_owned()),
+                host: String::new(),
+                port: 0,
+                password: None,
+                database: 0,
+            }
+            .connection_url();
+            assert!(
+                redis::Client::open(normalized).is_ok(),
+                "URI should parse successfully: {uri}"
+            );
+        }
     }
 }
