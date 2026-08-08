@@ -73,6 +73,14 @@ pub async fn handle(
         Duration::from_mins(10),
         |_ctx, data| Box::pin(clean_pending_approvals(data)),
     );
+    if data.anarchy.is_some() {
+        spawn_interval(
+            ctx.clone(),
+            data.clone(),
+            Duration::from_hours(1),
+            |ctx, data| Box::pin(anarchy_analytics(ctx, data)),
+        );
+    }
     spawn_reminders(ctx.clone());
     Ok(())
 }
@@ -155,6 +163,15 @@ async fn clean_pending_approvals(data: &AppState) {
     let removed = data.pending.cleanup_expired().await;
     if removed > 0 {
         tracing::info!(removed, "expired pending approval requests");
+    }
+}
+
+async fn anarchy_analytics(ctx: &serenity::Context, data: &AppState) {
+    let Some(anarchy) = &data.anarchy else {
+        return;
+    };
+    if let Err(error) = anarchy.report(ctx).await {
+        tracing::error!(%error, "anarchy mod analytics report failed");
     }
 }
 

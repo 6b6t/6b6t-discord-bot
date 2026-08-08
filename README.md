@@ -81,6 +81,22 @@ variables are not set.
 | `MOTD_REVIEW_API_URL` | No | Explicit MOTD review endpoint |
 | `WEBSITE_BASE_URL` | No | Website base URL used to derive the review endpoint |
 
+### Anarchy mod analytics
+
+Every hour the bot posts anarchy mod tracking analytics (all-time, today, and
+yesterday hits and unique IPs) to a Discord channel. The service reads the
+`anarchymod:*` keys from Redis and is enabled when both the channel and Redis
+are configured.
+
+| Variable | Required | Purpose |
+| --- | --- | --- |
+| `ANARCHY_ANALYTICS_CHANNEL_ID` | For analytics | Channel receiving the hourly report |
+| `REDIS_URI` | Either this or host | Full Redis connection string, e.g. `redis://default:pass@host:6379` |
+| `REDIS_HOST` | For analytics | Redis host (when `REDIS_URI` is not set) |
+| `REDIS_PORT` | No | Redis port, defaults to `6379` |
+| `REDIS_PASSWORD` | No | Redis password |
+| `REDIS_DB` | No | Redis database number, defaults to `0` |
+
 ### Telegram crossposting
 
 Crossposting is enabled when both `TELEGRAM_CROSSPOST_BOT_TOKEN` and at least

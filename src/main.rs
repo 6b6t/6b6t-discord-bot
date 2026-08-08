@@ -1,3 +1,4 @@
+mod anarchy;
 mod command_moderation;
 mod commands;
 mod config;

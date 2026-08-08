@@ -4,8 +4,9 @@ use anyhow::{Context as _, Result};
 use tokio::sync::{Mutex, RwLock};
 
 use crate::{
-    config::Environment, database::Databases, media::MediaState, moderation::PendingApprovals,
-    server::ServerService, telegram::TelegramService, youtube::YoutubeService,
+    anarchy::AnarchyService, config::Environment, database::Databases, media::MediaState,
+    moderation::PendingApprovals, server::ServerService, telegram::TelegramService,
+    youtube::YoutubeService,
 };
 
 #[derive(Clone)]
@@ -18,6 +19,7 @@ pub struct AppState {
     pub server: ServerService,
     pub telegram: Option<TelegramService>,
     pub youtube: YoutubeService,
+    pub anarchy: Option<AnarchyService>,
     pub role_sync_cache: Arc<RwLock<HashMap<String, CachedUserInfo>>>,
     pub ready_started: Arc<Mutex<bool>>,
 }
@@ -55,6 +57,7 @@ impl AppState {
             .telegram
             .as_ref()
             .map(|config| TelegramService::new(http.clone(), config.clone(), databases.clone()));
+        let anarchy = load_anarchy(&environment);
 
         Ok(Self {
             server: ServerService::new(http.clone(), Arc::clone(&environment), databases.clone()),
@@ -65,6 +68,7 @@ impl AppState {
             media: Arc::new(MediaState::load().await?),
             pending: Arc::new(PendingApprovals::default()),
             telegram,
+            anarchy,
             role_sync_cache: Arc::new(RwLock::new(HashMap::new())),
             ready_started: Arc::new(Mutex::new(false)),
         })
@@ -83,3 +87,22 @@ impl AppState {
 
 pub type Error = anyhow::Error;
 pub type Context<'a> = poise::Context<'a, AppState, Error>;
+
+fn load_anarchy(environment: &Arc<Environment>) -> Option<AnarchyService> {
+    let (Some(channel_id), Some(redis)) = (
+        environment.anarchy_analytics_channel_id,
+        environment.redis.as_ref(),
+    ) else {
+        tracing::warn!(
+            "anarchy analytics require ANARCHY_ANALYTICS_CHANNEL_ID and REDIS_HOST; analytics are disabled"
+        );
+        return None;
+    };
+    match AnarchyService::new(redis, channel_id) {
+        Ok(service) => Some(service),
+        Err(error) => {
+            tracing::error!(%error, "failed to initialize anarchy mod analytics; disabled");
+            None
+        }
+    }
+}

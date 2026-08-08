@@ -113,6 +113,33 @@ pub struct DatabaseConfig {
 }
 
 #[derive(Clone, Debug)]
+pub struct RedisConfig {
+    pub uri: Option<String>,
+    pub host: String,
+    pub port: u16,
+    pub password: Option<String>,
+    pub database: i64,
+}
+
+impl RedisConfig {
+    pub fn connection_url(&self) -> String {
+        if let Some(uri) = &self.uri {
+            return uri.clone();
+        }
+        let authority = match &self.password {
+            Some(password) => format!(
+                ":{}@{}:{}",
+                encode_redis_password(password),
+                self.host,
+                self.port
+            ),
+            None => format!("{}:{}", self.host, self.port),
+        };
+        format!("redis://{authority}/{}", self.database)
+    }
+}
+
+#[derive(Clone, Debug)]
 pub struct Environment {
     pub discord_token: String,
     pub vote_channel_id: Option<serenity::ChannelId>,
@@ -125,6 +152,8 @@ pub struct Environment {
     pub hytale_password: Option<String>,
     pub motd_review_url: String,
     pub motd_review_secret: Option<String>,
+    pub anarchy_analytics_channel_id: Option<serenity::ChannelId>,
+    pub redis: Option<RedisConfig>,
     pub database: Option<DatabaseConfig>,
     pub telegram: Option<TelegramConfig>,
 }
@@ -160,6 +189,11 @@ impl Environment {
                 format!("{}/api/discord/motd/review", website.trim_end_matches('/'))
             }),
             motd_review_secret: optional_env("MOTD_REVIEW_BOT_SECRET"),
+            anarchy_analytics_channel_id: optional_id("ANARCHY_ANALYTICS_CHANNEL_ID")?,
+            redis: parse_redis_config().unwrap_or_else(|error| {
+                tracing::error!(%error, "Redis configuration is invalid; anarchy mod analytics are disabled");
+                None
+            }),
             database,
             telegram,
         })
@@ -212,6 +246,61 @@ fn parse_database_config() -> Result<Option<DatabaseConfig>> {
             .unwrap_or_else(|| "6b6t_link".into()),
         stats_database,
     }))
+}
+
+fn parse_redis_config() -> Result<Option<RedisConfig>> {
+    if let Some(uri) = optional_env("REDIS_URI") {
+        return Ok(Some(RedisConfig {
+            uri: Some(uri),
+            host: String::new(),
+            port: 0,
+            password: None,
+            database: 0,
+        }));
+    }
+    let Some(host) = optional_env("REDIS_HOST") else {
+        return Ok(None);
+    };
+    let port = env::var("REDIS_PORT")
+        .unwrap_or_else(|_| "6379".into())
+        .parse()
+        .context("REDIS_PORT must be a port number")?;
+    let database = optional_env("REDIS_DB")
+        .map(|value| value.parse())
+        .transpose()
+        .context("REDIS_DB must be a database number")?
+        .unwrap_or(0);
+    if database < 0 {
+        bail!("REDIS_DB must be a non-negative database number");
+    }
+    Ok(Some(RedisConfig {
+        uri: None,
+        host,
+        port,
+        password: optional_env("REDIS_PASSWORD"),
+        database,
+    }))
+}
+
+fn encode_redis_password(password: &str) -> std::borrow::Cow<'_, str> {
+    let needs_encoding = password
+        .bytes()
+        .any(|byte| !byte.is_ascii_alphanumeric() && !matches!(byte, b'-' | b'_' | b'.' | b'~'));
+    if !needs_encoding {
+        return std::borrow::Cow::Borrowed(password);
+    }
+    std::borrow::Cow::Owned(
+        password
+            .bytes()
+            .map(|byte| {
+                if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~') {
+                    (byte as char).to_string()
+                } else {
+                    format!("%{byte:02X}")
+                }
+            })
+            .collect(),
+    )
 }
 
 fn parse_telegram_config() -> Result<Option<TelegramConfig>> {
@@ -275,10 +364,52 @@ fn env_bool(name: &str, fallback: bool) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::env_bool;
+    use super::{RedisConfig, encode_redis_password, env_bool};
 
     #[test]
     fn absent_boolean_uses_fallback() {
         assert!(env_bool("SIXBSIXT_TEST_MISSING_BOOLEAN", true));
+    }
+
+    #[test]
+    fn redis_url_encodes_credentials() {
+        let plain = RedisConfig {
+            uri: None,
+            host: "localhost".into(),
+            port: 6379,
+            password: None,
+            database: 0,
+        };
+        assert_eq!(plain.connection_url(), "redis://localhost:6379/0");
+
+        let with_password = RedisConfig {
+            password: Some("p@ss w0rd".into()),
+            ..plain.clone()
+        };
+        assert_eq!(
+            with_password.connection_url(),
+            "redis://:p%40ss%20w0rd@localhost:6379/0"
+        );
+    }
+
+    #[test]
+    fn redis_uri_is_used_verbatim() {
+        let config = RedisConfig {
+            uri: Some("redis://default:xxxxx@178.156.151.149:6379".into()),
+            host: String::new(),
+            port: 0,
+            password: None,
+            database: 0,
+        };
+        assert_eq!(
+            config.connection_url(),
+            "redis://default:xxxxx@178.156.151.149:6379"
+        );
+    }
+
+    #[test]
+    fn redis_password_keeps_unreserved_characters() {
+        assert_eq!(encode_redis_password("simple-pass_1"), "simple-pass_1");
+        assert_eq!(encode_redis_password("a b"), "a%20b");
     }
 }
