@@ -33,9 +33,8 @@ pub struct DailyStats {
 }
 
 impl AnarchyStats {
-    /// Renders the analytics report. The percentage lines are omitted when the
-    /// backing Redis key is absent or empty (the service does not maintain it
-    /// yet) or when the online player count is unavailable.
+    /// Renders the analytics report. The percentage lines are always present;
+    /// `n/a` is shown when the denominator is missing or zero.
     pub fn render(&self, online_players: Option<u64>) -> String {
         let mut message = format!(
             "**Anarchy Mod Analytics**\n\
@@ -51,22 +50,37 @@ impl AnarchyStats {
             comma_count(self.yesterday.hits),
             comma_count(self.yesterday.unique),
         );
-        if let Some(percent) = percentage(self.online_users, online_players) {
-            let _ = writeln!(
-                message,
-                "Online: {} out of {} online players use AnarchyMod ({}%)",
-                comma_count(self.online_users),
-                comma_count(online_players.unwrap_or(0)),
-                percent
-            );
+        match online_players {
+            Some(players) => {
+                let _ = writeln!(
+                    message,
+                    "Online: {} out of {} online players use AnarchyMod ({}%)",
+                    comma_count(self.online_users),
+                    comma_count(players),
+                    percentage(self.online_users, players)
+                );
+            }
+            None => {
+                let _ = writeln!(
+                    message,
+                    "Online: {} AnarchyMod users currently online (player count unavailable)",
+                    comma_count(self.online_users)
+                );
+            }
         }
-        if let Some(percent) = percentage(self.today.unique, Some(self.active_players_today)) {
+        if self.active_players_today > 0 {
             let _ = writeln!(
                 message,
                 "Today's players: {} out of {} players active today use AnarchyMod ({}%)",
                 comma_count(self.today.unique),
                 comma_count(self.active_players_today),
-                percent
+                percentage(self.today.unique, self.active_players_today)
+            );
+        } else {
+            let _ = writeln!(
+                message,
+                "Today's players: {} AnarchyMod users active today (player count unavailable)",
+                comma_count(self.today.unique)
             );
         }
         message
@@ -106,8 +120,9 @@ impl AnarchyService {
             .get_multiplexed_async_connection()
             .await
             .context("failed to connect to Redis")?;
-        let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
-        let yesterday = (chrono::Utc::now() - chrono::Duration::days(1))
+        let now = chrono::Utc::now().with_timezone(&chrono_tz::Europe::Berlin);
+        let today = now.format("%Y-%m-%d").to_string();
+        let yesterday = (now - chrono::Duration::days(1))
             .format("%Y-%m-%d")
             .to_string();
 
@@ -166,16 +181,16 @@ async fn fetch_counter(
 
 /// Rounded percentage of `numerator` over `denominator`, clamped to 100.
 ///
-/// Returns `None` when the denominator is missing or either side is zero —
-/// a zero count means the corresponding Redis key is absent or empty, and the
-/// percentage line is omitted until the backend maintains it.
-fn percentage(numerator: u64, denominator: Option<u64>) -> Option<u8> {
-    let denominator = denominator?;
-    if numerator == 0 || denominator == 0 {
-        return None;
+/// Returns `0` when the denominator is zero (backing key absent or empty).
+fn percentage(numerator: u64, denominator: u64) -> u8 {
+    if denominator == 0 {
+        return 0;
     }
-    let percent = (numerator.saturating_mul(100) + denominator / 2) / denominator;
-    Some(percent.min(100) as u8)
+    let percent = numerator
+        .saturating_mul(100)
+        .saturating_add(denominator / 2)
+        / denominator;
+    percent.min(100) as u8
 }
 
 fn comma_count(value: u64) -> String {
@@ -204,17 +219,16 @@ mod tests {
 
     #[test]
     fn percentages_round_and_clamp() {
-        assert_eq!(percentage(45, Some(371)), Some(12));
-        assert_eq!(percentage(1, Some(3)), Some(33));
-        assert_eq!(percentage(3, Some(3)), Some(100));
-        assert_eq!(percentage(5, Some(3)), Some(100)); // clamped, IPs exceed players
+        assert_eq!(percentage(45, 371), 12);
+        assert_eq!(percentage(1, 3), 33);
+        assert_eq!(percentage(3, 3), 100);
+        assert_eq!(percentage(5, 3), 100); // clamped, IPs exceed players
     }
 
     #[test]
-    fn percentages_are_omitted_without_data() {
-        assert_eq!(percentage(0, Some(371)), None);
-        assert_eq!(percentage(45, None), None);
-        assert_eq!(percentage(45, Some(0)), None);
+    fn percentage_is_zero_without_denominator() {
+        assert_eq!(percentage(45, 0), 0);
+        assert_eq!(percentage(0, 0), 0);
     }
 
     fn sample_stats() -> AnarchyStats {
@@ -249,22 +263,32 @@ mod tests {
     }
 
     #[test]
-    fn percentage_lines_are_omitted_when_data_is_missing() {
+    fn percentage_lines_are_always_shown() {
         let mut stats = sample_stats();
         stats.online_users = 0;
         stats.active_players_today = 0;
         let rendered = stats.render(None);
-        assert!(!rendered.contains("use AnarchyMod"));
+        assert!(rendered.contains(
+            "Online: 0 AnarchyMod users currently online (player count unavailable)"
+        ));
+        assert!(rendered.contains(
+            "Today's players: 890 AnarchyMod users active today (player count unavailable)"
+        ));
         let rendered = stats.render(Some(0));
-        assert!(!rendered.contains("use AnarchyMod"));
+        assert!(rendered.contains("Online: 0 out of 0 online players use AnarchyMod (0%)"));
+        assert!(rendered.contains(
+            "Today's players: 890 AnarchyMod users active today (player count unavailable)"
+        ));
     }
 
     #[test]
-    fn today_line_is_omitted_without_backend_data() {
+    fn today_line_is_always_shown_with_unavailable_denominator() {
         let mut stats = sample_stats();
         stats.active_players_today = 0;
         let rendered = stats.render(Some(371));
         assert!(rendered.contains("Online: 45 out of 371 online players use AnarchyMod (12%)"));
-        assert!(!rendered.contains("Today's players"));
+        assert!(rendered.contains(
+            "Today's players: 890 AnarchyMod users active today (player count unavailable)"
+        ));
     }
 }
