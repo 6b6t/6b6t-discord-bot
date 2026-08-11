@@ -6,10 +6,43 @@ use uuid::Uuid;
 
 const APPROVAL_TTL: Duration = Duration::from_hours(1);
 
+/// The guild image a submission targets: the server banner, the invite splash,
+/// or the Server Discovery splash.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, poise::ChoiceParameter)]
+pub enum BannerLocation {
+    #[name = "Server banner"]
+    Banner,
+    #[name = "Invite splash"]
+    Splash,
+    #[name = "Discovery splash"]
+    DiscoverySplash,
+}
+
+impl BannerLocation {
+    /// Lowercase label for user-facing messages.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Banner => "server banner",
+            Self::Splash => "server invite splash",
+            Self::DiscoverySplash => "server Discovery splash",
+        }
+    }
+
+    /// Audit log title for a completed change.
+    pub fn change_title(self) -> &'static str {
+        match self {
+            Self::Banner => "Server Banner Changed",
+            Self::Splash => "Server Invite Splash Changed",
+            Self::DiscoverySplash => "Server Discovery Splash Changed",
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum ApprovalAction {
-    Banner {
+    GuildImage {
         image_url: String,
+        location: BannerLocation,
     },
     Ban {
         target_id: serenity::UserId,

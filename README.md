@@ -84,9 +84,22 @@ variables are not set.
 ### Anarchy mod analytics
 
 Every hour the bot posts anarchy mod tracking analytics (all-time, today, and
-yesterday hits and unique IPs) to a Discord channel. The service reads the
-`anarchymod:*` keys from Redis and is enabled when both the channel and Redis
-are configured.
+yesterday hits and unique IPs) to a Discord channel. When the backend also
+maintains the optional keys below, the report additionally shows the share of
+online players and of today's active players using the mod; each percentage
+line is omitted while its key is empty or missing.
+
+| Key | Type | Purpose |
+| --- | --- | --- |
+| `anarchymod:hits:total` | Counter | All-time hits |
+| `anarchymod:unique_ips:all_time` | Set | All-time unique IPs |
+| `anarchymod:hits:daily:YYYY-MM-DD` | Counter | Daily hits |
+| `anarchymod:unique_ips:daily:YYYY-MM-DD` | Set | Daily unique IPs |
+| `anarchymod:unique_ips:online` | Set | AnarchyMod users currently online (percentage denominator: live player count from the command service) |
+| `unique_players:daily:YYYY-MM-DD` | Set | All players active that day (percentage denominator for today's mod share) |
+
+The service reads these keys from Redis and is enabled when both the channel
+and Redis are configured.
 
 | Variable | Required | Purpose |
 | --- | --- | --- |
@@ -143,7 +156,7 @@ Telegram delivery. Delete synchronization remains disabled by default.
 | `/hytaleplayers` | Everyone | Show Hytale players and metrics |
 | `/getuser` | Administrator | Look up a linked Minecraft account |
 | `/banreason` | Moderation roles | Show a user's current ban details |
-| `/discordbannerset` | Authorized roles | Set a banner with approval or administrator bypass |
+| `/discordbannerset` | Authorized roles | Set the server banner, invite splash, or Discovery splash with approval or administrator bypass |
 | `/terminatorban` | Authorized roles | Ban with approval or administrator bypass |
 | `/terminatorunban` | Authorized roles | Unban with approval or administrator bypass |
 | `/purge` | Authorized roles | Bulk delete recent messages (optionally from one user) |

@@ -5,16 +5,19 @@ use poise::{CreateReply, serenity_prelude as serenity};
 use crate::{
     config,
     media::{MAX_FREQUENCY, MIN_FREQUENCY},
-    moderation::{self, ApprovalAction},
+    moderation::{self, ApprovalAction, BannerLocation},
     state::{Context, Error},
 };
 
-/// Set the server banner with two-person approval.
+/// Set the server banner, invite splash, or Discovery splash with two-person approval.
 #[poise::command(slash_command, guild_only)]
 pub async fn discordbannerset(
     ctx: Context<'_>,
     #[description = "Upload a PNG, JPG, GIF, or WebP banner"] image: Option<serenity::Attachment>,
     #[description = "URL to a hosted banner image"] url: Option<String>,
+    #[description = "Where to set the image; defaults to the server banner"] location: Option<
+        BannerLocation,
+    >,
 ) -> Result<(), Error> {
     let member = ctx
         .author_member()
@@ -27,22 +30,30 @@ pub async fn discordbannerset(
         return Ok(());
     }
     let banner = validate_banner(image.as_ref(), url.as_deref())?;
+    let location = location.unwrap_or(BannerLocation::Banner);
     let image_url = banner.url;
-    let is_animated = banner.is_animated;
     let premium_tier = ctx.guild().map(|guild| guild.premium_tier);
-    let required_tier = if is_animated {
-        serenity::PremiumTier::Tier3
-    } else {
-        serenity::PremiumTier::Tier2
-    };
-    if premium_tier.is_some_and(|tier| tier < required_tier) {
+    if let Some((required, (name, level))) = boost_gate(location, banner.is_animated)
+        && premium_tier.is_some_and(|tier| tier < required)
+    {
         deny(
             ctx,
-            if is_animated {
-                "This server needs Boost Level 3 to set an animated banner."
-            } else {
-                "This server needs Boost Level 2 to set a banner."
-            },
+            &format!("This server needs Boost {level} to set {name}."),
+        )
+        .await?;
+        return Ok(());
+    }
+    if location == BannerLocation::DiscoverySplash
+        && !ctx.guild().is_some_and(|guild| {
+            guild
+                .features
+                .iter()
+                .any(|feature| feature == "DISCOVERABLE")
+        })
+    {
+        deny(
+            ctx,
+            "This server is not in the Server Discovery directory, so the Discovery splash cannot be set.",
         )
         .await?;
         return Ok(());
@@ -50,12 +61,15 @@ pub async fn discordbannerset(
     let guild_id = ctx.guild_id().context("missing guild")?;
     if moderation::is_administrator(&member) {
         ctx.defer_ephemeral().await?;
-        set_banner(ctx.http(), &ctx.data().http, guild_id, &image_url).await?;
-        ctx.say("The server banner was updated with the administrator bypass.")
-            .await?;
+        set_guild_image(ctx.http(), &ctx.data().http, guild_id, location, &image_url).await?;
+        ctx.say(format!(
+            "The {} was updated with the administrator bypass.",
+            location.label()
+        ))
+        .await?;
         log_action(
             &ctx,
-            "Server Banner Changed",
+            location.change_title(),
             format!(
                 "Submitted by <@{}> via administrator bypass.\n[View image]({image_url})",
                 ctx.author().id
@@ -71,17 +85,22 @@ pub async fn discordbannerset(
             ctx.author().id,
             ctx.author().tag(),
             guild_id,
-            ApprovalAction::Banner {
+            ApprovalAction::GuildImage {
                 image_url: image_url.clone(),
+                location,
             },
         )
         .await;
-    send_vote(&ctx, "banner", &request, serenity::CreateEmbed::new().title("Banner Change Request").description(format!("<@{}> wants to change the server banner. A different Terminator must approve this request.\nExpires: <t:{}:R>", request.submitter_id, chrono::Utc::now().timestamp() + 3_600)).image(image_url)).await?;
-    ctx.send(
-        CreateReply::default()
-            .ephemeral(true)
-            .content("Your banner change request has been submitted for approval."),
-    )
+    let request_title = match location {
+        BannerLocation::Banner => "Banner Change Request",
+        BannerLocation::Splash => "Invite Splash Change Request",
+        BannerLocation::DiscoverySplash => "Discovery Splash Change Request",
+    };
+    send_vote(&ctx, "banner", &request, serenity::CreateEmbed::new().title(request_title).description(format!("<@{}> wants to change the {}. A different Terminator must approve this request.\nExpires: <t:{}:R>", request.submitter_id, location.label(), chrono::Utc::now().timestamp() + 3_600)).image(image_url)).await?;
+    ctx.send(CreateReply::default().ephemeral(true).content(format!(
+        "Your {} change request has been submitted for approval.",
+        location.label()
+    )))
     .await?;
     Ok(())
 }
@@ -289,7 +308,16 @@ pub async fn purge(
     let mut old = Vec::new();
     let mut collected = 0usize;
 
-    while collected < amount as usize {
+    // Cap how far back we paginate. Without a bound, a sparse `user` filter (or a
+    // channel full of bot messages) forces us to walk the entire channel history
+    // to reach `amount`, which can outlast Discord's deferred-interaction deadline
+    // and leave the command stuck on "thinking". We scan up to `amount * 5`
+    // messages (enough to collect `amount` for a dense channel) and delete
+    // whatever we found within that window.
+    let scan_limit = (amount as usize).saturating_mul(5).max(amount as usize);
+    let mut scanned = 0usize;
+
+    while collected < amount as usize && scanned < scan_limit {
         let mut request = serenity::GetMessages::new().limit(100);
         if let Some(cursor) = cursor {
             request = request.before(cursor);
@@ -299,8 +327,9 @@ pub async fn purge(
             break;
         }
         cursor = Some(messages[messages.len() - 1].id);
+        scanned += messages.len();
         for message in messages {
-            if collected >= amount as usize {
+            if collected >= amount as usize || scanned >= scan_limit {
                 break;
             }
             if message.author.id == bot_id {
@@ -623,10 +652,11 @@ fn is_gif_filename(filename: &str) -> bool {
         .is_some_and(|extension| extension.eq_ignore_ascii_case("gif"))
 }
 
-pub async fn set_banner(
+pub async fn set_guild_image(
     http: &serenity::Http,
     client: &reqwest::Client,
     guild_id: serenity::GuildId,
+    location: BannerLocation,
     url: &str,
 ) -> Result<()> {
     let response = client.get(url).send().await?.error_for_status()?;
@@ -644,10 +674,40 @@ pub async fn set_banner(
         bail!("banner images may not exceed 10 MB")
     }
     let data = format!("data:{content_type};base64,{}", STANDARD.encode(bytes));
-    guild_id
-        .edit(http, serenity::EditGuild::new().banner(Some(data)))
-        .await?;
+    let edit = match location {
+        BannerLocation::Banner => serenity::EditGuild::new().banner(Some(data)),
+        BannerLocation::Splash => serenity::EditGuild::new().splash(Some(data)),
+        BannerLocation::DiscoverySplash => serenity::EditGuild::new().discovery_splash(Some(data)),
+    };
+    guild_id.edit(http, edit).await?;
     Ok(())
+}
+
+/// Boost tier required to set the image at `location`, plus the fragments for
+/// the denial message. The Discovery splash has no boost requirement (it only
+/// needs the server to be in Server Discovery), so it returns `None`.
+fn boost_gate(
+    location: BannerLocation,
+    is_animated: bool,
+) -> Option<(serenity::PremiumTier, (&'static str, &'static str))> {
+    match (location, is_animated) {
+        (BannerLocation::Banner, false) => {
+            Some((serenity::PremiumTier::Tier2, ("a banner", "Level 2")))
+        }
+        (BannerLocation::Banner, true) => Some((
+            serenity::PremiumTier::Tier3,
+            ("an animated banner", "Level 3"),
+        )),
+        (BannerLocation::Splash, false) => Some((
+            serenity::PremiumTier::Tier1,
+            ("an invite splash", "Level 1"),
+        )),
+        (BannerLocation::Splash, true) => Some((
+            serenity::PremiumTier::Tier3,
+            ("an animated invite splash", "Level 3"),
+        )),
+        (BannerLocation::DiscoverySplash, _) => None,
+    }
 }
 
 pub async fn apply_mini_role(
@@ -698,12 +758,36 @@ pub async fn log_action(ctx: &Context<'_>, title: &str, description: String) {
 
 #[cfg(test)]
 mod tests {
-    use super::{has_image_extension, is_supported_image_type};
+    use super::{boost_gate, has_image_extension, is_supported_image_type};
+    use crate::moderation::BannerLocation;
 
     #[test]
     fn banner_types_require_supported_mime_when_present() {
         assert!(is_supported_image_type("image/gif"));
         assert!(!is_supported_image_type("text/plain"));
         assert!(has_image_extension("banner.webp"));
+    }
+
+    #[test]
+    fn boost_gate_matches_discord_requirements() {
+        use poise::serenity_prelude::PremiumTier as Tier;
+        assert_eq!(
+            boost_gate(BannerLocation::Banner, false).map(|(tier, _)| tier),
+            Some(Tier::Tier2)
+        );
+        assert_eq!(
+            boost_gate(BannerLocation::Banner, true).map(|(tier, _)| tier),
+            Some(Tier::Tier3)
+        );
+        assert_eq!(
+            boost_gate(BannerLocation::Splash, false).map(|(tier, _)| tier),
+            Some(Tier::Tier1)
+        );
+        assert_eq!(
+            boost_gate(BannerLocation::Splash, true).map(|(tier, _)| tier),
+            Some(Tier::Tier3)
+        );
+        assert_eq!(boost_gate(BannerLocation::DiscoverySplash, false), None);
+        assert_eq!(boost_gate(BannerLocation::DiscoverySplash, true), None);
     }
 }

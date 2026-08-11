@@ -130,6 +130,12 @@ impl ServerService {
         Ok(response.player_count)
     }
 
+    /// Current online player count, used as the denominator for the anarchy mod
+    /// analytics online percentage.
+    pub async fn player_count(&self) -> Result<u64> {
+        self.player_data().await
+    }
+
     pub async fn player_for_discord(&self, discord_id: u64) -> Result<Option<(String, UserInfo)>> {
         let Some(databases) = &self.databases else {
             return Ok(None);

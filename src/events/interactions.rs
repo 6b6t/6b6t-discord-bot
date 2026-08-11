@@ -200,9 +200,18 @@ async fn execute_approval_action(
     interaction: &serenity::ComponentInteraction,
 ) -> Result<()> {
     match &request.action {
-        ApprovalAction::Banner { image_url } => {
-            command_moderation::set_banner(&ctx.http, &data.http, request.guild_id, image_url)
-                .await?;
+        ApprovalAction::GuildImage {
+            image_url,
+            location,
+        } => {
+            command_moderation::set_guild_image(
+                &ctx.http,
+                &data.http,
+                request.guild_id,
+                *location,
+                image_url,
+            )
+            .await?;
         }
         ApprovalAction::Ban {
             target_id,
@@ -513,7 +522,7 @@ async fn log_approval(
 
 fn approval_title(action: &ApprovalAction) -> &'static str {
     match action {
-        ApprovalAction::Banner { .. } => "Server Banner Changed",
+        ApprovalAction::GuildImage { location, .. } => location.change_title(),
         ApprovalAction::Ban { .. } => "User Banned",
         ApprovalAction::Unban { .. } => "User Unbanned",
         ApprovalAction::MediaFrequency { .. } => "Media Frequency Changed",
@@ -523,7 +532,7 @@ fn approval_title(action: &ApprovalAction) -> &'static str {
 
 fn approval_details(action: &ApprovalAction) -> String {
     match action {
-        ApprovalAction::Banner { image_url } => format!("[View image]({image_url})"),
+        ApprovalAction::GuildImage { image_url, .. } => format!("[View image]({image_url})"),
         ApprovalAction::Ban {
             target_id,
             reason,

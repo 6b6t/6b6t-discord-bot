@@ -1,3 +1,5 @@
+use std::fmt::Write as _;
+
 use anyhow::{Context as _, Result};
 use poise::serenity_prelude as serenity;
 use redis::AsyncCommands;
@@ -8,6 +10,8 @@ const TOTAL_HITS_KEY: &str = "anarchymod:hits:total";
 const UNIQUE_ALL_TIME_KEY: &str = "anarchymod:unique_ips:all_time";
 const DAILY_HITS_PREFIX: &str = "anarchymod:hits:daily:";
 const DAILY_UNIQUE_PREFIX: &str = "anarchymod:unique_ips:daily:";
+const ONLINE_UNIQUE_KEY: &str = "anarchymod:unique_ips:online";
+const ACTIVE_PLAYERS_DAILY_PREFIX: &str = "unique_players:daily:";
 
 #[derive(Clone, Debug)]
 pub struct AnarchyStats {
@@ -15,6 +19,10 @@ pub struct AnarchyStats {
     pub unique_all_time: u64,
     pub today: DailyStats,
     pub yesterday: DailyStats,
+    /// `AnarchyMod` users currently online; 0 means the backend key is absent or empty.
+    pub online_users: u64,
+    /// All players active today; 0 means the backend key is absent or empty.
+    pub active_players_today: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -24,10 +32,12 @@ pub struct DailyStats {
     pub unique: u64,
 }
 
-impl std::fmt::Display for AnarchyStats {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
+impl AnarchyStats {
+    /// Renders the analytics report. The percentage lines are omitted when the
+    /// backing Redis key is absent or empty (the service does not maintain it
+    /// yet) or when the online player count is unavailable.
+    pub fn render(&self, online_players: Option<u64>) -> String {
+        let mut message = format!(
             "**Anarchy Mod Analytics**\n\
              All-time: {} hits / {} unique IPs\n\
              Today ({}): {} hits / {} unique IPs\n\
@@ -40,7 +50,26 @@ impl std::fmt::Display for AnarchyStats {
             self.yesterday.date,
             comma_count(self.yesterday.hits),
             comma_count(self.yesterday.unique),
-        )
+        );
+        if let Some(percent) = percentage(self.online_users, online_players) {
+            let _ = writeln!(
+                message,
+                "Online: {} out of {} online players use AnarchyMod ({}%)",
+                comma_count(self.online_users),
+                comma_count(online_players.unwrap_or(0)),
+                percent
+            );
+        }
+        if let Some(percent) = percentage(self.today.unique, Some(self.active_players_today)) {
+            let _ = writeln!(
+                message,
+                "Today's players: {} out of {} players active today use AnarchyMod ({}%)",
+                comma_count(self.today.unique),
+                comma_count(self.active_players_today),
+                percent
+            );
+        }
+        message
     }
 }
 
@@ -57,13 +86,13 @@ impl AnarchyService {
         Ok(Self { client, channel_id })
     }
 
-    pub async fn report(&self, ctx: &serenity::Context) -> Result<()> {
+    pub async fn report(&self, ctx: &serenity::Context, online_players: Option<u64>) -> Result<()> {
         let stats = self.fetch().await?;
         self.channel_id
             .send_message(
                 ctx,
                 serenity::CreateMessage::new()
-                    .content(stats.to_string())
+                    .content(stats.render(online_players))
                     .allowed_mentions(serenity::CreateAllowedMentions::new()),
             )
             .await
@@ -87,6 +116,10 @@ impl AnarchyService {
             .scard::<_, u64>(UNIQUE_ALL_TIME_KEY)
             .await
             .context("failed to read all-time unique IPs")?;
+        let online_users = connection
+            .scard::<_, u64>(ONLINE_UNIQUE_KEY)
+            .await
+            .context("failed to read currently online AnarchyMod users")?;
         let today = DailyStats {
             date: today.clone(),
             hits: fetch_counter(&mut connection, &format!("{DAILY_HITS_PREFIX}{today}")).await?,
@@ -95,6 +128,10 @@ impl AnarchyService {
                 .await
                 .context("failed to read today's unique IPs")?,
         };
+        let active_players_today = connection
+            .scard::<_, u64>(format!("{ACTIVE_PLAYERS_DAILY_PREFIX}{}", today.date))
+            .await
+            .context("failed to read today's active players")?;
         let yesterday = DailyStats {
             date: yesterday.clone(),
             hits: fetch_counter(&mut connection, &format!("{DAILY_HITS_PREFIX}{yesterday}"))
@@ -110,6 +147,8 @@ impl AnarchyService {
             unique_all_time,
             today,
             yesterday,
+            online_users,
+            active_players_today,
         })
     }
 }
@@ -123,6 +162,20 @@ async fn fetch_counter(
         .await
         .context("failed to read analytics counter")?;
     Ok(value.and_then(|value| value.parse().ok()).unwrap_or(0))
+}
+
+/// Rounded percentage of `numerator` over `denominator`, clamped to 100.
+///
+/// Returns `None` when the denominator is missing or either side is zero —
+/// a zero count means the corresponding Redis key is absent or empty, and the
+/// percentage line is omitted until the backend maintains it.
+fn percentage(numerator: u64, denominator: Option<u64>) -> Option<u8> {
+    let denominator = denominator?;
+    if numerator == 0 || denominator == 0 {
+        return None;
+    }
+    let percent = (numerator.saturating_mul(100) + denominator / 2) / denominator;
+    Some(percent.min(100) as u8)
 }
 
 fn comma_count(value: u64) -> String {
@@ -139,7 +192,7 @@ fn comma_count(value: u64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{AnarchyStats, DailyStats, comma_count};
+    use super::{AnarchyStats, DailyStats, comma_count, percentage};
 
     #[test]
     fn counters_are_grouped_with_thousands_separators() {
@@ -150,8 +203,22 @@ mod tests {
     }
 
     #[test]
-    fn stats_message_includes_all_reported_metrics() {
-        let stats = AnarchyStats {
+    fn percentages_round_and_clamp() {
+        assert_eq!(percentage(45, Some(371)), Some(12));
+        assert_eq!(percentage(1, Some(3)), Some(33));
+        assert_eq!(percentage(3, Some(3)), Some(100));
+        assert_eq!(percentage(5, Some(3)), Some(100)); // clamped, IPs exceed players
+    }
+
+    #[test]
+    fn percentages_are_omitted_without_data() {
+        assert_eq!(percentage(0, Some(371)), None);
+        assert_eq!(percentage(45, None), None);
+        assert_eq!(percentage(45, Some(0)), None);
+    }
+
+    fn sample_stats() -> AnarchyStats {
+        AnarchyStats {
             total_hits: 1_234_567,
             unique_all_time: 98_765,
             today: DailyStats {
@@ -164,10 +231,40 @@ mod tests {
                 hits: 2_100,
                 unique: 700,
             },
-        };
-        let rendered = stats.to_string();
+            online_users: 45,
+            active_players_today: 3_902,
+        }
+    }
+
+    #[test]
+    fn stats_message_includes_all_reported_metrics() {
+        let rendered = sample_stats().render(Some(371));
         assert!(rendered.contains("1,234,567 hits / 98,765 unique IPs"));
         assert!(rendered.contains("Today (2026-08-08): 3,210 hits / 890 unique IPs"));
         assert!(rendered.contains("Yesterday (2026-08-07): 2,100 hits / 700 unique IPs"));
+        assert!(rendered.contains("Online: 45 out of 371 online players use AnarchyMod (12%)"));
+        assert!(rendered.contains(
+            "Today's players: 890 out of 3,902 players active today use AnarchyMod (23%)"
+        ));
+    }
+
+    #[test]
+    fn percentage_lines_are_omitted_when_data_is_missing() {
+        let mut stats = sample_stats();
+        stats.online_users = 0;
+        stats.active_players_today = 0;
+        let rendered = stats.render(None);
+        assert!(!rendered.contains("use AnarchyMod"));
+        let rendered = stats.render(Some(0));
+        assert!(!rendered.contains("use AnarchyMod"));
+    }
+
+    #[test]
+    fn today_line_is_omitted_without_backend_data() {
+        let mut stats = sample_stats();
+        stats.active_players_today = 0;
+        let rendered = stats.render(Some(371));
+        assert!(rendered.contains("Online: 45 out of 371 online players use AnarchyMod (12%)"));
+        assert!(!rendered.contains("Today's players"));
     }
 }

@@ -170,7 +170,14 @@ async fn anarchy_analytics(ctx: &serenity::Context, data: &AppState) {
     let Some(anarchy) = &data.anarchy else {
         return;
     };
-    if let Err(error) = anarchy.report(ctx).await {
+    let online_players = match data.server.player_count().await {
+        Ok(count) => Some(count),
+        Err(error) => {
+            tracing::warn!(%error, "failed to fetch the player count for anarchy analytics; the online percentage is omitted");
+            None
+        }
+    };
+    if let Err(error) = anarchy.report(ctx, online_players).await {
         tracing::error!(%error, "anarchy mod analytics report failed");
     }
 }
