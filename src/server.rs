@@ -111,7 +111,10 @@ impl ServerService {
             .context("HTTP_PROXY_COMMAND_SERVICE_ACCESS_TOKEN is required")?;
         let response = self
             .http
-            .get(format!("{}/players", base_url.trim_end_matches('/')))
+            .get(format!(
+                "{}/network-players",
+                base_url.trim_end_matches('/')
+            ))
             .bearer_auth(token)
             .send()
             .await
