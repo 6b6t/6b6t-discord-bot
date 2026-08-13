@@ -268,9 +268,10 @@ mod tests {
         stats.online_users = 0;
         stats.active_players_today = 0;
         let rendered = stats.render(None);
-        assert!(rendered.contains(
-            "Online: 0 AnarchyMod users currently online (player count unavailable)"
-        ));
+        assert!(
+            rendered
+                .contains("Online: 0 AnarchyMod users currently online (player count unavailable)")
+        );
         assert!(rendered.contains(
             "Today's players: 890 AnarchyMod users active today (player count unavailable)"
         ));

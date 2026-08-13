@@ -64,6 +64,28 @@ impl Databases {
         .context("failed to load Discord account mapping")
     }
 
+    /// UUID of the player with `name`, matching case-insensitively regardless
+    /// of the stats table collation.
+    pub async fn uuid_for_player_name(&self, name: &str) -> Result<Option<String>> {
+        sqlx::query_scalar::<_, String>(
+            "SELECT uuid FROM player_info WHERE LOWER(name) = LOWER(?) LIMIT 1",
+        )
+        .bind(name)
+        .fetch_optional(&self.stats)
+        .await
+        .context("failed to look up Minecraft player by name")
+    }
+
+    pub async fn mapping_for_uuid(&self, uuid: &str) -> Result<Option<LinkMapping>> {
+        sqlx::query_as::<_, LinkMapping>(
+            "SELECT uuid, discord_id FROM uuid_to_discord WHERE uuid = ? LIMIT 1",
+        )
+        .bind(uuid)
+        .fetch_optional(&self.link)
+        .await
+        .context("failed to load Discord account mapping")
+    }
+
     pub async fn player_info(&self, uuid: &str) -> Result<Option<PlayerInfo>> {
         sqlx::query_as::<_, PlayerInfo>(
             "SELECT name, first_join AS first_join_millis FROM player_info WHERE uuid = ? LIMIT 1",

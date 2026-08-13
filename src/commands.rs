@@ -4,7 +4,7 @@ use anyhow::Context as _;
 use poise::{CreateReply, serenity_prelude as serenity};
 
 use crate::{
-    command_moderation, config,
+    command_moderation, config, moderation,
     server::format_duration,
     state::{AppState, Context, Error},
 };
@@ -19,6 +19,8 @@ pub fn all() -> Vec<poise::Command<AppState, Error>> {
         hytaleplayers(),
         getuser(),
         banreason(),
+        assignyoutuber(),
+        removeyoutuber(),
         command_moderation::discordbannerset(),
         command_moderation::terminatorban(),
         command_moderation::terminatorunban(),
@@ -257,6 +259,92 @@ async fn banreason(
     Ok(())
 }
 
+/// Assign the `YouTuber` role to the Discord account linked to a Minecraft player.
+#[poise::command(slash_command, guild_only)]
+async fn assignyoutuber(
+    ctx: Context<'_>,
+    #[description = "Minecraft player name"] player_name: String,
+) -> Result<(), Error> {
+    youtuber_role(ctx, player_name, true).await
+}
+
+/// Remove the `YouTuber` role from the Discord account linked to a Minecraft player.
+#[poise::command(slash_command, guild_only)]
+async fn removeyoutuber(
+    ctx: Context<'_>,
+    #[description = "Minecraft player name"] player_name: String,
+) -> Result<(), Error> {
+    youtuber_role(ctx, player_name, false).await
+}
+
+async fn youtuber_role(ctx: Context<'_>, player_name: String, add: bool) -> Result<(), Error> {
+    let member = ctx
+        .author_member()
+        .await
+        .context("missing command member")?;
+    if !moderation::is_administrator(&member) && !member.roles.contains(&config::MARKETER_ROLE_ID) {
+        deny(
+            ctx,
+            "You do not have permission to use this command. Required role: Marketer.",
+        )
+        .await?;
+        return Ok(());
+    }
+    let databases = ctx
+        .data()
+        .databases
+        .as_ref()
+        .context("account linking is not available")?;
+    let Some(uuid) = databases.uuid_for_player_name(&player_name).await? else {
+        ctx.say(format!(
+            "No linked player found with the name `{player_name}`."
+        ))
+        .await?;
+        return Ok(());
+    };
+    let Some(mapping) = databases.mapping_for_uuid(&uuid).await? else {
+        ctx.say("That player has no linked Discord account.")
+            .await?;
+        return Ok(());
+    };
+    let discord_id = mapping
+        .discord_id
+        .parse::<u64>()
+        .context("invalid stored Discord ID")?;
+    let discord_id = serenity::UserId::new(discord_id);
+    let guild_id = ctx.guild_id().context("missing guild")?;
+    let target = guild_id
+        .member(ctx.http(), discord_id)
+        .await
+        .context("that user is not in the server")?;
+    let role_id = config::YOUTUBER_ROLE_ID;
+    let has_role = target.roles.contains(&role_id);
+    if add == has_role {
+        deny(
+            ctx,
+            if add {
+                "That player's Discord account already has the YouTuber role."
+            } else {
+                "That player's Discord account does not have the YouTuber role."
+            },
+        )
+        .await?;
+        return Ok(());
+    }
+    ctx.defer().await?;
+    if add {
+        target.add_role(ctx, role_id).await?;
+    } else {
+        target.remove_role(ctx, role_id).await?;
+    }
+    ctx.say(format!(
+        "The YouTuber role was {} on <@{discord_id}> (player `{player_name}`).",
+        if add { "assigned" } else { "removed" }
+    ))
+    .await?;
+    Ok(())
+}
+
 async fn command_admin(ctx: &Context<'_>) -> bool {
     ctx.author_member()
         .await
@@ -302,6 +390,12 @@ async fn finish_deferred(
             )
             .await?;
     }
+    Ok(())
+}
+
+async fn deny(ctx: Context<'_>, message: &str) -> Result<(), Error> {
+    ctx.send(CreateReply::default().ephemeral(true).content(message))
+        .await?;
     Ok(())
 }
 

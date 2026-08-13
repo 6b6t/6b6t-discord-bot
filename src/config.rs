@@ -14,6 +14,9 @@ pub const UPDATES_ID: serenity::ChannelId = serenity::ChannelId::new(982_190_978
 pub const GENERAL_ID: serenity::ChannelId = serenity::ChannelId::new(982_192_297_645_056_040);
 pub const YOUTUBE_ID: serenity::ChannelId = serenity::ChannelId::new(1_353_453_116_007_252_050);
 pub const COMMAND_ADMIN_ROLE_ID: serenity::RoleId = serenity::RoleId::new(917_520_262_939_938_915);
+pub const MARKETER_ROLE_ID: serenity::RoleId = serenity::RoleId::new(1_357_730_279_644_594_399);
+/// Role granted and removed by `/assignyoutuber` and `/removeyoutuber`.
+pub const YOUTUBER_ROLE_ID: serenity::RoleId = serenity::RoleId::new(1_297_584_193_580_306_493);
 pub const MINI_TERMINATOR_ROLE_ID: serenity::RoleId =
     serenity::RoleId::new(1_533_970_494_284_365_854);
 pub const REVIEW_ID: serenity::ChannelId = serenity::ChannelId::new(1_413_604_129_700_951_372);
@@ -27,13 +30,13 @@ pub const TERMINATOR_ROLE_ID: serenity::RoleId = serenity::RoleId::new(1_268_946
 
 pub const AUTHORIZED_ROLE_IDS: &[serenity::RoleId] = &[
     TERMINATOR_ROLE_ID,
-    serenity::RoleId::new(1_357_730_279_644_594_399),
+    MARKETER_ROLE_ID,
     serenity::RoleId::new(1_324_344_058_138_726_481),
 ];
 pub const BAN_REASON_ROLE_IDS: &[serenity::RoleId] = &[
     TERMINATOR_ROLE_ID,
     serenity::RoleId::new(1_268_540_163_068_526_632),
-    serenity::RoleId::new(1_357_730_279_644_594_399),
+    MARKETER_ROLE_ID,
     serenity::RoleId::new(1_324_344_058_138_726_481),
     serenity::RoleId::new(1_349_758_583_859_970_140),
     COMMAND_ADMIN_ROLE_ID,
