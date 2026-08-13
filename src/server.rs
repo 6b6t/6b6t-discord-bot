@@ -145,29 +145,43 @@ impl ServerService {
         let token = std::env::var("HTTP_PROXY_COMMAND_SERVICE_ACCESS_TOKEN")
             .context("HTTP_PROXY_COMMAND_SERVICE_ACCESS_TOKEN is required")?;
         let command = format!("lpv user {uuid} parent {action} {rank}");
-        let response = self
+        let url = format!("{}/run-command", base_url.trim_end_matches('/'));
+        let response = match self
             .http
-            .post(format!("{}/run-command", base_url.trim_end_matches('/')))
+            .post(&url)
             .header(reqwest::header::AUTHORIZATION, token)
             .json(&RunCommandRequest { command: &command })
             .timeout(Duration::from_secs(10))
             .send()
             .await
-            .context("command service request failed")?;
-        if !response.status().is_success() {
-            bail!("command service returned HTTP {}", response.status());
+        {
+            Ok(response) => response,
+            Err(error) => {
+                tracing::error!(%error, url, command, "proxy command service request failed at the transport layer; check reachability and TLS certificate from the bot host");
+                return Err(error).context("command service request failed");
+            }
+        };
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            tracing::error!(url, command, %status, body, "proxy command service returned an HTTP error");
+            bail!("command service returned HTTP {status}: {body}");
         }
         let payload: RunCommandResponse = response
             .json()
             .await
             .context("command service returned an invalid response")?;
         if !payload.success {
-            bail!(
-                "{}",
-                payload
-                    .error
-                    .unwrap_or_else(|| "command service reported failure".into())
-            )
+            let detail = payload
+                .error
+                .unwrap_or_else(|| "command service reported failure".into());
+            tracing::error!(
+                url,
+                command,
+                detail,
+                "proxy command service rejected the command"
+            );
+            bail!("{detail}")
         }
         Ok(())
     }
