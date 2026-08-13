@@ -136,6 +136,42 @@ impl ServerService {
         self.player_data().await
     }
 
+    /// Run a `LuckPerms` command against the proxy command service, e.g.
+    /// `lpv user <uuid> parent add youtuber`. The player is addressed by UUID so
+    /// the assignment survives name changes.
+    pub async fn run_lp_command(&self, uuid: &str, action: &str, rank: &str) -> Result<()> {
+        let base_url = std::env::var("HTTP_PROXY_COMMAND_SERVICE_BASE_URL")
+            .context("HTTP_PROXY_COMMAND_SERVICE_BASE_URL is required")?;
+        let token = std::env::var("HTTP_PROXY_COMMAND_SERVICE_ACCESS_TOKEN")
+            .context("HTTP_PROXY_COMMAND_SERVICE_ACCESS_TOKEN is required")?;
+        let command = format!("lpv user {uuid} parent {action} {rank}");
+        let response = self
+            .http
+            .post(format!("{}/run-command", base_url.trim_end_matches('/')))
+            .header(reqwest::header::AUTHORIZATION, token)
+            .json(&RunCommandRequest { command: &command })
+            .timeout(Duration::from_secs(10))
+            .send()
+            .await
+            .context("command service request failed")?;
+        if !response.status().is_success() {
+            bail!("command service returned HTTP {}", response.status());
+        }
+        let payload: RunCommandResponse = response
+            .json()
+            .await
+            .context("command service returned an invalid response")?;
+        if !payload.success {
+            bail!(
+                "{}",
+                payload
+                    .error
+                    .unwrap_or_else(|| "command service reported failure".into())
+            )
+        }
+        Ok(())
+    }
+
     pub async fn player_for_discord(&self, discord_id: u64) -> Result<Option<(String, UserInfo)>> {
         let Some(databases) = &self.databases else {
             return Ok(None);
@@ -336,6 +372,16 @@ struct UptimeStatistics {
 #[derive(Serialize)]
 struct RankRequest<'a> {
     username: &'a str,
+}
+#[derive(Serialize)]
+struct RunCommandRequest<'a> {
+    command: &'a str,
+}
+#[derive(Deserialize)]
+struct RunCommandResponse {
+    success: bool,
+    #[serde(default)]
+    error: Option<String>,
 }
 #[derive(Deserialize)]
 struct RankResponse {

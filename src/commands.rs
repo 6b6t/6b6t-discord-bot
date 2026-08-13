@@ -296,50 +296,60 @@ async fn youtuber_role(ctx: Context<'_>, player_name: String, add: bool) -> Resu
         .as_ref()
         .context("account linking is not available")?;
     let Some(uuid) = databases.uuid_for_player_name(&player_name).await? else {
-        ctx.say(format!(
-            "No linked player found with the name `{player_name}`."
-        ))
-        .await?;
-        return Ok(());
-    };
-    let Some(mapping) = databases.mapping_for_uuid(&uuid).await? else {
-        ctx.say("That player has no linked Discord account.")
+        ctx.say(format!("No player found with the name `{player_name}`."))
             .await?;
         return Ok(());
     };
-    let discord_id = mapping
-        .discord_id
-        .parse::<u64>()
-        .context("invalid stored Discord ID")?;
-    let discord_id = serenity::UserId::new(discord_id);
     let guild_id = ctx.guild_id().context("missing guild")?;
-    let target = guild_id
-        .member(ctx.http(), discord_id)
-        .await
-        .context("that user is not in the server")?;
-    let role_id = config::YOUTUBER_ROLE_ID;
-    let has_role = target.roles.contains(&role_id);
-    if add == has_role {
-        deny(
-            ctx,
-            if add {
-                "That player's Discord account already has the YouTuber role."
-            } else {
-                "That player's Discord account does not have the YouTuber role."
-            },
-        )
-        .await?;
-        return Ok(());
-    }
+    let action = if add { "add" } else { "remove" };
     ctx.defer().await?;
-    if add {
-        target.add_role(ctx, role_id).await?;
-    } else {
-        target.remove_role(ctx, role_id).await?;
+    ctx.data()
+        .server
+        .run_lp_command(&uuid, action, config::YOUTUBE_RANK_NAME)
+        .await?;
+
+    let role_id = config::YOUTUBER_ROLE_ID;
+    let mut discord_outcome = "No linked Discord account to update.".to_owned();
+    if let Some(mapping) = databases.mapping_for_uuid(&uuid).await?
+        && let Ok(discord_id) = mapping.discord_id.parse::<u64>()
+    {
+        let discord_id = serenity::UserId::new(discord_id);
+        if let Ok(target) = guild_id.member(ctx.http(), discord_id).await {
+            let has_role = target.roles.contains(&role_id);
+            if add == has_role {
+                discord_outcome = format!(
+                    "<@{discord_id}> {} had the YouTuber Discord role.",
+                    if add { "already" } else { "did not" }
+                );
+            } else {
+                let result = if add {
+                    target.add_role(ctx, role_id).await
+                } else {
+                    target.remove_role(ctx, role_id).await
+                };
+                match result {
+                    Ok(()) => {
+                        discord_outcome = format!(
+                            "YouTuber Discord role {} on <@{discord_id}>.",
+                            if add { "assigned" } else { "removed" }
+                        );
+                    }
+                    Err(error) => {
+                        tracing::error!(%error, %discord_id, "failed to update YouTuber Discord role");
+                        discord_outcome = format!(
+                            "Could not update the YouTuber Discord role on <@{discord_id}>."
+                        );
+                    }
+                }
+            }
+        } else {
+            discord_outcome = "The linked Discord account is not in this server.".into();
+        }
     }
     ctx.say(format!(
-        "The YouTuber role was {} on <@{discord_id}> (player `{player_name}`).",
-        if add { "assigned" } else { "removed" }
+        "The in-game YouTube rank was {} for player `{player_name}` (`{uuid}`). {}",
+        if add { "assigned" } else { "removed" },
+        discord_outcome
     ))
     .await?;
     Ok(())

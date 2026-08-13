@@ -17,6 +17,8 @@ pub const COMMAND_ADMIN_ROLE_ID: serenity::RoleId = serenity::RoleId::new(917_52
 pub const MARKETER_ROLE_ID: serenity::RoleId = serenity::RoleId::new(1_357_730_279_644_594_399);
 /// Role granted and removed by `/assignyoutuber` and `/removeyoutuber`.
 pub const YOUTUBER_ROLE_ID: serenity::RoleId = serenity::RoleId::new(1_297_584_193_580_306_493);
+/// In-game `LuckPerms` group granted and removed alongside the Discord role.
+pub const YOUTUBE_RANK_NAME: &str = "youtuber";
 pub const MINI_TERMINATOR_ROLE_ID: serenity::RoleId =
     serenity::RoleId::new(1_533_970_494_284_365_854);
 pub const REVIEW_ID: serenity::ChannelId = serenity::ChannelId::new(1_413_604_129_700_951_372);
