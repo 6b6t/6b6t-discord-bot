@@ -4,7 +4,9 @@ use anyhow::Context as _;
 use poise::{CreateReply, serenity_prelude as serenity};
 
 use crate::{
-    command_moderation, config, moderation,
+    command_moderation, config,
+    database::Databases,
+    moderation,
     server::format_duration,
     state::{AppState, Context, Error},
 };
@@ -259,20 +261,20 @@ async fn banreason(
     Ok(())
 }
 
-/// Assign the `YouTuber` role to the Discord account linked to a Minecraft player.
+/// Assign the `youtuber` rank and `YouTuber` Discord role by player name or Discord user.
 #[poise::command(slash_command, guild_only)]
 async fn assignyoutuber(
     ctx: Context<'_>,
-    #[description = "Minecraft player name"] player_name: String,
+    #[description = "Minecraft player name or Discord user tag"] player_name: String,
 ) -> Result<(), Error> {
     youtuber_role(ctx, player_name, true).await
 }
 
-/// Remove the `YouTuber` role from the Discord account linked to a Minecraft player.
+/// Remove the `youtuber` rank and `YouTuber` Discord role by player name or Discord user.
 #[poise::command(slash_command, guild_only)]
 async fn removeyoutuber(
     ctx: Context<'_>,
-    #[description = "Minecraft player name"] player_name: String,
+    #[description = "Minecraft player name or Discord user tag"] player_name: String,
 ) -> Result<(), Error> {
     youtuber_role(ctx, player_name, false).await
 }
@@ -295,9 +297,13 @@ async fn youtuber_role(ctx: Context<'_>, player_name: String, add: bool) -> Resu
         .databases
         .as_ref()
         .context("account linking is not available")?;
-    let Some(uuid) = databases.uuid_for_player_name(&player_name).await? else {
-        ctx.say(format!("No player found with the name `{player_name}`."))
-            .await?;
+    let Some(uuid) = resolve_player_uuid(databases, &player_name).await? else {
+        let message = if parse_discord_mention(&player_name).is_some() {
+            "No Minecraft account is linked to that Discord user."
+        } else {
+            "No player found with the name `{player_name}`."
+        };
+        ctx.say(message).await?;
         return Ok(());
     };
     let guild_id = ctx.guild_id().context("missing guild")?;
@@ -353,6 +359,30 @@ async fn youtuber_role(ctx: Context<'_>, player_name: String, add: bool) -> Resu
     ))
     .await?;
     Ok(())
+}
+
+/// Resolve a Minecraft player's UUID from either a player name in the stats
+/// database or a `<@discord_id>` mention through the link database.
+async fn resolve_player_uuid(
+    databases: &Databases,
+    input: &str,
+) -> Result<Option<String>, anyhow::Error> {
+    if let Some(discord_id) = parse_discord_mention(input) {
+        return Ok(databases
+            .mapping_for_discord(&discord_id.to_string())
+            .await?
+            .map(|mapping| mapping.uuid));
+    }
+    databases.uuid_for_player_name(input).await
+}
+
+/// Parse `<@123...>` or the legacy `<@!123...>` user mention into a snowflake.
+fn parse_discord_mention(value: &str) -> Option<u64> {
+    let inner = value.strip_prefix("<@")?.strip_suffix('>')?;
+    inner
+        .strip_prefix('!')
+        .or(Some(inner))
+        .and_then(|id| id.parse::<u64>().ok())
 }
 
 async fn command_admin(ctx: &Context<'_>) -> bool {
@@ -430,4 +460,33 @@ async fn send_suppressed(ctx: Context<'_>, content: &str) -> Result<(), Error> {
         .has_sent_initial_response
         .store(true, std::sync::atomic::Ordering::SeqCst);
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_discord_mention;
+
+    #[test]
+    fn user_mentions_parse_to_snowflakes() {
+        assert_eq!(
+            parse_discord_mention("<@681552494064697350>"),
+            Some(681_552_494_064_697_350)
+        );
+        assert_eq!(
+            parse_discord_mention("<@!681552494064697350>"),
+            Some(681_552_494_064_697_350)
+        );
+    }
+
+    #[test]
+    fn channel_and_role_mentions_are_not_users() {
+        assert!(parse_discord_mention("<#123456789>").is_none());
+        assert!(parse_discord_mention("<@&123456789>").is_none());
+    }
+
+    #[test]
+    fn plain_player_names_are_not_mentions() {
+        assert!(parse_discord_mention("ExampleName").is_none());
+        assert!(parse_discord_mention("<@notanumber>").is_none());
+    }
 }

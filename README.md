@@ -156,8 +156,8 @@ Telegram delivery. Delete synchronization remains disabled by default.
 | `/hytaleplayers` | Everyone | Show Hytale players and metrics |
 | `/getuser` | Administrator | Look up a linked Minecraft account |
 | `/banreason` | Moderation roles | Show a user's current ban details |
-| `/assignyoutuber` | Marketer or administrator | Assign the in-game YouTube rank and YouTuber Discord role to a player |
-| `/removeyoutuber` | Marketer or administrator | Remove the in-game YouTube rank and YouTuber Discord role from a player |
+| `/assignyoutuber` | Marketer or administrator | Assign the in-game YouTube rank and YouTuber Discord role by player name or Discord user |
+| `/removeyoutuber` | Marketer or administrator | Remove the in-game YouTube rank and YouTuber Discord role by player name or Discord user |
 | `/discordbannerset` | Authorized roles | Set the server banner, invite splash, or Discovery splash with approval or administrator bypass |
 | `/terminatorban` | Authorized roles | Ban with approval or administrator bypass |
 | `/terminatorunban` | Authorized roles | Unban with approval or administrator bypass |
