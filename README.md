@@ -112,18 +112,16 @@ and Redis are configured.
 
 ### Community-event announcements
 
-Set `COMMUNITY_EVENT_ANNOUNCEMENT_CHANNEL_ID` to enable purchase announcements. The bot polls the
-website's existing community-event history, locks that Discord channel for 30 seconds, and posts the
-announcement every five seconds before restoring its exact previous permission overwrite. Redis is
-required for deduplication and restart-safe channel restoration.
+Set `COMMUNITY_EVENT_ANNOUNCEMENT_CHANNEL_ID` to enable purchase announcements. The bot reads the
+website's community-event history from the existing Redis host and posts one message for each unseen
+extension. Redis is also used to track the last delivered event so announcements are not duplicated.
 
 | Variable | Required | Purpose |
 | --- | --- | --- |
-| `COMMUNITY_EVENT_ANNOUNCEMENT_CHANNEL_ID` | To enable | Discord channel to lock and announce in |
-| `COMMUNITY_EVENT_HISTORY_URL` | No | History endpoint; defaults to `${WEBSITE_BASE_URL}/api/community-event/history` |
-| `REDIS_HOST` | To enable | Uses the bot's existing Redis connection to store the last delivered event and temporary channel-lock state |
+| `COMMUNITY_EVENT_ANNOUNCEMENT_CHANNEL_ID` | To enable | Discord channel to announce in |
+| `REDIS_HOST` | To enable | Reads the event history and stores the last delivered event |
 
-The bot role needs **View Channel**, **Send Messages**, and **Manage Channels** in the configured
+The bot role needs **View Channel** and **Send Messages** in the configured
 channel. On first startup it checkpoints the latest existing history entry without announcing it,
 so old purchases are not replayed.
 
