@@ -89,6 +89,9 @@ impl AppState {
 }
 
 fn load_community_event(environment: &Arc<Environment>) -> Option<CommunityEventService> {
+    if !environment.community_event_announcements_enabled {
+        return None;
+    }
     let channel_id = environment.community_event_announcement_channel_id?;
     let Some(redis) = environment.redis.as_ref() else {
         tracing::error!(
@@ -96,7 +99,13 @@ fn load_community_event(environment: &Arc<Environment>) -> Option<CommunityEvent
         );
         return None;
     };
-    match CommunityEventService::new(redis, channel_id) {
+    match CommunityEventService::new(
+        redis,
+        channel_id,
+        environment.community_event_announcement_channel_id_es,
+        environment.community_event_announcement_channel_id_de,
+        environment.community_event_announcement_channel_id_tr,
+    ) {
         Ok(service) => Some(service),
         Err(error) => {
             tracing::error!(%error, "failed to initialize community-event Discord announcements; disabled");

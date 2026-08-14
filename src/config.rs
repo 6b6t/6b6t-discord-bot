@@ -212,7 +212,11 @@ pub struct Environment {
     pub motd_review_url: String,
     pub motd_review_secret: Option<String>,
     pub anarchy_analytics_channel_id: Option<serenity::ChannelId>,
+    pub community_event_announcements_enabled: bool,
     pub community_event_announcement_channel_id: Option<serenity::ChannelId>,
+    pub community_event_announcement_channel_id_es: Option<serenity::ChannelId>,
+    pub community_event_announcement_channel_id_de: Option<serenity::ChannelId>,
+    pub community_event_announcement_channel_id_tr: Option<serenity::ChannelId>,
     pub redis: Option<RedisConfig>,
     pub database: Option<DatabaseConfig>,
     pub telegram: Option<TelegramConfig>,
@@ -250,8 +254,21 @@ impl Environment {
             }),
             motd_review_secret: optional_env("MOTD_REVIEW_BOT_SECRET"),
             anarchy_analytics_channel_id: optional_id("ANARCHY_ANALYTICS_CHANNEL_ID")?,
+            community_event_announcements_enabled: env_bool(
+                "COMMUNITY_EVENT_ANNOUNCEMENTS_ENABLED",
+                false,
+            ),
             community_event_announcement_channel_id: optional_id(
                 "COMMUNITY_EVENT_ANNOUNCEMENT_CHANNEL_ID",
+            )?,
+            community_event_announcement_channel_id_es: optional_id(
+                "COMMUNITY_EVENT_ANNOUNCEMENT_CHANNEL_ID_ES",
+            )?,
+            community_event_announcement_channel_id_de: optional_id(
+                "COMMUNITY_EVENT_ANNOUNCEMENT_CHANNEL_ID_DE",
+            )?,
+            community_event_announcement_channel_id_tr: optional_id(
+                "COMMUNITY_EVENT_ANNOUNCEMENT_CHANNEL_ID_TR",
             )?,
             redis: parse_redis_config().unwrap_or_else(|error| {
                 tracing::error!(%error, "Redis configuration is invalid; Redis-backed features are disabled");

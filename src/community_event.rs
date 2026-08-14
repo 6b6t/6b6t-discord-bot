@@ -13,6 +13,7 @@ const TURKISH_CHECKPOINT_KEY: &str = "community-event:discord:last-history-id:tr
 const HISTORY_KEY: &str = "community:event:dupe-2026:history";
 const HISTORY_INDEX_KEY: &str = "community:event:dupe-2026:history-index";
 const HISTORY_LIMIT: usize = 50;
+const EMPTY_HISTORY_CHECKPOINT: &str = "__empty_history__";
 
 #[derive(Clone, Copy, Debug)]
 enum AnnouncementLocale {
@@ -48,31 +49,47 @@ struct HistoryItem {
 }
 
 impl CommunityEventService {
-    pub fn new(redis: &RedisConfig, english_channel_id: serenity::ChannelId) -> Result<Self> {
+    pub fn new(
+        redis: &RedisConfig,
+        english_channel_id: serenity::ChannelId,
+        spanish_channel_id: Option<serenity::ChannelId>,
+        german_channel_id: Option<serenity::ChannelId>,
+        turkish_channel_id: Option<serenity::ChannelId>,
+    ) -> Result<Self> {
         let redis = redis::Client::open(redis.connection_url())
             .context("failed to initialize Redis for community-event announcements")?;
-        let channels = vec![
-            AnnouncementChannel {
-                id: english_channel_id,
-                locale: AnnouncementLocale::English,
-                checkpoint_key: ENGLISH_CHECKPOINT_KEY,
-            },
-            AnnouncementChannel {
-                id: english_channel_id,
-                locale: AnnouncementLocale::Spanish,
-                checkpoint_key: SPANISH_CHECKPOINT_KEY,
-            },
-            AnnouncementChannel {
-                id: english_channel_id,
-                locale: AnnouncementLocale::German,
-                checkpoint_key: GERMAN_CHECKPOINT_KEY,
-            },
-            AnnouncementChannel {
-                id: english_channel_id,
-                locale: AnnouncementLocale::Turkish,
-                checkpoint_key: TURKISH_CHECKPOINT_KEY,
-            },
-        ];
+        let mut channels = vec![AnnouncementChannel {
+            id: english_channel_id,
+            locale: AnnouncementLocale::English,
+            checkpoint_key: ENGLISH_CHECKPOINT_KEY,
+        }];
+        channels.extend(
+            [
+                (
+                    spanish_channel_id,
+                    AnnouncementLocale::Spanish,
+                    SPANISH_CHECKPOINT_KEY,
+                ),
+                (
+                    german_channel_id,
+                    AnnouncementLocale::German,
+                    GERMAN_CHECKPOINT_KEY,
+                ),
+                (
+                    turkish_channel_id,
+                    AnnouncementLocale::Turkish,
+                    TURKISH_CHECKPOINT_KEY,
+                ),
+            ]
+            .into_iter()
+            .filter_map(|(id, locale, checkpoint_key)| {
+                id.map(|id| AnnouncementChannel {
+                    id,
+                    locale,
+                    checkpoint_key,
+                })
+            }),
+        );
         Ok(Self { redis, channels })
     }
 
@@ -83,6 +100,15 @@ impl CommunityEventService {
             .await
             .context("failed to connect to Redis for community-event announcements")?;
         let history = self.fetch_history(&mut connection).await?;
+        if history.is_empty() {
+            for channel in &self.channels {
+                connection
+                    .set_nx::<_, _, ()>(channel.checkpoint_key, EMPTY_HISTORY_CHECKPOINT)
+                    .await
+                    .context("failed to initialize an empty community-event checkpoint")?;
+            }
+            return Ok(());
+        }
         let Some(latest) = history.first() else {
             return Ok(());
         };
@@ -137,6 +163,21 @@ impl CommunityEventService {
             );
             return Ok(());
         };
+
+        if checkpoint == EMPTY_HISTORY_CHECKPOINT {
+            let mut unseen = history.to_vec();
+            unseen.reverse();
+            for item in unseen {
+                if item.kind == "extension" {
+                    self.announce(ctx, channel, &item).await?;
+                }
+                connection
+                    .set::<_, _, ()>(channel.checkpoint_key, &item.id)
+                    .await
+                    .context("failed to advance a community-event Discord checkpoint")?;
+            }
+            return Ok(());
+        }
 
         let Some(checkpoint_position) = history.iter().position(|item| item.id == checkpoint)
         else {

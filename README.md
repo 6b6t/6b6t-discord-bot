@@ -112,13 +112,17 @@ and Redis are configured.
 
 ### Community-event announcements
 
-Set `COMMUNITY_EVENT_ANNOUNCEMENT_CHANNEL_ID` to enable purchase announcements. The bot reads the
+Set `COMMUNITY_EVENT_ANNOUNCEMENTS_ENABLED=true` and configure the English channel to enable purchase announcements. The bot reads the
 website's community-event history from the existing Redis host and posts one message for each unseen
 extension. Redis is also used to track the last delivered event so announcements are not duplicated.
 
 | Variable | Required | Purpose |
 | --- | --- | --- |
-| `COMMUNITY_EVENT_ANNOUNCEMENT_CHANNEL_ID` | To enable | Discord channel to announce in |
+| `COMMUNITY_EVENT_ANNOUNCEMENTS_ENABLED` | To enable | Must be exactly `true`; defaults to disabled |
+| `COMMUNITY_EVENT_ANNOUNCEMENT_CHANNEL_ID` | To enable | English Discord channel |
+| `COMMUNITY_EVENT_ANNOUNCEMENT_CHANNEL_ID_ES` | No | Spanish Discord channel |
+| `COMMUNITY_EVENT_ANNOUNCEMENT_CHANNEL_ID_DE` | No | German Discord channel |
+| `COMMUNITY_EVENT_ANNOUNCEMENT_CHANNEL_ID_TR` | No | Turkish Discord channel |
 | `REDIS_HOST` | To enable | Reads the event history and stores the last delivered event |
 
 The bot role needs **View Channel** and **Send Messages** in the configured
