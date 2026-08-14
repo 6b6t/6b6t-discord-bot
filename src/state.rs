@@ -4,9 +4,9 @@ use anyhow::{Context as _, Result};
 use tokio::sync::{Mutex, RwLock};
 
 use crate::{
-    anarchy::AnarchyService, config::Environment, database::Databases, media::MediaState,
-    moderation::PendingApprovals, server::ServerService, telegram::TelegramService,
-    youtube::YoutubeService,
+    anarchy::AnarchyService, community_event::CommunityEventService, config::Environment,
+    database::Databases, media::MediaState, moderation::PendingApprovals, server::ServerService,
+    telegram::TelegramService, youtube::YoutubeService,
 };
 
 #[derive(Clone)]
@@ -20,6 +20,7 @@ pub struct AppState {
     pub telegram: Option<TelegramService>,
     pub youtube: YoutubeService,
     pub anarchy: Option<AnarchyService>,
+    pub community_event: Option<CommunityEventService>,
     pub role_sync_cache: Arc<RwLock<HashMap<String, CachedUserInfo>>>,
     pub ready_started: Arc<Mutex<bool>>,
 }
@@ -58,6 +59,7 @@ impl AppState {
             .as_ref()
             .map(|config| TelegramService::new(http.clone(), config.clone(), databases.clone()));
         let anarchy = load_anarchy(&environment);
+        let community_event = load_community_event(&environment, http.clone());
 
         Ok(Self {
             server: ServerService::new(http.clone(), Arc::clone(&environment), databases.clone()),
@@ -69,6 +71,7 @@ impl AppState {
             pending: Arc::new(PendingApprovals::default()),
             telegram,
             anarchy,
+            community_event,
             role_sync_cache: Arc::new(RwLock::new(HashMap::new())),
             ready_started: Arc::new(Mutex::new(false)),
         })
@@ -81,6 +84,31 @@ impl AppState {
         if let Some(databases) = &self.databases {
             databases.link.close().await;
             databases.stats.close().await;
+        }
+    }
+}
+
+fn load_community_event(
+    environment: &Arc<Environment>,
+    http: reqwest::Client,
+) -> Option<CommunityEventService> {
+    let channel_id = environment.community_event_announcement_channel_id?;
+    let Some(redis) = environment.redis.as_ref() else {
+        tracing::error!(
+            "community-event Discord announcements require Redis; announcements are disabled"
+        );
+        return None;
+    };
+    match CommunityEventService::new(
+        http,
+        redis,
+        environment.community_event_history_url.clone(),
+        channel_id,
+    ) {
+        Ok(service) => Some(service),
+        Err(error) => {
+            tracing::error!(%error, "failed to initialize community-event Discord announcements; disabled");
+            None
         }
     }
 }

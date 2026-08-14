@@ -110,6 +110,23 @@ and Redis are configured.
 | `REDIS_PASSWORD` | No | Redis password |
 | `REDIS_DB` | No | Redis database number, defaults to `0` |
 
+### Community-event announcements
+
+Set `COMMUNITY_EVENT_ANNOUNCEMENT_CHANNEL_ID` to enable purchase announcements. The bot polls the
+website's existing community-event history, locks that Discord channel for 30 seconds, and posts the
+announcement every five seconds before restoring its exact previous permission overwrite. Redis is
+required for deduplication and restart-safe channel restoration.
+
+| Variable | Required | Purpose |
+| --- | --- | --- |
+| `COMMUNITY_EVENT_ANNOUNCEMENT_CHANNEL_ID` | To enable | Discord channel to lock and announce in |
+| `COMMUNITY_EVENT_HISTORY_URL` | No | History endpoint; defaults to `${WEBSITE_BASE_URL}/api/community-event/history` |
+| `REDIS_HOST` | To enable | Uses the bot's existing Redis connection to store the last delivered event and temporary channel-lock state |
+
+The bot role needs **View Channel**, **Send Messages**, and **Manage Channels** in the configured
+channel. On first startup it checkpoints the latest existing history entry without announcing it,
+so old purchases are not replayed.
+
 ### Telegram crossposting
 
 Crossposting is enabled when both `TELEGRAM_CROSSPOST_BOT_TOKEN` and at least

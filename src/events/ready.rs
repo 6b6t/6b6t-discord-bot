@@ -81,6 +81,14 @@ pub async fn handle(
             |ctx, data| Box::pin(anarchy_analytics(ctx, data)),
         );
     }
+    if data.community_event.is_some() {
+        spawn_interval(
+            ctx.clone(),
+            data.clone(),
+            Duration::from_secs(5),
+            |ctx, data| Box::pin(community_event_announcements(ctx, data)),
+        );
+    }
     spawn_reminders(ctx.clone());
     Ok(())
 }
@@ -179,6 +187,15 @@ async fn anarchy_analytics(ctx: &serenity::Context, data: &AppState) {
     };
     if let Err(error) = anarchy.report(ctx, online_players).await {
         tracing::error!(%error, "anarchy mod analytics report failed");
+    }
+}
+
+async fn community_event_announcements(ctx: &serenity::Context, data: &AppState) {
+    let Some(service) = &data.community_event else {
+        return;
+    };
+    if let Err(error) = service.poll(ctx).await {
+        tracing::error!(%error, "community-event Discord announcement check failed");
     }
 }
 

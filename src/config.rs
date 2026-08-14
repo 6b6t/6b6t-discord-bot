@@ -212,6 +212,8 @@ pub struct Environment {
     pub motd_review_url: String,
     pub motd_review_secret: Option<String>,
     pub anarchy_analytics_channel_id: Option<serenity::ChannelId>,
+    pub community_event_announcement_channel_id: Option<serenity::ChannelId>,
+    pub community_event_history_url: String,
     pub redis: Option<RedisConfig>,
     pub database: Option<DatabaseConfig>,
     pub telegram: Option<TelegramConfig>,
@@ -249,8 +251,18 @@ impl Environment {
             }),
             motd_review_secret: optional_env("MOTD_REVIEW_BOT_SECRET"),
             anarchy_analytics_channel_id: optional_id("ANARCHY_ANALYTICS_CHANNEL_ID")?,
+            community_event_announcement_channel_id: optional_id(
+                "COMMUNITY_EVENT_ANNOUNCEMENT_CHANNEL_ID",
+            )?,
+            community_event_history_url: optional_env("COMMUNITY_EVENT_HISTORY_URL")
+                .unwrap_or_else(|| {
+                    format!(
+                        "{}/api/community-event/history",
+                        website.trim_end_matches('/')
+                    )
+                }),
             redis: parse_redis_config().unwrap_or_else(|error| {
-                tracing::error!(%error, "Redis configuration is invalid; anarchy mod analytics are disabled");
+                tracing::error!(%error, "Redis configuration is invalid; Redis-backed features are disabled");
                 None
             }),
             database,

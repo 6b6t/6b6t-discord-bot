@@ -1,6 +1,7 @@
 mod anarchy;
 mod command_moderation;
 mod commands;
+mod community_event;
 mod config;
 mod database;
 mod events;
