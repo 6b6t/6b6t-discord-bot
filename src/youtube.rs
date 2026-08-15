@@ -22,6 +22,7 @@ const WHITELISTED_CHANNELS: &[&str] = &[
     "UCBrOlHTLhY0dnmqBWqbD3IQ",
     "UCoXqVBjCPgKkoI_KZA3tutw",
 ];
+const BLOCKED_CHANNELS: &[&str] = &["UClo41vgAsX7YkhpxMW42WvA"];
 const IGNORE_WORDS: &[&str] = &[
     "2b2t",
     "5b5t",
@@ -147,7 +148,7 @@ fn find_video(items: Vec<SearchResult>, posted: &HashSet<String>) -> Option<Yout
             })
         })
         .find(|video| {
-            if posted.contains(&video.id) {
+            if posted.contains(&video.id) || BLOCKED_CHANNELS.contains(&video.channel_id.as_str()) {
                 return false;
             }
             let query_haystack =
@@ -220,6 +221,20 @@ mod tests {
         .expect("a whitelisted result should be selected");
 
         assert_eq!(selected.id, "whitelisted");
+    }
+
+    #[test]
+    fn blocked_channels_are_never_selected() {
+        let selected = find_video(
+            vec![
+                result("blocked", "6b6t base tour", BLOCKED_CHANNELS[0]),
+                result("allowed", "6b6t base tour", "allowed-channel"),
+            ],
+            &HashSet::new(),
+        )
+        .expect("the allowed result should be selected");
+
+        assert_eq!(selected.id, "allowed");
     }
 
     #[test]
