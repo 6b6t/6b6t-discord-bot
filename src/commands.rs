@@ -297,14 +297,24 @@ async fn youtuber_role(ctx: Context<'_>, player_name: String, add: bool) -> Resu
         .databases
         .as_ref()
         .context("account linking is not available")?;
-    let Some(uuid) = resolve_player_uuid(databases, &player_name).await? else {
-        let message = if parse_discord_mention(&player_name).is_some() {
-            "No Minecraft account is linked to that Discord user."
-        } else {
-            "No player found with the name `{player_name}`."
-        };
-        ctx.say(message).await?;
-        return Ok(());
+    let uuid = match resolve_player_uuid(databases, &player_name).await? {
+        PlayerUuidResolution::Found(uuid) => uuid,
+        PlayerUuidResolution::NotFound => {
+            let message = if parse_discord_mention(&player_name).is_some() {
+                "No Minecraft account is linked to that Discord user."
+            } else {
+                "No player found with the name `{player_name}`."
+            };
+            ctx.say(message).await?;
+            return Ok(());
+        }
+        PlayerUuidResolution::Ambiguous => {
+            ctx.say(format!(
+                "Multiple Minecraft accounts use the name `{player_name}` and no unique linked account could be selected. Run the command again using the linked Discord user mention."
+            ))
+            .await?;
+            return Ok(());
+        }
     };
     let guild_id = ctx.guild_id().context("missing guild")?;
     let action = if add { "add" } else { "remove" };
@@ -363,17 +373,66 @@ async fn youtuber_role(ctx: Context<'_>, player_name: String, add: bool) -> Resu
 
 /// Resolve a Minecraft player's UUID from either a player name in the stats
 /// database or a `<@discord_id>` mention through the link database.
+#[derive(Debug, PartialEq, Eq)]
+enum PlayerUuidResolution {
+    Found(String),
+    NotFound,
+    Ambiguous,
+}
+
 async fn resolve_player_uuid(
     databases: &Databases,
     input: &str,
-) -> Result<Option<String>, anyhow::Error> {
+) -> Result<PlayerUuidResolution, anyhow::Error> {
     if let Some(discord_id) = parse_discord_mention(input) {
         return Ok(databases
             .mapping_for_discord(&discord_id.to_string())
             .await?
-            .map(|mapping| mapping.uuid));
+            .map_or(PlayerUuidResolution::NotFound, |mapping| {
+                PlayerUuidResolution::Found(mapping.uuid)
+            }));
     }
-    databases.uuid_for_player_name(input).await
+    let candidates = unique_uuids(databases.uuids_for_player_name(input).await?);
+    match candidates.as_slice() {
+        [] => Ok(PlayerUuidResolution::NotFound),
+        [uuid] => Ok(PlayerUuidResolution::Found(uuid.clone())),
+        _ => {
+            let mut linked = Vec::new();
+            for uuid in &candidates {
+                if let Some(mapping) = databases.mapping_for_uuid(uuid).await? {
+                    linked.push(mapping.uuid);
+                }
+            }
+            Ok(select_linked_uuid(linked))
+        }
+    }
+}
+
+fn unique_uuids(uuids: Vec<String>) -> Vec<String> {
+    let mut unique: Vec<String> = Vec::new();
+    for uuid in uuids {
+        if !unique
+            .iter()
+            .any(|candidate| normalize_uuid(candidate) == normalize_uuid(&uuid))
+        {
+            unique.push(uuid);
+        }
+    }
+    unique
+}
+
+fn select_linked_uuid(linked: Vec<String>) -> PlayerUuidResolution {
+    match unique_uuids(linked).as_slice() {
+        [uuid] => PlayerUuidResolution::Found(uuid.clone()),
+        _ => PlayerUuidResolution::Ambiguous,
+    }
+}
+
+fn normalize_uuid(uuid: &str) -> String {
+    uuid.chars()
+        .filter(|character| *character != '-')
+        .flat_map(char::to_lowercase)
+        .collect()
 }
 
 /// Parse `<@123...>` or the legacy `<@!123...>` user mention into a snowflake.
@@ -464,7 +523,7 @@ async fn send_suppressed(ctx: Context<'_>, content: &str) -> Result<(), Error> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_discord_mention;
+    use super::{PlayerUuidResolution, parse_discord_mention, select_linked_uuid, unique_uuids};
 
     #[test]
     fn user_mentions_parse_to_snowflakes() {
@@ -488,5 +547,36 @@ mod tests {
     fn plain_player_names_are_not_mentions() {
         assert!(parse_discord_mention("ExampleName").is_none());
         assert!(parse_discord_mention("<@notanumber>").is_none());
+    }
+
+    #[test]
+    fn duplicate_player_names_select_the_only_linked_uuid() {
+        assert_eq!(
+            select_linked_uuid(vec!["a8234a1d-244d-48df-afd2-4bce607bcd8f".into()]),
+            PlayerUuidResolution::Found("a8234a1d-244d-48df-afd2-4bce607bcd8f".into())
+        );
+    }
+
+    #[test]
+    fn duplicate_player_names_fail_closed_without_one_link() {
+        assert_eq!(
+            select_linked_uuid(Vec::new()),
+            PlayerUuidResolution::Ambiguous
+        );
+        assert_eq!(
+            select_linked_uuid(vec!["first".into(), "second".into()]),
+            PlayerUuidResolution::Ambiguous
+        );
+    }
+
+    #[test]
+    fn uuid_deduplication_ignores_case_and_hyphens() {
+        assert_eq!(
+            unique_uuids(vec![
+                "A8234A1D-244D-48DF-AFD2-4BCE607BCD8F".into(),
+                "a8234a1d244d48dfafd24bce607bcd8f".into(),
+            ]),
+            vec!["A8234A1D-244D-48DF-AFD2-4BCE607BCD8F"]
+        );
     }
 }

@@ -64,23 +64,22 @@ impl Databases {
         .context("failed to load Discord account mapping")
     }
 
-    /// UUID of the player with `name`, matching case-insensitively regardless
-    /// of the stats table collation.
-    pub async fn uuid_for_player_name(&self, name: &str) -> Result<Option<String>> {
-        sqlx::query_scalar::<_, String>(
-            "SELECT uuid FROM player_info WHERE LOWER(name) = LOWER(?) LIMIT 1",
-        )
-        .bind(name)
-        .fetch_optional(&self.stats)
-        .await
-        .context("failed to look up Minecraft player by name")
+    /// Every UUID recorded for `name`, matching case-insensitively regardless
+    /// of the stats table collation. Player names can have historical UUIDs, so
+    /// callers must resolve ambiguity instead of selecting an arbitrary row.
+    pub async fn uuids_for_player_name(&self, name: &str) -> Result<Vec<String>> {
+        sqlx::query_scalar::<_, String>("SELECT uuid FROM player_info WHERE LOWER(name) = LOWER(?)")
+            .bind(name)
+            .fetch_all(&self.stats)
+            .await
+            .context("failed to look up Minecraft players by name")
     }
 
     pub async fn mapping_for_uuid(&self, uuid: &str) -> Result<Option<LinkMapping>> {
         sqlx::query_as::<_, LinkMapping>(
-            "SELECT uuid, discord_id FROM uuid_to_discord WHERE uuid = ? LIMIT 1",
+            "SELECT uuid, discord_id FROM uuid_to_discord WHERE LOWER(REPLACE(uuid, '-', '')) = ? LIMIT 1",
         )
-        .bind(uuid)
+        .bind(normalize_uuid(uuid))
         .fetch_optional(&self.link)
         .await
         .context("failed to load Discord account mapping")
@@ -95,6 +94,13 @@ impl Databases {
         .await
         .context("failed to load Minecraft player information")
     }
+}
+
+fn normalize_uuid(uuid: &str) -> String {
+    uuid.chars()
+        .filter(|character| *character != '-')
+        .flat_map(char::to_lowercase)
+        .collect()
 }
 
 async fn connect_database(config: &DatabaseConfig, database: &str) -> Result<MySqlPool> {
