@@ -11,9 +11,12 @@ use crate::{
     state::{AppState, Context, Error},
 };
 
+const ANARCHY_MOD_MESSAGE: &str = "Mojang banned 6b6t. Read what happened in our [blog post](<https://blog.6b6t.org/minecraft-banned-6b6t/>). 6b6t remains true anarchy without rules or punishments. To join on Java Edition, you have to download [AnarchyMod](<https://6b6t.org/mod>).";
+
 pub fn all() -> Vec<poise::Command<AppState, Error>> {
     vec![
         ip(),
+        anarchymod(),
         playercount(),
         version(),
         shop(),
@@ -35,7 +38,14 @@ pub fn all() -> Vec<poise::Command<AppState, Error>> {
 /// See 6b6t's IP.
 #[poise::command(slash_command, user_cooldown = 60)]
 async fn ip(ctx: Context<'_>) -> Result<(), Error> {
-    ctx.say("Join 6b6t using the IP `play.6b6t.org` on Java Edition and `bedrock.6b6t.org` with the port 19132 on Bedrock Edition.").await?;
+    ctx.say("Join 6b6t using the IP `bedrock.6b6t.org` with the port 19132 on Bedrock Edition. To play 6b6t on Java Edition, download [AnarchyMod](<https://6b6t.org/mod>) and join using the IP `play.6b6t.org`.").await?;
+    Ok(())
+}
+
+/// Learn how to join 6b6t on Java Edition with `AnarchyMod`.
+#[poise::command(slash_command, user_cooldown = 60)]
+async fn anarchymod(ctx: Context<'_>) -> Result<(), Error> {
+    ctx.say(ANARCHY_MOD_MESSAGE).await?;
     Ok(())
 }
 
@@ -70,6 +80,7 @@ async fn playercount(ctx: Context<'_>) -> Result<(), Error> {
             format_duration(uptime)
         );
     }
+    message.push_str(" To play, download [AnarchyMod](<https://6b6t.org/mod>).");
     finish_deferred(ctx, message, false).await?;
     Ok(())
 }
@@ -77,19 +88,7 @@ async fn playercount(ctx: Context<'_>) -> Result<(), Error> {
 /// See 6b6t's version.
 #[poise::command(slash_command, user_cooldown = 60)]
 async fn version(ctx: Context<'_>) -> Result<(), Error> {
-    ctx.defer().await?;
-    let version = ctx
-        .data()
-        .server
-        .server_data()
-        .await
-        .ok()
-        .and_then(|data| data.version);
-    let Some(version) = version else {
-        finish_deferred(ctx, "Failed to get server version", true).await?;
-        return Ok(());
-    };
-    finish_deferred(ctx, format!("The current version of 6b6t is {version}. Connect to 6b6t using the IP `play.6b6t.org` on Java Edition and `bedrock.6b6t.org` with the port 19132 on Bedrock Edition."), false).await?;
+    ctx.say("The current version of 6b6t is 26.2. To play on Java Edition, download [AnarchyMod](<https://6b6t.org/mod>).").await?;
     Ok(())
 }
 

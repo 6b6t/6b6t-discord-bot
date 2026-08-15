@@ -168,6 +168,7 @@ Telegram delivery. Delete synchronization remains disabled by default.
 | Command | Access | Purpose |
 | --- | --- | --- |
 | `/ip` | Everyone | Show Java and Bedrock addresses |
+| `/anarchymod` | Everyone | Explain how to join Java Edition with AnarchyMod |
 | `/playercount` | Everyone | Show player count and uptime |
 | `/version` | Everyone | Show the current Minecraft version |
 | `/shop` | Everyone | Link to the 6b6t shop |

@@ -19,7 +19,6 @@ pub struct UserInfo {
 #[derive(Clone, Debug)]
 pub struct ServerData {
     pub player_count: u64,
-    pub version: Option<String>,
     pub server_start_unix: Option<i64>,
     pub current_uptime_hours: Option<f64>,
 }
@@ -74,20 +73,11 @@ impl ServerService {
     }
 
     pub async fn server_data(&self) -> Result<ServerData> {
-        let (players, version, uptime) = tokio::join!(
+        let (players, uptime) = tokio::join!(
             self.player_data(),
-            self.http.get(format!("{SERVER_API}/version")).send(),
             self.http.get(format!("{SERVER_API}/uptime")).send(),
         );
         let player_count = players?;
-        let version = match version {
-            Ok(response) if response.status().is_success() => response
-                .json::<VersionResponse>()
-                .await
-                .ok()
-                .map(|value| value.version),
-            _ => None,
-        };
         let uptime = match uptime {
             Ok(response) if response.status().is_success() => response
                 .json::<UptimeResponse>()
@@ -98,7 +88,6 @@ impl ServerService {
         };
         Ok(ServerData {
             player_count,
-            version,
             server_start_unix: uptime.as_ref().and_then(|value| value.server_start_unix),
             current_uptime_hours: uptime.and_then(|value| value.current_uptime_hours),
         })
@@ -368,10 +357,6 @@ struct PlayersResponse {
     success: bool,
     #[serde(rename = "player-count")]
     player_count: u64,
-}
-#[derive(Deserialize)]
-struct VersionResponse {
-    version: String,
 }
 #[derive(Deserialize)]
 struct UptimeResponse {
