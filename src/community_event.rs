@@ -2,7 +2,7 @@ use anyhow::{Context as _, Result};
 use chrono::DateTime;
 use poise::serenity_prelude as serenity;
 use redis::AsyncCommands as _;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::config::RedisConfig;
 
@@ -10,6 +10,10 @@ const ENGLISH_CHECKPOINT_KEY: &str = "community-event:discord:last-history-id";
 const SPANISH_CHECKPOINT_KEY: &str = "community-event:discord:last-history-id:es";
 const GERMAN_CHECKPOINT_KEY: &str = "community-event:discord:last-history-id:de";
 const TURKISH_CHECKPOINT_KEY: &str = "community-event:discord:last-history-id:tr";
+const DUPE_EVENT_CHECKPOINT_KEY: &str = "community-event:discord:last-history-id:dupe-event";
+const DUPE_EVENT_COUNTDOWN_CHECKPOINT_KEY: &str =
+    "community-event:discord:dupe-event:countdown-hour-checkpoint";
+const EVENT_STATE_KEY: &str = "community:event:dupe-2026:state";
 const HISTORY_KEY: &str = "community:event:dupe-2026:history";
 const HISTORY_INDEX_KEY: &str = "community:event:dupe-2026:history-index";
 const HISTORY_LIMIT: usize = 50;
@@ -28,12 +32,15 @@ struct AnnouncementChannel {
     id: serenity::ChannelId,
     locale: AnnouncementLocale,
     checkpoint_key: &'static str,
+    backfill_existing: bool,
+    dedicated_dupe_channel: bool,
 }
 
 #[derive(Clone)]
 pub struct CommunityEventService {
     redis: redis::Client,
     channels: Vec<AnnouncementChannel>,
+    dupe_event_channel_id: Option<serenity::ChannelId>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -48,6 +55,22 @@ struct HistoryItem {
     resulting_ends_at: String,
 }
 
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct StoredEventState {
+    event_id: String,
+    starts_at_ms: i64,
+    ends_at_ms: i64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CountdownCheckpoint {
+    event_id: String,
+    ends_at_ms: i64,
+    remaining_hours: u64,
+}
+
 impl CommunityEventService {
     pub fn new(
         redis: &RedisConfig,
@@ -55,6 +78,7 @@ impl CommunityEventService {
         spanish_channel_id: Option<serenity::ChannelId>,
         german_channel_id: Option<serenity::ChannelId>,
         turkish_channel_id: Option<serenity::ChannelId>,
+        dupe_event_channel_id: Option<serenity::ChannelId>,
     ) -> Result<Self> {
         let redis = redis::Client::open(redis.connection_url())
             .context("failed to initialize Redis for community-event announcements")?;
@@ -62,6 +86,8 @@ impl CommunityEventService {
             id: english_channel_id,
             locale: AnnouncementLocale::English,
             checkpoint_key: ENGLISH_CHECKPOINT_KEY,
+            backfill_existing: false,
+            dedicated_dupe_channel: false,
         }];
         channels.extend(
             [
@@ -87,10 +113,27 @@ impl CommunityEventService {
                     id,
                     locale,
                     checkpoint_key,
+                    backfill_existing: false,
+                    dedicated_dupe_channel: false,
                 })
             }),
         );
-        Ok(Self { redis, channels })
+        let dupe_event_channel_id =
+            dupe_event_channel_id.filter(|id| channels.iter().all(|channel| channel.id != *id));
+        if let Some(id) = dupe_event_channel_id {
+            channels.push(AnnouncementChannel {
+                id,
+                locale: AnnouncementLocale::English,
+                checkpoint_key: DUPE_EVENT_CHECKPOINT_KEY,
+                backfill_existing: true,
+                dedicated_dupe_channel: true,
+            });
+        }
+        Ok(Self {
+            redis,
+            channels,
+            dupe_event_channel_id,
+        })
     }
 
     pub async fn poll(&self, ctx: &serenity::Context) -> Result<()> {
@@ -99,6 +142,20 @@ impl CommunityEventService {
             .get_multiplexed_async_connection()
             .await
             .context("failed to connect to Redis for community-event announcements")?;
+        let mut first_error = None;
+        if let Some(channel_id) = self.dupe_event_channel_id
+            && let Err(error) = self
+                .poll_dupe_event_countdown(ctx, &mut connection, channel_id)
+                .await
+        {
+            tracing::error!(
+                %error,
+                channel_id = channel_id.get(),
+                "community-event hourly Discord countdown failed"
+            );
+            first_error = Some(error);
+        }
+
         let history = self.fetch_history(&mut connection).await?;
         if history.is_empty() {
             for channel in &self.channels {
@@ -107,13 +164,15 @@ impl CommunityEventService {
                     .await
                     .context("failed to initialize an empty community-event checkpoint")?;
             }
-            return Ok(());
+            return match first_error {
+                Some(error) => Err(error),
+                None => Ok(()),
+            };
         }
         let Some(latest) = history.first() else {
             return Ok(());
         };
 
-        let mut first_error = None;
         for channel in &self.channels {
             if let Err(error) = self
                 .poll_channel(ctx, &mut connection, *channel, &history, latest)
@@ -150,18 +209,28 @@ impl CommunityEventService {
             .await
             .context("failed to read a community-event Discord checkpoint")?;
 
-        let Some(checkpoint) = checkpoint else {
-            connection
-                .set::<_, _, ()>(channel.checkpoint_key, &latest.id)
-                .await
-                .context("failed to initialize a community-event Discord checkpoint")?;
-            tracing::info!(
-                locale = ?channel.locale,
-                channel_id = channel.id.get(),
-                history_id = latest.id,
-                "initialized community-event Discord checkpoint"
-            );
-            return Ok(());
+        let checkpoint = match checkpoint {
+            Some(checkpoint) => checkpoint,
+            None if channel.backfill_existing => {
+                connection
+                    .set::<_, _, ()>(channel.checkpoint_key, EMPTY_HISTORY_CHECKPOINT)
+                    .await
+                    .context("failed to initialize a community-event backfill checkpoint")?;
+                EMPTY_HISTORY_CHECKPOINT.to_owned()
+            }
+            None => {
+                connection
+                    .set::<_, _, ()>(channel.checkpoint_key, &latest.id)
+                    .await
+                    .context("failed to initialize a community-event Discord checkpoint")?;
+                tracing::info!(
+                    locale = ?channel.locale,
+                    channel_id = channel.id.get(),
+                    history_id = latest.id,
+                    "initialized community-event Discord checkpoint"
+                );
+                return Ok(());
+            }
         };
 
         if checkpoint == EMPTY_HISTORY_CHECKPOINT {
@@ -209,6 +278,103 @@ impl CommunityEventService {
         Ok(())
     }
 
+    async fn poll_dupe_event_countdown(
+        &self,
+        ctx: &serenity::Context,
+        connection: &mut redis::aio::MultiplexedConnection,
+        channel_id: serenity::ChannelId,
+    ) -> Result<()> {
+        let state_raw: Option<String> = connection
+            .get(EVENT_STATE_KEY)
+            .await
+            .context("failed to read the community-event state")?;
+        let Some(state_raw) = state_raw else {
+            return Ok(());
+        };
+        let state: StoredEventState = serde_json::from_str(&state_raw)
+            .context("Redis contains an invalid community-event state")?;
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let Some(remaining_hours) = countdown_hours_remaining(&state, now_ms) else {
+            return Ok(());
+        };
+        let checkpoint = CountdownCheckpoint {
+            event_id: state.event_id.clone(),
+            ends_at_ms: state.ends_at_ms,
+            remaining_hours,
+        };
+        let checkpoint_json = serde_json::to_string(&checkpoint)
+            .context("failed to serialize the Discord countdown checkpoint")?;
+        let previous_raw: Option<String> = connection
+            .get(DUPE_EVENT_COUNTDOWN_CHECKPOINT_KEY)
+            .await
+            .context("failed to read the Discord countdown checkpoint")?;
+
+        let Some(previous_raw) = previous_raw else {
+            connection
+                .set::<_, _, ()>(DUPE_EVENT_COUNTDOWN_CHECKPOINT_KEY, checkpoint_json)
+                .await
+                .context("failed to initialize the Discord countdown checkpoint")?;
+            return Ok(());
+        };
+        let previous: CountdownCheckpoint = serde_json::from_str(&previous_raw)
+            .context("Redis contains an invalid Discord countdown checkpoint")?;
+        if previous.event_id != checkpoint.event_id
+            || previous.ends_at_ms != checkpoint.ends_at_ms
+            || remaining_hours >= previous.remaining_hours
+        {
+            if previous.event_id != checkpoint.event_id
+                || previous.ends_at_ms != checkpoint.ends_at_ms
+                || remaining_hours > previous.remaining_hours
+            {
+                connection
+                    .set::<_, _, ()>(DUPE_EVENT_COUNTDOWN_CHECKPOINT_KEY, checkpoint_json)
+                    .await
+                    .context("failed to refresh the Discord countdown checkpoint")?;
+            }
+            return Ok(());
+        }
+
+        let delivery_id = format!(
+            "{}:{}:{}",
+            checkpoint.event_id, checkpoint.ends_at_ms, checkpoint.remaining_hours
+        );
+        let lock_key = format!("{DUPE_EVENT_COUNTDOWN_CHECKPOINT_KEY}:lock:{delivery_id}");
+        let claimed: Option<String> = redis::cmd("SET")
+            .arg(&lock_key)
+            .arg("1")
+            .arg("NX")
+            .arg("EX")
+            .arg(60)
+            .query_async(connection)
+            .await
+            .context("failed to claim the Discord countdown delivery")?;
+        if claimed.is_none() {
+            return Ok(());
+        }
+
+        let send_result = channel_id
+            .send_message(
+                ctx,
+                serenity::CreateMessage::new()
+                    .content(render_dupe_event_countdown(remaining_hours))
+                    .allowed_mentions(serenity::CreateAllowedMentions::new()),
+            )
+            .await;
+        if let Err(error) = send_result {
+            let _: redis::RedisResult<()> = connection.del(&lock_key).await;
+            return Err(error).context("failed to send the hourly Discord countdown");
+        }
+
+        redis::pipe()
+            .atomic()
+            .set(DUPE_EVENT_COUNTDOWN_CHECKPOINT_KEY, checkpoint_json)
+            .del(lock_key)
+            .query_async::<()>(connection)
+            .await
+            .context("failed to finalize the Discord countdown delivery")?;
+        Ok(())
+    }
+
     async fn fetch_history(
         &self,
         connection: &mut redis::aio::MultiplexedConnection,
@@ -245,7 +411,7 @@ impl CommunityEventService {
         channel: AnnouncementChannel,
         item: &HistoryItem,
     ) -> Result<()> {
-        channel
+        let message = channel
             .id
             .send_message(
                 ctx,
@@ -253,25 +419,57 @@ impl CommunityEventService {
                     .content(render_announcement(
                         item,
                         channel.locale,
+                        channel.dedicated_dupe_channel,
                         chrono::Utc::now().timestamp_millis(),
                     )?)
                     .allowed_mentions(serenity::CreateAllowedMentions::new()),
             )
             .await
             .context("failed to send a community-event announcement")?;
+        if let Err(error) = message
+            .react(ctx, serenity::ReactionType::Unicode("🔥".to_owned()))
+            .await
+        {
+            tracing::warn!(
+                %error,
+                channel_id = channel.id.get(),
+                message_id = message.id.get(),
+                "failed to add the fire reaction to a community-event announcement"
+            );
+        }
         Ok(())
     }
+}
+
+fn countdown_hours_remaining(state: &StoredEventState, now_ms: i64) -> Option<u64> {
+    if now_ms < state.starts_at_ms || now_ms >= state.ends_at_ms {
+        return None;
+    }
+    let remaining_ms = u64::try_from(state.ends_at_ms.saturating_sub(now_ms)).ok()?;
+    Some(remaining_ms.div_ceil(60 * 60 * 1_000))
+}
+
+fn render_dupe_event_countdown(remaining_hours: u64) -> String {
+    let remaining = format_remaining(
+        remaining_hours.saturating_mul(60 * 60),
+        AnnouncementLocale::English,
+    );
+    let shop_url = "https://www.6b6t.org/shop?utm_source=discord&utm_medium=discord_channel&utm_campaign=event_dupe_august_2026&utm_content=dupe_event_bot-event-countdown&lang=en";
+    format!(
+        "**{remaining} remain in the Dupe Event.** When the timer reaches 0, the dupe will be disabled.\n\n**Keep the Dupe Event running** - every eligible rank purchase extends the timer. Buy a rank from the [6b6t Shop](<{shop_url}>)."
+    )
 }
 
 fn render_announcement(
     item: &HistoryItem,
     locale: AnnouncementLocale,
+    dedicated_dupe_channel: bool,
     now_ms: i64,
 ) -> Result<String> {
     let duration = format_duration(item.extension_seconds, locale);
     let remaining = format_remaining(remaining_seconds(item, now_ms)?, locale);
     let upgrade = parse_upgrade(&item.purchase_label);
-    let shop_url = shop_url(locale);
+    let shop_url = shop_url(locale, dedicated_dupe_channel);
 
     let purchase = match (locale, upgrade) {
         (AnnouncementLocale::English, Some((source, target))) => format!(
@@ -310,7 +508,7 @@ fn render_announcement(
 
     let body = match locale {
         AnnouncementLocale::English => format!(
-            "{purchase} and the Dupe Event was extended by **{duration}**. Event ends in {remaining}.\n\nIf you want to extend the Dupe Event, buy a rank from the [6b6t Shop](<{shop_url}>)."
+            "{purchase} and extended the Dupe Event by **{duration}**. The Dupe Event now ends in **{remaining}**.\n\n**Keep the Dupe Event running** - buy a rank from the [6b6t Shop](<{shop_url}>)."
         ),
         AnnouncementLocale::Spanish => format!(
             "{purchase} y el Evento de Duplicación se extendió **{duration}**. El evento termina en {remaining}.\n\nSi quieres extender el Evento de Duplicación, compra un rango en la [Tienda de 6b6t](<{shop_url}>)."
@@ -427,7 +625,10 @@ fn format_minutes(total_minutes: u64, locale: AnnouncementLocale) -> String {
     parts.join(" ")
 }
 
-fn shop_url(locale: AnnouncementLocale) -> &'static str {
+fn shop_url(locale: AnnouncementLocale, dedicated_dupe_channel: bool) -> &'static str {
+    if dedicated_dupe_channel {
+        return "https://www.6b6t.org/shop?utm_source=discord&utm_medium=discord_channel&utm_campaign=event_dupe_august_2026&utm_content=dupe_event_bot-event-extension&lang=en";
+    }
     match locale {
         AnnouncementLocale::English => {
             "https://www.6b6t.org/shop?utm_source=discord&utm_medium=discord_channel&utm_campaign=event_dupe_august_2026&utm_content=general_bot-event-extension&lang=en"
@@ -504,10 +705,11 @@ mod tests {
             render_announcement(
                 &item("Elite", 3_600, 2 * 86_400 + 3 * 3_600 + 15 * 60),
                 AnnouncementLocale::English,
+                false,
                 NOW_MS,
             )
             .unwrap(),
-            "Player **AshiqTasdid** purchased the **Elite Rank** and the Dupe Event was extended by **1 hour**. Event ends in 2 days 3 hours 15 minutes.\n\nIf you want to extend the Dupe Event, buy a rank from the [6b6t Shop](<https://www.6b6t.org/shop?utm_source=discord&utm_medium=discord_channel&utm_campaign=event_dupe_august_2026&utm_content=general_bot-event-extension&lang=en>)."
+            "Player **AshiqTasdid** purchased the **Elite Rank** and extended the Dupe Event by **1 hour**. The Dupe Event now ends in **2 days 3 hours 15 minutes**.\n\n**Keep the Dupe Event running** - buy a rank from the [6b6t Shop](<https://www.6b6t.org/shop?utm_source=discord&utm_medium=discord_channel&utm_campaign=event_dupe_august_2026&utm_content=general_bot-event-extension&lang=en>)."
         );
     }
 
@@ -517,19 +719,23 @@ mod tests {
             render_announcement(
                 &item("Prime → Elite upgrade", 2_700, 30 * 60),
                 AnnouncementLocale::English,
+                false,
                 NOW_MS,
             )
             .unwrap(),
-            "Player **AshiqTasdid** purchased the upgrade from Prime Rank to **Elite Rank** and the Dupe Event was extended by **45 minutes**. Event ends in 30 minutes.\n\nIf you want to extend the Dupe Event, buy a rank from the [6b6t Shop](<https://www.6b6t.org/shop?utm_source=discord&utm_medium=discord_channel&utm_campaign=event_dupe_august_2026&utm_content=general_bot-event-extension&lang=en>)."
+            "Player **AshiqTasdid** purchased the upgrade from Prime Rank to **Elite Rank** and extended the Dupe Event by **45 minutes**. The Dupe Event now ends in **30 minutes**.\n\n**Keep the Dupe Event running** - buy a rank from the [6b6t Shop](<https://www.6b6t.org/shop?utm_source=discord&utm_medium=discord_channel&utm_campaign=event_dupe_august_2026&utm_content=general_bot-event-extension&lang=en>)."
         );
     }
 
     #[test]
     fn localized_messages_use_their_channel_language_and_utm_language() {
         let purchase = item("Elite", 3_600, 30 * 60);
-        let spanish = render_announcement(&purchase, AnnouncementLocale::Spanish, NOW_MS).unwrap();
-        let german = render_announcement(&purchase, AnnouncementLocale::German, NOW_MS).unwrap();
-        let turkish = render_announcement(&purchase, AnnouncementLocale::Turkish, NOW_MS).unwrap();
+        let spanish =
+            render_announcement(&purchase, AnnouncementLocale::Spanish, false, NOW_MS).unwrap();
+        let german =
+            render_announcement(&purchase, AnnouncementLocale::German, false, NOW_MS).unwrap();
+        let turkish =
+            render_announcement(&purchase, AnnouncementLocale::Turkish, false, NOW_MS).unwrap();
 
         assert!(spanish.contains("El jugador **AshiqTasdid** compró el **rango Elite**"));
         assert!(spanish.contains("30 minutos"));
@@ -540,5 +746,38 @@ mod tests {
         assert!(turkish.contains("Oyuncu **AshiqTasdid**, **Elite Rütbesini** satın aldı"));
         assert!(turkish.contains("30 dakika"));
         assert!(turkish.contains("&lang=tr"));
+    }
+
+    #[test]
+    fn dedicated_channel_has_separate_attribution() {
+        let rendered = render_announcement(
+            &item("Elite", 3_600, 30 * 60),
+            AnnouncementLocale::English,
+            true,
+            NOW_MS,
+        )
+        .unwrap();
+
+        assert!(rendered.contains("utm_content=dupe_event_bot-event-extension"));
+    }
+
+    #[test]
+    fn hourly_countdown_uses_the_dedicated_countdown_attribution() {
+        assert_eq!(
+            render_dupe_event_countdown(57),
+            "**2 days 9 hours remain in the Dupe Event.** When the timer reaches 0, the dupe will be disabled.\n\n**Keep the Dupe Event running** - every eligible rank purchase extends the timer. Buy a rank from the [6b6t Shop](<https://www.6b6t.org/shop?utm_source=discord&utm_medium=discord_channel&utm_campaign=event_dupe_august_2026&utm_content=dupe_event_bot-event-countdown&lang=en>)."
+        );
+    }
+
+    #[test]
+    fn hourly_countdown_changes_only_at_full_remaining_hours() {
+        let state = StoredEventState {
+            event_id: "dupe-event".into(),
+            starts_at_ms: NOW_MS - 1_000,
+            ends_at_ms: NOW_MS + 2 * 3_600_000,
+        };
+        assert_eq!(countdown_hours_remaining(&state, NOW_MS - 1), Some(3));
+        assert_eq!(countdown_hours_remaining(&state, NOW_MS), Some(2));
+        assert_eq!(countdown_hours_remaining(&state, state.ends_at_ms), None);
     }
 }

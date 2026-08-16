@@ -105,6 +105,7 @@ fn load_community_event(environment: &Arc<Environment>) -> Option<CommunityEvent
         environment.community_event_announcement_channel_id_es,
         environment.community_event_announcement_channel_id_de,
         environment.community_event_announcement_channel_id_tr,
+        environment.community_event_announcement_channel_id_dupe,
     ) {
         Ok(service) => Some(service),
         Err(error) => {

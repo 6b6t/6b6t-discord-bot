@@ -123,11 +123,17 @@ extension. Redis is also used to track the last delivered event so announcements
 | `COMMUNITY_EVENT_ANNOUNCEMENT_CHANNEL_ID_ES` | No | Spanish Discord channel |
 | `COMMUNITY_EVENT_ANNOUNCEMENT_CHANNEL_ID_DE` | No | German Discord channel |
 | `COMMUNITY_EVENT_ANNOUNCEMENT_CHANNEL_ID_TR` | No | Turkish Discord channel |
+| `COMMUNITY_EVENT_ANNOUNCEMENT_CHANNEL_ID_DUPE` | No | Dedicated English `#dupe-event` channel; backfills existing extension history on first enable |
 | `REDIS_HOST` | To enable | Reads the event history and stores the last delivered event |
 
 The bot role needs **View Channel** and **Send Messages** in the configured
-channel. On first startup it checkpoints the latest existing history entry without announcing it,
-so old purchases are not replayed.
+channels, plus **Add Reactions** for the automatic fire reaction. General channels checkpoint the
+latest existing history entry on first startup, so old purchases are not replayed. The dedicated
+`#dupe-event` channel intentionally backfills up to the latest 50 history entries the first time it
+is enabled, then uses its own checkpoint for new purchases. It also posts one countdown when each
+full remaining hour is crossed. Purchase links in that channel use
+`dupe_event_bot-event-extension`; hourly countdown links use
+`dupe_event_bot-event-countdown`.
 
 ### Telegram crossposting
 

@@ -217,6 +217,7 @@ pub struct Environment {
     pub community_event_announcement_channel_id_es: Option<serenity::ChannelId>,
     pub community_event_announcement_channel_id_de: Option<serenity::ChannelId>,
     pub community_event_announcement_channel_id_tr: Option<serenity::ChannelId>,
+    pub community_event_announcement_channel_id_dupe: Option<serenity::ChannelId>,
     pub redis: Option<RedisConfig>,
     pub database: Option<DatabaseConfig>,
     pub telegram: Option<TelegramConfig>,
@@ -269,6 +270,9 @@ impl Environment {
             )?,
             community_event_announcement_channel_id_tr: optional_id(
                 "COMMUNITY_EVENT_ANNOUNCEMENT_CHANNEL_ID_TR",
+            )?,
+            community_event_announcement_channel_id_dupe: optional_id(
+                "COMMUNITY_EVENT_ANNOUNCEMENT_CHANNEL_ID_DUPE",
             )?,
             redis: parse_redis_config().unwrap_or_else(|error| {
                 tracing::error!(%error, "Redis configuration is invalid; Redis-backed features are disabled");
