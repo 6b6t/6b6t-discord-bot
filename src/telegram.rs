@@ -332,7 +332,10 @@ impl TelegramService {
         let payload = build_payload(route, message);
         let hash = payload_hash(&payload);
         let existing = self.crosspost(route, message.id).await?;
-        if existing.as_ref().is_some_and(|row| row.status == "deleted") {
+        if existing
+            .as_ref()
+            .is_some_and(|row| matches!(row.status.as_str(), "deleted" | "ignored"))
+        {
             return Ok(());
         }
         if existing
@@ -340,6 +343,20 @@ impl TelegramService {
             .is_some_and(|row| row.status == "sent" && row.content_hash == hash)
         {
             return Ok(());
+        }
+        if is_update && existing.as_ref().is_none_or(|row| row.status != "sent") {
+            let checkpoint = self.route_checkpoint(route).await?;
+            if !is_after_checkpoint(message.id, checkpoint) {
+                if existing.is_some() {
+                    sqlx::query("UPDATE telegram_crossposts SET status = 'ignored', last_error = NULL WHERE route_id = ? AND discord_message_id = ?")
+                        .bind(&route.id)
+                        .bind(message.id.to_string())
+                        .execute(&database.link)
+                        .await?;
+                }
+                tracing::info!(route = route.id, message_id = %message.id, ?checkpoint, "ignored Telegram update for a message at or before the route checkpoint");
+                return Ok(());
+            }
         }
         if is_update && existing.is_none() {
             tracing::info!(route = route.id, message_id = %message.id, "Telegram update arrived before create; delivering it as new");
@@ -408,22 +425,26 @@ impl TelegramService {
         route: &TelegramRoute,
         message_id: serenity::MessageId,
     ) -> Result<()> {
+        let current = self.route_checkpoint(route).await?;
+        if current.is_none_or(|current| current < message_id.get()) {
+            self.set_checkpoint(route, message_id).await?;
+        }
+        Ok(())
+    }
+
+    async fn route_checkpoint(&self, route: &TelegramRoute) -> Result<Option<u64>> {
         let database = self
             .databases
             .as_ref()
             .context("Telegram storage is unavailable")?;
-        let current = sqlx::query_scalar::<_, Option<String>>(
+        Ok(sqlx::query_scalar::<_, Option<String>>(
             "SELECT last_discord_message_id FROM telegram_crosspost_routes WHERE route_id = ? LIMIT 1",
         )
         .bind(&route.id)
         .fetch_optional(&database.link)
         .await?
         .flatten()
-        .and_then(|value| value.parse::<u64>().ok());
-        if current.is_none_or(|current| current < message_id.get()) {
-            self.set_checkpoint(route, message_id).await?;
-        }
-        Ok(())
+        .and_then(|value| value.parse().ok()))
     }
 
     async fn initialize_route(&self, ctx: &serenity::Context, route: &TelegramRoute) -> Result<()> {
@@ -508,6 +529,21 @@ impl TelegramService {
             let Ok(message_id) = message_id.parse::<u64>() else {
                 continue;
             };
+            let checkpoint = self.route_checkpoint(route).await?;
+            if checkpoint.is_some_and(|checkpoint| message_id <= checkpoint) {
+                sqlx::query("UPDATE telegram_crossposts SET status = 'ignored', last_error = NULL WHERE route_id = ? AND discord_message_id = ?")
+                    .bind(&route.id)
+                    .bind(message_id.to_string())
+                    .execute(&database.link)
+                    .await?;
+                tracing::info!(
+                    route = route.id,
+                    message_id,
+                    ?checkpoint,
+                    "retired historical Telegram recovery row at or before the route checkpoint"
+                );
+                continue;
+            }
             let Ok(channel_id) = channel_id.parse::<u64>() else {
                 continue;
             };
@@ -543,6 +579,10 @@ impl TelegramService {
         }
         Ok(())
     }
+}
+
+fn is_after_checkpoint(message_id: serenity::MessageId, checkpoint: Option<u64>) -> bool {
+    checkpoint.is_some_and(|checkpoint| message_id.get() > checkpoint)
 }
 
 fn reap_completed_tasks(tasks: &mut JoinSet<()>) {
@@ -930,7 +970,27 @@ fn parse_references(value: Option<&str>) -> Vec<TelegramReference> {
 
 #[cfg(test)]
 mod tests {
-    use super::{normalize_markdown, split_text};
+    use poise::serenity_prelude as serenity;
+
+    use super::{is_after_checkpoint, normalize_markdown, split_text};
+
+    #[test]
+    fn only_updates_after_the_checkpoint_can_create_crossposts() {
+        assert!(is_after_checkpoint(
+            serenity::MessageId::new(101),
+            Some(100)
+        ));
+        assert!(!is_after_checkpoint(
+            serenity::MessageId::new(100),
+            Some(100)
+        ));
+        assert!(!is_after_checkpoint(
+            serenity::MessageId::new(99),
+            Some(100)
+        ));
+        assert!(!is_after_checkpoint(serenity::MessageId::new(101), None));
+    }
+
     #[test]
     fn markdown_removes_discord_mentions_and_keeps_links() {
         assert_eq!(
