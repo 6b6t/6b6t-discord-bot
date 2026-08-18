@@ -178,14 +178,25 @@ async fn anarchy_analytics(ctx: &serenity::Context, data: &AppState) {
     let Some(anarchy) = &data.anarchy else {
         return;
     };
-    let online_players = match data.server.player_count().await {
+    let (online_users, online_players) = tokio::join!(
+        data.server.anarchymod_player_count(),
+        data.server.player_count(),
+    );
+    let online_users = match online_users {
+        Ok(count) => Some(count),
+        Err(error) => {
+            tracing::warn!(%error, "failed to fetch the online AnarchyMod player count; the count is shown as unavailable");
+            None
+        }
+    };
+    let online_players = match online_players {
         Ok(count) => Some(count),
         Err(error) => {
             tracing::warn!(%error, "failed to fetch the player count for anarchy analytics; the online percentage is omitted");
             None
         }
     };
-    if let Err(error) = anarchy.report(ctx, online_players).await {
+    if let Err(error) = anarchy.report(ctx, online_users, online_players).await {
         tracing::error!(%error, "anarchy mod analytics report failed");
     }
 }

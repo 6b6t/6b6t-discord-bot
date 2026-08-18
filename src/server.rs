@@ -74,7 +74,7 @@ impl ServerService {
 
     pub async fn server_data(&self) -> Result<ServerData> {
         let (players, uptime) = tokio::join!(
-            self.player_data(),
+            self.player_count_request("network-players"),
             self.http.get(format!("{SERVER_API}/uptime")).send(),
         );
         let player_count = players?;
@@ -93,17 +93,14 @@ impl ServerService {
         })
     }
 
-    async fn player_data(&self) -> Result<u64> {
+    async fn player_count_request(&self, endpoint: &str) -> Result<u64> {
         let base_url = std::env::var("HTTP_PROXY_COMMAND_SERVICE_BASE_URL")
             .context("HTTP_PROXY_COMMAND_SERVICE_BASE_URL is required")?;
         let token = std::env::var("HTTP_PROXY_COMMAND_SERVICE_ACCESS_TOKEN")
             .context("HTTP_PROXY_COMMAND_SERVICE_ACCESS_TOKEN is required")?;
         let response = self
             .http
-            .get(format!(
-                "{}/network-players",
-                base_url.trim_end_matches('/')
-            ))
+            .get(format!("{}/{endpoint}", base_url.trim_end_matches('/')))
             .bearer_auth(token)
             .send()
             .await
@@ -122,7 +119,12 @@ impl ServerService {
     /// Current online player count, used as the denominator for the anarchy mod
     /// analytics online percentage.
     pub async fn player_count(&self) -> Result<u64> {
-        self.player_data().await
+        self.player_count_request("network-players").await
+    }
+
+    /// Current online players detected through the `anarchymod:join` plugin message.
+    pub async fn anarchymod_player_count(&self) -> Result<u64> {
+        self.player_count_request("anarchymod-players").await
     }
 
     /// Run a `LuckPerms` command against the proxy command service, e.g.

@@ -95,11 +95,11 @@ line is omitted while its key is empty or missing.
 | `anarchymod:unique_ips:all_time` | Set | All-time unique IPs |
 | `anarchymod:hits:daily:YYYY-MM-DD` | Counter | Daily hits |
 | `anarchymod:unique_ips:daily:YYYY-MM-DD` | Set | Daily unique IPs |
-| `anarchymod:unique_ips:online` | Set | AnarchyMod users currently online (percentage denominator: live player count from the command service) |
-| `unique_players:daily:YYYY-MM-DD` | Set | All players active that day (percentage denominator for today's mod share) |
 
-The service reads these keys from Redis and is enabled when both the channel
-and Redis are configured.
+The service reads these historical keys from Redis. Current online AnarchyMod
+users come from the authenticated `/anarchymod-players` command-service endpoint,
+while `/network-players` supplies the total online-player denominator. Analytics
+is enabled when both the channel and Redis are configured.
 
 | Variable | Required | Purpose |
 | --- | --- | --- |

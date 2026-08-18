@@ -10,8 +10,6 @@ const TOTAL_HITS_KEY: &str = "anarchymod:hits:total";
 const UNIQUE_ALL_TIME_KEY: &str = "anarchymod:unique_ips:all_time";
 const DAILY_HITS_PREFIX: &str = "anarchymod:hits:daily:";
 const DAILY_UNIQUE_PREFIX: &str = "anarchymod:unique_ips:daily:";
-const ONLINE_UNIQUE_KEY: &str = "anarchymod:unique_ips:online";
-const ACTIVE_PLAYERS_DAILY_PREFIX: &str = "unique_players:daily:";
 
 #[derive(Clone, Debug)]
 pub struct AnarchyStats {
@@ -19,10 +17,6 @@ pub struct AnarchyStats {
     pub unique_all_time: u64,
     pub today: DailyStats,
     pub yesterday: DailyStats,
-    /// `AnarchyMod` users currently online; 0 means the backend key is absent or empty.
-    pub online_users: u64,
-    /// All players active today; 0 means the backend key is absent or empty.
-    pub active_players_today: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -35,7 +29,7 @@ pub struct DailyStats {
 impl AnarchyStats {
     /// Renders the analytics report. The percentage lines are always present;
     /// `n/a` is shown when the denominator is missing or zero.
-    pub fn render(&self, online_players: Option<u64>) -> String {
+    pub fn render(&self, online_users: Option<u64>, online_players: Option<u64>) -> String {
         let mut message = format!(
             "**Anarchy Mod Analytics**\n\
              All-time: {} hits / {} unique IPs\n\
@@ -50,38 +44,32 @@ impl AnarchyStats {
             comma_count(self.yesterday.hits),
             comma_count(self.yesterday.unique),
         );
-        match online_players {
-            Some(players) => {
+        message.push('\n');
+        match (online_users, online_players) {
+            (Some(users), Some(players)) => {
                 let _ = writeln!(
                     message,
                     "Online: {} out of {} online players use AnarchyMod ({}%)",
-                    comma_count(self.online_users),
+                    comma_count(users),
                     comma_count(players),
-                    percentage(self.online_users, players)
+                    percentage(users, players)
                 );
             }
-            None => {
+            (Some(users), None) => {
                 let _ = writeln!(
                     message,
                     "Online: {} AnarchyMod users currently online (player count unavailable)",
-                    comma_count(self.online_users)
+                    comma_count(users)
                 );
             }
-        }
-        if self.active_players_today > 0 {
-            let _ = writeln!(
-                message,
-                "Today's players: {} out of {} players active today use AnarchyMod ({}%)",
-                comma_count(self.today.unique),
-                comma_count(self.active_players_today),
-                percentage(self.today.unique, self.active_players_today)
-            );
-        } else {
-            let _ = writeln!(
-                message,
-                "Today's players: {} AnarchyMod users active today (player count unavailable)",
-                comma_count(self.today.unique)
-            );
+            (None, Some(players)) => {
+                let _ = writeln!(
+                    message,
+                    "Online: AnarchyMod player count unavailable ({} total players online)",
+                    comma_count(players)
+                );
+            }
+            (None, None) => message.push_str("Online: player counts unavailable\n"),
         }
         message
     }
@@ -100,13 +88,18 @@ impl AnarchyService {
         Ok(Self { client, channel_id })
     }
 
-    pub async fn report(&self, ctx: &serenity::Context, online_players: Option<u64>) -> Result<()> {
+    pub async fn report(
+        &self,
+        ctx: &serenity::Context,
+        online_users: Option<u64>,
+        online_players: Option<u64>,
+    ) -> Result<()> {
         let stats = self.fetch().await?;
         self.channel_id
             .send_message(
                 ctx,
                 serenity::CreateMessage::new()
-                    .content(stats.render(online_players))
+                    .content(stats.render(online_users, online_players))
                     .allowed_mentions(serenity::CreateAllowedMentions::new()),
             )
             .await
@@ -131,10 +124,6 @@ impl AnarchyService {
             .scard::<_, u64>(UNIQUE_ALL_TIME_KEY)
             .await
             .context("failed to read all-time unique IPs")?;
-        let online_users = connection
-            .scard::<_, u64>(ONLINE_UNIQUE_KEY)
-            .await
-            .context("failed to read currently online AnarchyMod users")?;
         let today = DailyStats {
             date: today.clone(),
             hits: fetch_counter(&mut connection, &format!("{DAILY_HITS_PREFIX}{today}")).await?,
@@ -143,10 +132,6 @@ impl AnarchyService {
                 .await
                 .context("failed to read today's unique IPs")?,
         };
-        let active_players_today = connection
-            .scard::<_, u64>(format!("{ACTIVE_PLAYERS_DAILY_PREFIX}{}", today.date))
-            .await
-            .context("failed to read today's active players")?;
         let yesterday = DailyStats {
             date: yesterday.clone(),
             hits: fetch_counter(&mut connection, &format!("{DAILY_HITS_PREFIX}{yesterday}"))
@@ -162,8 +147,6 @@ impl AnarchyService {
             unique_all_time,
             today,
             yesterday,
-            online_users,
-            active_players_today,
         })
     }
 }
@@ -245,51 +228,39 @@ mod tests {
                 hits: 2_100,
                 unique: 700,
             },
-            online_users: 45,
-            active_players_today: 3_902,
         }
     }
 
     #[test]
     fn stats_message_includes_all_reported_metrics() {
-        let rendered = sample_stats().render(Some(371));
+        let rendered = sample_stats().render(Some(45), Some(371));
         assert!(rendered.contains("1,234,567 hits / 98,765 unique IPs"));
         assert!(rendered.contains("Today (2026-08-08): 3,210 hits / 890 unique IPs"));
         assert!(rendered.contains("Yesterday (2026-08-07): 2,100 hits / 700 unique IPs"));
+        assert!(rendered.contains("unique IPs\nOnline:"));
         assert!(rendered.contains("Online: 45 out of 371 online players use AnarchyMod (12%)"));
-        assert!(rendered.contains(
-            "Today's players: 890 out of 3,902 players active today use AnarchyMod (23%)"
-        ));
+        assert!(!rendered.contains("Today's players:"));
     }
 
     #[test]
-    fn percentage_lines_are_always_shown() {
-        let mut stats = sample_stats();
-        stats.online_users = 0;
-        stats.active_players_today = 0;
-        let rendered = stats.render(None);
+    fn online_line_is_always_shown() {
+        let stats = sample_stats();
+        let rendered = stats.render(Some(0), None);
         assert!(
             rendered
                 .contains("Online: 0 AnarchyMod users currently online (player count unavailable)")
         );
-        assert!(rendered.contains(
-            "Today's players: 890 AnarchyMod users active today (player count unavailable)"
-        ));
-        let rendered = stats.render(Some(0));
+        let rendered = stats.render(Some(0), Some(0));
         assert!(rendered.contains("Online: 0 out of 0 online players use AnarchyMod (0%)"));
-        assert!(rendered.contains(
-            "Today's players: 890 AnarchyMod users active today (player count unavailable)"
-        ));
     }
 
     #[test]
-    fn today_line_is_always_shown_with_unavailable_denominator() {
-        let mut stats = sample_stats();
-        stats.active_players_today = 0;
-        let rendered = stats.render(Some(371));
-        assert!(rendered.contains("Online: 45 out of 371 online players use AnarchyMod (12%)"));
-        assert!(rendered.contains(
-            "Today's players: 890 AnarchyMod users active today (player count unavailable)"
-        ));
+    fn unavailable_anarchymod_endpoint_is_not_reported_as_zero() {
+        let rendered = sample_stats().render(None, Some(371));
+        assert!(
+            rendered
+                .contains("Online: AnarchyMod player count unavailable (371 total players online)")
+        );
+        assert!(!rendered.contains("Online: 0 out of 371"));
     }
 }
