@@ -94,6 +94,9 @@ pub async fn reaction(
     if user_id == ctx.cache.current_user().id {
         return Ok(());
     }
+    if reaction.channel_id != config::REACTION_ROLE_MENU_ID {
+        return Ok(());
+    }
     let Some(role_id) = reaction_role(&reaction.emoji) else {
         return Ok(());
     };
@@ -104,10 +107,20 @@ pub async fn reaction(
     if member.user.bot {
         return Ok(());
     }
-    if add {
-        member.add_role(ctx, role_id).await?;
+    let result = if add {
+        member.add_role(ctx, role_id).await
     } else {
-        member.remove_role(ctx, role_id).await?;
+        member.remove_role(ctx, role_id).await
+    };
+    if let Err(error) = result {
+        tracing::warn!(
+            %error,
+            emoji = %reaction.emoji,
+            %role_id,
+            %user_id,
+            action = if add { "add" } else { "remove" },
+            "failed to update reaction role"
+        );
     }
     Ok(())
 }
@@ -177,9 +190,29 @@ mod tests {
     }
 
     #[test]
-    fn unicode_reactions_match_configured_roles() {
-        let emoji = serenity::ReactionType::Unicode("🇷🇺".to_owned());
+    fn reaction_roles_match_the_working_configuration() {
+        let expected = [
+            ("✨", 942_861_111_089_324_142),
+            ("⚔️", 942_860_042_871_402_567),
+            ("🌩️", 942_858_847_058_555_000),
+            ("🎉", 1_155_462_541_871_415_326),
+            ("🏄", 1_389_335_267_394_982_040),
+            ("🎥", 1_423_961_521_997_746_227),
+            ("🇺🇸", 1_051_075_005_250_809_966),
+            ("🇷🇺", 1_072_504_173_637_144_636),
+            ("🇪🇸", 1_051_075_060_238_123_078),
+            ("🇹🇷", 1_330_608_186_436_096_023),
+            ("🇩🇪", 1_325_150_138_997_543_047),
+            ("🇵🇱", 1_121_818_071_384_981_607),
+            ("🎮", 1_461_432_694_041_739_388),
+        ];
 
-        assert_eq!(reaction_role(&emoji), Some(config::REACTION_ROLES[7].1));
+        assert_eq!(config::REACTION_ROLES.len(), expected.len());
+        for (emoji, role_id) in expected {
+            assert_eq!(
+                reaction_role(&serenity::ReactionType::Unicode(emoji.to_owned())),
+                Some(serenity::RoleId::new(role_id))
+            );
+        }
     }
 }

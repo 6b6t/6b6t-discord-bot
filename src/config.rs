@@ -74,8 +74,8 @@ pub const REACTION_ROLES: &[(&str, serenity::RoleId)] = &[
     ("🇷🇺", serenity::RoleId::new(1_072_504_173_637_144_636)),
     ("🇪🇸", serenity::RoleId::new(1_051_075_060_238_123_078)),
     ("🇹🇷", serenity::RoleId::new(1_330_608_186_436_096_023)),
-    ("🇩🇪", serenity::RoleId::new(1_325_150_138_998_754_047)),
-    ("🇵🇱", serenity::RoleId::new(1_121_818_071_381_085_107)),
+    ("🇩🇪", serenity::RoleId::new(1_325_150_138_997_543_047)),
+    ("🇵🇱", serenity::RoleId::new(1_121_818_071_384_981_607)),
     ("🎮", serenity::RoleId::new(1_461_432_694_041_739_388)),
 ];
 

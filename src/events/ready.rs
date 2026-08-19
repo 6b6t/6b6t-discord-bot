@@ -1,6 +1,6 @@
 use std::{collections::HashSet, future::Future, time::Duration};
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use chrono::{Datelike as _, Timelike as _};
 use chrono_tz::Europe::Berlin;
 use futures::TryStreamExt as _;
@@ -293,16 +293,22 @@ async fn ensure_role_menu(ctx: &serenity::Context) -> Result<()> {
 }
 
 async fn ensure_reaction_menus(ctx: &serenity::Context) -> Result<()> {
+    let guild_roles = config::GUILD_ID.roles(ctx).await?;
+    let missing_roles = config::REACTION_ROLES
+        .iter()
+        .filter(|(_, role_id)| !guild_roles.contains_key(role_id))
+        .map(|(emoji, role_id)| format!("{emoji} ({role_id})"))
+        .collect::<Vec<_>>();
+    if !missing_roles.is_empty() {
+        bail!(
+            "configured reaction roles do not exist in the guild: {}",
+            missing_roles.join(", ")
+        );
+    }
+
     let messages = config::REACTION_ROLE_MENU_ID
         .messages(ctx, serenity::GetMessages::new().limit(100))
         .await?;
-    let existing = messages
-        .iter()
-        .filter(|message| message.author.id == ctx.cache.current_user().id)
-        .count();
-    if existing >= 3 {
-        return Ok(());
-    }
     let menus = [
         (
             "Select your language.",
@@ -324,6 +330,27 @@ async fn ensure_reaction_menus(ctx: &serenity::Context) -> Result<()> {
         ),
     ];
     for (description, colour, roles, image) in menus {
+        let existing = messages.iter().find(|message| {
+            message.author.id == ctx.cache.current_user().id
+                && message
+                    .embeds
+                    .iter()
+                    .any(|embed| embed.description.as_deref() == Some(description))
+        });
+        if let Some(message) = existing {
+            for (emoji, _) in roles {
+                let has_reaction = message
+                    .reactions
+                    .iter()
+                    .any(|reaction| reaction.reaction_type.unicode_eq(emoji));
+                if !has_reaction {
+                    message
+                        .react(ctx, serenity::ReactionType::Unicode((*emoji).to_owned()))
+                        .await?;
+                }
+            }
+            continue;
+        }
         let mut embed = serenity::CreateEmbed::new()
             .author(
                 serenity::CreateEmbedAuthor::new("6b6t.org")
