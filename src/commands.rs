@@ -226,32 +226,55 @@ async fn banreason(
         .await?;
         return Ok(());
     };
-    let audit = guild_id
-        .audit_logs(
-            ctx.http(),
-            Some(serenity::audit_log::Action::Member(
-                serenity::audit_log::MemberAction::BanAdd,
-            )),
-            None,
-            None,
-            Some(10),
-        )
-        .await
-        .ok();
-    let entry = audit.as_ref().and_then(|logs| {
-        logs.entries.iter().find(|entry| {
+    let mut before = None;
+    let mut audit_match = None;
+    // Discord cannot filter audit logs by target. Walk several full pages so
+    // bans older than the latest ten moderation actions still resolve.
+    for _ in 0..10 {
+        let logs = match guild_id
+            .audit_logs(
+                ctx.http(),
+                Some(serenity::audit_log::Action::Member(
+                    serenity::audit_log::MemberAction::BanAdd,
+                )),
+                None,
+                before,
+                Some(100),
+            )
+            .await
+        {
+            Ok(logs) => logs,
+            Err(error) => {
+                tracing::warn!(%error, target_id = %user.id, "failed to fetch ban audit logs");
+                break;
+            }
+        };
+        audit_match = logs.entries.iter().find_map(|entry| {
             entry
                 .target_id
                 .is_some_and(|target| target.get() == user.id.get())
-        })
-    });
+                .then(|| (entry.user_id, entry.reason.clone()))
+        });
+        if audit_match.is_some() || logs.entries.len() < 100 {
+            break;
+        }
+        before = logs.entries.last().map(|entry| entry.id);
+    }
     let reason = ban
         .reason
-        .or_else(|| entry.and_then(|entry| entry.reason.clone()))
+        .or_else(|| audit_match.as_ref().and_then(|(_, reason)| reason.clone()))
         .unwrap_or_else(|| "No reason provided.".into());
-    let banned_by = entry
-        .and_then(|entry| audit.as_ref()?.users.get(&entry.user_id))
-        .map_or_else(|| "Unknown (not found)".into(), serenity::User::tag);
+    let banned_by = if let Some((moderator_id, _)) = audit_match {
+        match moderator_id.to_user(ctx.http()).await {
+            Ok(moderator) => format!("{} (<@{moderator_id}>)", moderator.tag()),
+            Err(error) => {
+                tracing::warn!(%error, %moderator_id, "failed to resolve banning moderator");
+                format!("<@{moderator_id}>")
+            }
+        }
+    } else {
+        "Unknown (audit entry not found)".into()
+    };
     ctx.say(format!(
         "**Ban information for {}:**\n• Reason: {reason}\n• Banned by: {banned_by}",
         user.tag()

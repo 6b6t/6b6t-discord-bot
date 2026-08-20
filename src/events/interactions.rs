@@ -138,6 +138,9 @@ async fn approval(
         .await?;
         return Ok(());
     }
+    let Some(request) = claim_approval(ctx, data, interaction, id).await? else {
+        return Ok(());
+    };
     if !approve {
         let embed = resolved_approval_embed(interaction, "Rejected", 0x00ED_4245);
         let mut response = serenity::CreateInteractionResponseMessage::new()
@@ -146,21 +149,29 @@ async fn approval(
         if let Some(embed) = embed {
             response = response.embed(embed);
         }
-        interaction
+        if let Err(error) = interaction
             .create_response(
                 ctx,
                 serenity::CreateInteractionResponse::UpdateMessage(response),
             )
-            .await?;
-        data.pending.remove(id).await;
+            .await
+        {
+            data.pending.restore(request).await;
+            return Err(error.into());
+        }
         return Ok(());
     }
-    interaction
+    if let Err(error) = interaction
         .create_response(ctx, serenity::CreateInteractionResponse::Acknowledge)
-        .await?;
+        .await
+    {
+        data.pending.restore(request).await;
+        return Err(error.into());
+    }
     let action_result = execute_approval_action(ctx, data, &request, interaction).await;
     if let Err(error) = action_result {
         tracing::error!(%error, request_id = %id, approver_id = %interaction.user.id, "approval action failed");
+        data.pending.restore(request).await;
         let embed =
             resolved_approval_embed(interaction, "Action failed; retry available", 0x00ED_4245);
         let mut edit = serenity::EditInteractionResponse::new()
@@ -180,7 +191,6 @@ async fn approval(
         interaction.edit_response(ctx, edit).await?;
         return Ok(());
     }
-    data.pending.remove(id).await;
     let embed = resolved_approval_embed(interaction, "Approved", 0x0057_F287);
     let mut edit = serenity::EditInteractionResponse::new()
         .content(format!("Request approved by <@{}>.", interaction.user.id))
@@ -191,6 +201,25 @@ async fn approval(
     interaction.edit_response(ctx, edit).await?;
     log_approval(ctx, data, &request, interaction).await;
     Ok(())
+}
+
+async fn claim_approval(
+    ctx: &serenity::Context,
+    data: &AppState,
+    interaction: &serenity::ComponentInteraction,
+    id: uuid::Uuid,
+) -> Result<Option<crate::moderation::ApprovalRequest>> {
+    // Claim before acting because moderators can click concurrently.
+    let request = data.pending.remove(id).await;
+    if request.is_none() {
+        reply_ephemeral(
+            ctx,
+            interaction,
+            "This request has already been processed by another moderator.",
+        )
+        .await?;
+    }
+    Ok(request)
 }
 
 async fn execute_approval_action(

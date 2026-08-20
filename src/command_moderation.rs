@@ -318,7 +318,9 @@ pub async fn purge(
     let mut scanned = 0usize;
 
     while collected < amount as usize && scanned < scan_limit {
-        let mut request = serenity::GetMessages::new().limit(100);
+        let page_size = u8::try_from((scan_limit - scanned).min(100))
+            .expect("Discord message page size is capped at 100");
+        let mut request = serenity::GetMessages::new().limit(page_size);
         if let Some(cursor) = cursor {
             request = request.before(cursor);
         }
@@ -329,7 +331,7 @@ pub async fn purge(
         cursor = Some(messages[messages.len() - 1].id);
         scanned += messages.len();
         for message in messages {
-            if collected >= amount as usize || scanned >= scan_limit {
+            if collected >= amount as usize {
                 break;
             }
             if message.author.id == bot_id {

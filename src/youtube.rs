@@ -109,9 +109,6 @@ impl YoutubeService {
         let posted = posted_guard.as_mut().expect("posted set was initialized");
         let video = find_video(response.items.unwrap_or_default(), posted);
         let Some(video) = video else { return Ok(()) };
-        posted.insert(video.id.clone());
-        save_posted(&self.path, posted).await?;
-        drop(posted_guard);
         let title = html_escape::decode_html_entities(&video.title);
         let url = format!("https://www.youtube.com/watch?v={}", video.id);
         let message = channel_id
@@ -122,6 +119,11 @@ impl YoutubeService {
                     .allowed_mentions(serenity::CreateAllowedMentions::new()),
             )
             .await?;
+        // Only suppress the video after Discord has accepted the message. A
+        // transient send failure must remain eligible for the next poll.
+        posted.insert(video.id.clone());
+        save_posted(&self.path, posted).await?;
+        drop(posted_guard);
         let http = ctx.http.clone();
         tokio::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_hours(12)).await;

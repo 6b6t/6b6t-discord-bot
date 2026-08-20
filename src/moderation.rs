@@ -107,7 +107,21 @@ impl PendingApprovals {
     }
 
     pub async fn remove(&self, id: Uuid) -> Option<ApprovalRequest> {
-        self.requests.lock().await.remove(&id)
+        let mut requests = self.requests.lock().await;
+        requests.retain(|_, request| request.created_at.elapsed() <= APPROVAL_TTL);
+        requests.remove(&id)
+    }
+
+    /// Return a failed action to the queue without replacing a newer request.
+    pub async fn restore(&self, request: ApprovalRequest) {
+        if request.created_at.elapsed() > APPROVAL_TTL {
+            return;
+        }
+        self.requests
+            .lock()
+            .await
+            .entry(request.id)
+            .or_insert(request);
     }
 
     pub async fn cleanup_expired(&self) -> usize {
@@ -143,4 +157,50 @@ pub fn is_administrator(member: &serenity::Member) -> bool {
     member
         .permissions
         .is_some_and(serenity::Permissions::administrator)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn action() -> ApprovalAction {
+        ApprovalAction::Unban {
+            target_id: serenity::UserId::new(2),
+            reason: "test".into(),
+        }
+    }
+
+    #[tokio::test]
+    async fn an_approval_can_only_be_claimed_once() {
+        let pending = PendingApprovals::default();
+        let request = pending
+            .create(
+                serenity::UserId::new(1),
+                "submitter".into(),
+                serenity::GuildId::new(3),
+                action(),
+            )
+            .await;
+
+        assert!(pending.remove(request.id).await.is_some());
+        assert!(pending.remove(request.id).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_failed_approval_can_be_restored() {
+        let pending = PendingApprovals::default();
+        let request = pending
+            .create(
+                serenity::UserId::new(1),
+                "submitter".into(),
+                serenity::GuildId::new(3),
+                action(),
+            )
+            .await;
+        let claimed = pending.remove(request.id).await.expect("request exists");
+
+        pending.restore(claimed).await;
+
+        assert!(pending.remove(request.id).await.is_some());
+    }
 }
