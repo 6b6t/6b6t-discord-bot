@@ -290,52 +290,128 @@ pub async fn purge(
         deny(ctx, "You do not have permission to use this command. Required roles: Terminator, Marketer, or Dev.").await?;
         return Ok(());
     }
-    let channel_id = ctx
+    ctx.defer_ephemeral().await?;
+    let channel = ctx
         .channel_id()
         .to_channel(ctx)
         .await
         .context("missing channel")?
         .guild()
-        .map(|channel| channel.id)
         .context("purge must be used in a guild text channel")?;
+    let channel_id = channel.id;
     let bot_id = ctx.framework().bot_id;
-    ctx.defer_ephemeral().await?;
+    if let Some(permissions) = ctx.guild().and_then(|guild| {
+        guild
+            .members
+            .get(&bot_id)
+            .map(|member| guild.user_permissions_in(&channel, member))
+    }) {
+        let required = serenity::Permissions::VIEW_CHANNEL
+            | serenity::Permissions::READ_MESSAGE_HISTORY
+            | serenity::Permissions::MANAGE_MESSAGES;
+        if !permissions.contains(required) {
+            ctx.say("I cannot purge messages in this channel. Give the bot View Channel, Read Message History, and Manage Messages permissions here.")
+                .await?;
+            return Ok(());
+        }
+    }
 
-    let cutoff = chrono::Utc::now().timestamp() - 14 * 24 * 60 * 60;
     let target = user.map(|user| user.id);
-    let mut cursor: Option<serenity::MessageId> = None;
+    let selection = match collect_purge_messages(ctx.http(), channel_id, amount as usize, target)
+        .await
+    {
+        Ok(selection) => selection,
+        Err(error) => {
+            tracing::error!(%error, %channel_id, "failed to read messages for purge");
+            ctx.say(format!(
+                "Purge failed while reading this channel: {error}. Check the bot's View Channel and Read Message History permissions."
+            ))
+            .await?;
+            return Ok(());
+        }
+    };
+    let collected = selection.fresh.len() + selection.old.len();
+    let scanned = selection.scanned;
+    let outcome = delete_purge_messages(ctx.http(), channel_id, &selection).await;
+    let deleted = outcome.deleted;
+    let failed = outcome.failed;
+
+    let result = if failed > 0 {
+        format!(
+            "Purged {deleted} message(s) in <#{channel_id}>, but Discord rejected {failed}: {}",
+            outcome
+                .first_error
+                .as_deref()
+                .unwrap_or("unknown deletion error")
+        )
+    } else if deleted == 0 {
+        if target.is_some() {
+            format!(
+                "No matching messages were found in the newest {scanned} message(s) in <#{channel_id}>."
+            )
+        } else {
+            format!("No messages were available to purge in <#{channel_id}>.")
+        }
+    } else if deleted < amount as usize {
+        format!(
+            "Purged {deleted} matching message(s) in <#{channel_id}>; only {collected} were found after scanning {scanned}."
+        )
+    } else {
+        format!("Purged {deleted} message(s) in <#{channel_id}>.")
+    };
+    ctx.say(result).await?;
+    Ok(())
+}
+
+fn purge_scan_limit(amount: usize, filtered: bool) -> usize {
+    if filtered {
+        amount.saturating_mul(100).clamp(1_000, 10_000)
+    } else {
+        amount
+    }
+}
+
+struct PurgeSelection {
+    fresh: Vec<serenity::MessageId>,
+    old: Vec<serenity::MessageId>,
+    scanned: usize,
+}
+
+struct PurgeOutcome {
+    deleted: usize,
+    failed: usize,
+    first_error: Option<String>,
+}
+
+async fn collect_purge_messages(
+    http: &serenity::Http,
+    channel_id: serenity::ChannelId,
+    amount: usize,
+    target: Option<serenity::UserId>,
+) -> serenity::Result<PurgeSelection> {
+    let cutoff = chrono::Utc::now().timestamp() - 14 * 24 * 60 * 60;
+    let scan_limit = purge_scan_limit(amount, target.is_some());
+    let mut cursor = None;
     let mut fresh = Vec::new();
     let mut old = Vec::new();
-    let mut collected = 0usize;
-
-    // Cap how far back we paginate. Without a bound, a sparse `user` filter (or a
-    // channel full of bot messages) forces us to walk the entire channel history
-    // to reach `amount`, which can outlast Discord's deferred-interaction deadline
-    // and leave the command stuck on "thinking". We scan up to `amount * 5`
-    // messages (enough to collect `amount` for a dense channel) and delete
-    // whatever we found within that window.
-    let scan_limit = (amount as usize).saturating_mul(5).max(amount as usize);
     let mut scanned = 0usize;
 
-    while collected < amount as usize && scanned < scan_limit {
+    while fresh.len() + old.len() < amount && scanned < scan_limit {
         let page_size = u8::try_from((scan_limit - scanned).min(100))
             .expect("Discord message page size is capped at 100");
         let mut request = serenity::GetMessages::new().limit(page_size);
         if let Some(cursor) = cursor {
             request = request.before(cursor);
         }
-        let messages = channel_id.messages(ctx, request).await?;
+        let messages = channel_id.messages(http, request).await?;
         if messages.is_empty() {
             break;
         }
-        cursor = Some(messages[messages.len() - 1].id);
+        cursor = messages.last().map(|message| message.id);
         scanned += messages.len();
         for message in messages {
-            if collected >= amount as usize {
+            if fresh.len() + old.len() >= amount {
                 break;
-            }
-            if message.author.id == bot_id {
-                continue;
             }
             if target.is_some_and(|id| message.author.id != id) {
                 continue;
@@ -345,36 +421,64 @@ pub async fn purge(
             } else {
                 old.push(message.id);
             }
-            collected += 1;
         }
     }
+    Ok(PurgeSelection {
+        fresh,
+        old,
+        scanned,
+    })
+}
 
-    let mut deleted = 0usize;
-    for chunk in fresh.chunks(100) {
-        if let Err(error) = channel_id.delete_messages(ctx, chunk).await {
-            tracing::error!(%error, channel_id = %channel_id, "failed to bulk delete messages");
+async fn delete_purge_messages(
+    http: &serenity::Http,
+    channel_id: serenity::ChannelId,
+    selection: &PurgeSelection,
+) -> PurgeOutcome {
+    let mut outcome = PurgeOutcome {
+        deleted: 0,
+        failed: 0,
+        first_error: None,
+    };
+    for chunk in selection.fresh.chunks(100) {
+        if let Err(error) = channel_id.delete_messages(http, chunk).await {
+            tracing::warn!(%error, %channel_id, messages = chunk.len(), "bulk purge failed; retrying messages individually");
             for id in chunk {
-                if let Err(error) = channel_id.delete_message(ctx, *id).await {
-                    tracing::error!(%error, channel_id = %channel_id, message_id = %id, "failed to delete message");
-                } else {
-                    deleted += 1;
-                }
+                record_purge_deletion(
+                    &mut outcome,
+                    channel_id,
+                    *id,
+                    channel_id.delete_message(http, *id).await,
+                );
             }
         } else {
-            deleted += chunk.len();
+            outcome.deleted += chunk.len();
         }
     }
-    for id in &old {
-        if let Err(error) = channel_id.delete_message(ctx, *id).await {
-            tracing::error!(%error, channel_id = %channel_id, message_id = %id, "failed to delete old message");
-        } else {
-            deleted += 1;
-        }
+    for id in &selection.old {
+        record_purge_deletion(
+            &mut outcome,
+            channel_id,
+            *id,
+            channel_id.delete_message(http, *id).await,
+        );
     }
+    outcome
+}
 
-    ctx.say(format!("Purged {deleted} message(s) in <#{channel_id}>."))
-        .await?;
-    Ok(())
+fn record_purge_deletion(
+    outcome: &mut PurgeOutcome,
+    channel_id: serenity::ChannelId,
+    message_id: serenity::MessageId,
+    result: serenity::Result<()>,
+) {
+    if let Err(error) = result {
+        tracing::error!(%error, %channel_id, %message_id, "failed to delete message during purge");
+        outcome.failed += 1;
+        outcome.first_error.get_or_insert_with(|| error.to_string());
+    } else {
+        outcome.deleted += 1;
+    }
 }
 
 /// Change the Mini-Terminator role with two-person approval.
@@ -760,7 +864,7 @@ pub async fn log_action(ctx: &Context<'_>, title: &str, description: String) {
 
 #[cfg(test)]
 mod tests {
-    use super::{boost_gate, has_image_extension, is_supported_image_type};
+    use super::{boost_gate, has_image_extension, is_supported_image_type, purge_scan_limit};
     use crate::moderation::BannerLocation;
 
     #[test]
@@ -791,5 +895,12 @@ mod tests {
         );
         assert_eq!(boost_gate(BannerLocation::DiscoverySplash, false), None);
         assert_eq!(boost_gate(BannerLocation::DiscoverySplash, true), None);
+    }
+
+    #[test]
+    fn filtered_purges_search_beyond_the_immediate_messages() {
+        assert_eq!(purge_scan_limit(2, false), 2);
+        assert_eq!(purge_scan_limit(2, true), 1_000);
+        assert_eq!(purge_scan_limit(1_000, true), 10_000);
     }
 }
