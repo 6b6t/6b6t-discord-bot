@@ -95,6 +95,10 @@ pub struct TelegramRoute {
     pub telegram_thread_id: Option<i64>,
     #[serde(default)]
     pub include_author: bool,
+    #[serde(default)]
+    pub utm_topic: Option<String>,
+    #[serde(default)]
+    pub utm_language: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -428,6 +432,25 @@ fn parse_telegram_config() -> Result<Option<TelegramConfig>> {
         }
         if route.telegram_thread_id.is_some_and(|id| id <= 0) {
             bail!("Telegram thread IDs must be positive");
+        }
+        if route.utm_topic.as_deref().is_some_and(|topic| {
+            topic.is_empty()
+                || topic.len() > 32
+                || !topic.chars().all(|character| {
+                    character.is_ascii_lowercase() || character.is_ascii_digit() || character == '-'
+                })
+        }) {
+            bail!(
+                "Telegram UTM topics may only contain 1-32 lowercase letters, numbers, or hyphens"
+            );
+        }
+        if route.utm_language.as_deref().is_some_and(|language| {
+            !(2..=16).contains(&language.len())
+                || !language
+                    .chars()
+                    .all(|character| character.is_ascii_lowercase() || character == '-')
+        }) {
+            bail!("Telegram UTM languages may only contain 2-16 lowercase letters or hyphens");
         }
         let valid_numeric_chat = route.telegram_chat_id.len() >= 5
             && route

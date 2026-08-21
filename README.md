@@ -142,7 +142,7 @@ one route are configured.
 
 ```env
 TELEGRAM_CROSSPOST_BOT_TOKEN=123456:replace-me
-TELEGRAM_CROSSPOST_ROUTES=[{"id":"announcements","discordChannelId":"982190978142195712","telegramChatId":"@org6b6t","telegramThreadId":3721},{"id":"changelog","discordChannelId":"1314292152360112148","telegramChatId":"@org6b6t","telegramThreadId":3724}]
+TELEGRAM_CROSSPOST_ROUTES=[{"id":"announcements","discordChannelId":"982190978142195712","telegramChatId":"@org6b6t","telegramThreadId":3721,"utmTopic":"news","utmLanguage":"en"},{"id":"changelog","discordChannelId":"1314292152360112148","telegramChatId":"@org6b6t","telegramThreadId":3724,"utmTopic":"changelog","utmLanguage":"en"}]
 ```
 
 Each route supports these fields:
@@ -154,6 +154,8 @@ Each route supports these fields:
 | `telegramChatId` | Yes | Destination numeric chat ID or public `@username` |
 | `telegramThreadId` | No | Telegram forum topic ID |
 | `includeAuthor` | No | Include the Discord author's name |
+| `utmTopic` | No | Telegram topic code used in `org6b6t_<topic>_<slot>`; common announcement route IDs default to `news`, otherwise the route ID is used |
+| `utmLanguage` | No | Language code added as `lang`; defaults to `en` |
 
 Optional behavior settings:
 
@@ -168,6 +170,11 @@ The service stores delivery mappings and route checkpoints in MariaDB. On
 restart it retries incomplete deliveries and backfills Discord messages newer
 than each route checkpoint. Edit synchronization replaces the previous
 Telegram delivery. Delete synchronization remains disabled by default.
+Crossposted links on `6b6t.org` are normalized to `www.6b6t.org` and receive
+Telegram group UTMs. Existing campaigns are preserved; otherwise shop, vote,
+and website campaigns are selected from the URL path. External links and the
+6b6t blog are left unchanged. Discord Markdown is rendered as safe Telegram
+HTML, including labeled links, emphasis, spoilers, and code.
 
 ## Commands
 

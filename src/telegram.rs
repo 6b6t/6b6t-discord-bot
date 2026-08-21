@@ -601,7 +601,7 @@ impl TelegramClient {
     ) -> std::result::Result<Vec<TelegramReference>, DeliveryFailure> {
         let mut references = Vec::new();
         for text in &payload.text {
-            let message: TelegramMessage = match self.request("sendMessage", &route.telegram_chat_id, serde_json::json!({ "chat_id": route.telegram_chat_id, "message_thread_id": route.telegram_thread_id, "text": text, "link_preview_options": { "is_disabled": false } })).await {
+            let message: TelegramMessage = match self.request("sendMessage", &route.telegram_chat_id, serde_json::json!({ "chat_id": route.telegram_chat_id, "message_thread_id": route.telegram_thread_id, "text": text, "parse_mode": "HTML", "link_preview_options": { "is_disabled": false } })).await {
                 Ok(message) => message,
                 Err(error) => return Err(DeliveryFailure { error, references }),
             };
@@ -731,17 +731,15 @@ fn build_payload(route: &TelegramRoute, message: &serenity::Message) -> Payload 
     let mut parts = Vec::new();
     if route.include_author {
         parts.push(format!(
-            "Posted by {}",
-            normalize_markdown(
-                message
-                    .author
-                    .global_name
-                    .as_deref()
-                    .unwrap_or(&message.author.name),
-            )
+            "**Posted by {}**",
+            message
+                .author
+                .global_name
+                .as_deref()
+                .unwrap_or(&message.author.name),
         ));
     }
-    let content = normalize_markdown(&message.content);
+    let content = message.content.trim().to_owned();
     if !content.is_empty() {
         parts.push(content);
     }
@@ -761,13 +759,13 @@ fn build_payload(route: &TelegramRoute, message: &serenity::Message) -> Payload 
     for (index, embed) in message.embeds.iter().enumerate() {
         let mut embed_parts = Vec::new();
         if let Some(title) = &embed.title {
-            embed_parts.push(title.clone());
+            embed_parts.push(format!("**{title}**"));
         }
         if let Some(description) = &embed.description {
             embed_parts.push(description.clone());
         }
         for field in &embed.fields {
-            embed_parts.push(format!("{}\n{}", field.name, field.value));
+            embed_parts.push(format!("**{}**\n{}", field.name, field.value));
         }
         if let Some(url) = &embed.url
             && !embed_parts.iter().any(|part| part.contains(url))
@@ -802,18 +800,143 @@ fn build_payload(route: &TelegramRoute, message: &serenity::Message) -> Payload 
                 });
             }
         }
-        let embed = normalize_markdown(&embed_parts.join("\n\n"));
+        let embed = embed_parts.join("\n\n");
         if !embed.is_empty() {
             parts.push(embed);
         }
     }
+    let text = rewrite_telegram_links(&parts.join("\n\n"), route);
     Payload {
-        text: split_text(&parts.join("\n\n"), TEXT_LIMIT),
+        text: split_text(&text, TEXT_LIMIT)
+            .into_iter()
+            .map(|chunk| format_telegram_html(&chunk))
+            .filter(|chunk| !chunk.is_empty())
+            .collect(),
         attachments,
     }
 }
 
-fn normalize_markdown(value: &str) -> String {
+fn rewrite_telegram_links(value: &str, route: &TelegramRoute) -> String {
+    static URL: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    let url =
+        URL.get_or_init(|| Regex::new(r#"https?://[^\s<>\]\)\"']+"#).expect("valid URL regex"));
+    let mut internal_link_index = 0_usize;
+    url.replace_all(value, |captures: &regex::Captures<'_>| {
+        let matched = captures.get(0).map_or("", |value| value.as_str());
+        let trimmed = matched.trim_end_matches(['.', ',', '!', '?', ';', ':']);
+        let trailing = &matched[trimmed.len()..];
+        rewrite_telegram_url(trimmed, route, internal_link_index).map_or_else(
+            || matched.to_owned(),
+            |rewritten| {
+                internal_link_index += 1;
+                format!("{rewritten}{trailing}")
+            },
+        )
+    })
+    .into_owned()
+}
+
+fn rewrite_telegram_url(
+    value: &str,
+    route: &TelegramRoute,
+    internal_link_index: usize,
+) -> Option<String> {
+    let mut url = reqwest::Url::parse(value).ok()?;
+    if !matches!(url.host_str(), Some("6b6t.org" | "www.6b6t.org")) {
+        return None;
+    }
+    url.set_scheme("https").ok()?;
+    url.set_host(Some("www.6b6t.org")).ok()?;
+    url.set_port(None).ok()?;
+
+    let existing = url
+        .query_pairs()
+        .map(|(name, value)| (name.into_owned(), value.into_owned()))
+        .collect::<Vec<_>>();
+    let campaign = existing
+        .iter()
+        .find(|(name, _)| name == "utm_campaign")
+        .map(|(_, value)| value.clone())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| telegram_campaign(&url).to_owned());
+    let retained = existing
+        .into_iter()
+        .filter(|(name, _)| {
+            !matches!(
+                name.as_str(),
+                "utm_source" | "utm_medium" | "utm_campaign" | "utm_content" | "lang"
+            )
+        })
+        .collect::<Vec<_>>();
+    url.set_query(None);
+    {
+        let mut query = url.query_pairs_mut();
+        for (name, value) in retained {
+            query.append_pair(&name, &value);
+        }
+        query
+            .append_pair("utm_source", "telegram")
+            .append_pair("utm_medium", "telegram_group")
+            .append_pair("utm_campaign", &campaign)
+            .append_pair(
+                "utm_content",
+                &format!(
+                    "org6b6t_{}_{}",
+                    telegram_utm_topic(route),
+                    if internal_link_index == 0 {
+                        "main"
+                    } else {
+                        "footer"
+                    }
+                ),
+            )
+            .append_pair("lang", route.utm_language.as_deref().unwrap_or("en"));
+    }
+    Some(url.into())
+}
+
+fn telegram_campaign(url: &reqwest::Url) -> &'static str {
+    let mut segments = url
+        .path_segments()
+        .into_iter()
+        .flatten()
+        .filter(|segment| !segment.is_empty());
+    let first = segments.next().unwrap_or_default();
+    let section = if first.len() == 2 {
+        segments.next().unwrap_or(first)
+    } else {
+        first
+    };
+    match section.to_ascii_lowercase().as_str() {
+        "shop" => "evergreen_shop",
+        "vote" => "evergreen_vote",
+        _ => "evergreen_website",
+    }
+}
+
+fn telegram_utm_topic(route: &TelegramRoute) -> String {
+    if let Some(topic) = &route.utm_topic {
+        return topic.clone();
+    }
+    match route.id.as_str() {
+        "announcement" | "announcements" | "news" | "updates" => "news".to_owned(),
+        _ => route
+            .id
+            .chars()
+            .map(|character| {
+                if character.is_ascii_alphanumeric() {
+                    character.to_ascii_lowercase()
+                } else {
+                    '-'
+                }
+            })
+            .collect::<String>()
+            .trim_matches('-')
+            .to_owned(),
+    }
+}
+
+fn format_telegram_html(value: &str) -> String {
     static PATTERNS: std::sync::OnceLock<Vec<(Regex, &'static str)>> = std::sync::OnceLock::new();
     static TIMESTAMP: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
     let patterns = PATTERNS.get_or_init(|| {
@@ -828,24 +951,10 @@ fn normalize_markdown(value: &str) -> String {
             ),
             (Regex::new(r"</([^:>]+):\d+>").expect("valid regex"), "/$1"),
             (
-                Regex::new(r"\[([^\]]+)]\((https?://[^)]+)\)").expect("valid regex"),
-                "$1 ($2)",
+                Regex::new(r"(?m)^#{1,6}\s+(.+)$").expect("valid regex"),
+                "**$1**",
             ),
-            (
-                Regex::new(r"\|\|([\s\S]*?)\|\|").expect("valid regex"),
-                "$1",
-            ),
-            (Regex::new(r"(?m)^#{1,6}\s+").expect("valid regex"), ""),
             (Regex::new(r"(?m)^>\s?").expect("valid regex"), ""),
-            (
-                Regex::new(r"```(?:[A-Za-z0-9_-]+)?\n?([\s\S]*?)```").expect("valid regex"),
-                "$1",
-            ),
-            (
-                Regex::new(r"`([^`]+)`|\*\*([^*]+)\*\*|__([^_]+)__|~~([^~]+)~~")
-                    .expect("valid regex"),
-                "$1$2$3$4",
-            ),
             (
                 Regex::new(r"(?im)(^|[\s(\[{:])@(everyone|here)\b").expect("valid regex"),
                 "$1",
@@ -853,10 +962,6 @@ fn normalize_markdown(value: &str) -> String {
             (
                 Regex::new(r"(?m)(^|[\s(\[{:])@[A-Za-z0-9_]{5,32}\b").expect("valid regex"),
                 "$1",
-            ),
-            (
-                Regex::new(r"(?m)(^|\s)[*_]([^*_\n]+)[*_](\s|$)").expect("valid regex"),
-                "$1$2$3",
             ),
             (Regex::new(r"[ \t]{2,}").expect("valid regex"), " "),
             (Regex::new(r"[ \t]+\n").expect("valid regex"), "\n"),
@@ -874,13 +979,104 @@ fn normalize_markdown(value: &str) -> String {
                 date.format("%Y-%m-%d %H:%M UTC").to_string()
             })
     });
-    patterns
+    let normalized = patterns
         .iter()
         .fold(value.into_owned(), |text, (regex, replacement)| {
             regex.replace_all(&text, *replacement).into_owned()
+        });
+    render_discord_markdown_as_html(normalized.trim())
+}
+
+fn render_discord_markdown_as_html(value: &str) -> String {
+    static CODE_BLOCK: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    static INLINE_CODE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    static MARKDOWN_LINK: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    static FORMATTING: std::sync::OnceLock<Vec<(Regex, &'static str)>> = std::sync::OnceLock::new();
+
+    let mut placeholders = Vec::new();
+    let text = CODE_BLOCK
+        .get_or_init(|| Regex::new(r"```(?:[A-Za-z0-9_-]+)?\n?([\s\S]*?)```").expect("valid regex"))
+        .replace_all(value, |captures: &regex::Captures<'_>| {
+            html_placeholder(
+                &mut placeholders,
+                format!(
+                    "<pre>{}</pre>",
+                    html_escape::encode_text(captures.get(1).map_or("", |value| value.as_str()))
+                ),
+            )
         })
-        .trim()
-        .to_owned()
+        .into_owned();
+    let text = INLINE_CODE
+        .get_or_init(|| Regex::new(r"`([^`\n]+)`").expect("valid regex"))
+        .replace_all(&text, |captures: &regex::Captures<'_>| {
+            html_placeholder(
+                &mut placeholders,
+                format!(
+                    "<code>{}</code>",
+                    html_escape::encode_text(captures.get(1).map_or("", |value| value.as_str()))
+                ),
+            )
+        })
+        .into_owned();
+    let text = MARKDOWN_LINK
+        .get_or_init(|| {
+            Regex::new(r"\[([^\]\n]+)]\(<?(https?://[^)>\s]+)>?\)").expect("valid regex")
+        })
+        .replace_all(&text, |captures: &regex::Captures<'_>| {
+            let label = captures.get(1).map_or("", |value| value.as_str());
+            let url = captures.get(2).map_or("", |value| value.as_str());
+            html_placeholder(
+                &mut placeholders,
+                format!(
+                    "<a href=\"{}\">{}</a>",
+                    html_escape::encode_double_quoted_attribute(url),
+                    html_escape::encode_text(label)
+                ),
+            )
+        })
+        .into_owned();
+
+    let mut html = html_escape::encode_text(&text).into_owned();
+    for (regex, replacement) in FORMATTING.get_or_init(|| {
+        vec![
+            (
+                Regex::new(r"\*\*([^*\n]+)\*\*").expect("valid regex"),
+                "<b>$1</b>",
+            ),
+            (
+                Regex::new(r"__([^_\n]+)__").expect("valid regex"),
+                "<u>$1</u>",
+            ),
+            (
+                Regex::new(r"~~([^~\n]+)~~").expect("valid regex"),
+                "<s>$1</s>",
+            ),
+            (
+                Regex::new(r"\|\|([^|\n]+)\|\|").expect("valid regex"),
+                "<tg-spoiler>$1</tg-spoiler>",
+            ),
+            (
+                Regex::new(r"(?m)(^|\s)\*([^*\n]+)\*(\s|$)").expect("valid regex"),
+                "$1<i>$2</i>$3",
+            ),
+            (
+                Regex::new(r"(?m)(^|\s)_([^_\n]+)_(\s|$)").expect("valid regex"),
+                "$1<i>$2</i>$3",
+            ),
+        ]
+    }) {
+        html = regex.replace_all(&html, *replacement).into_owned();
+    }
+    for (index, replacement) in placeholders.iter().enumerate() {
+        html = html.replace(&format!("\u{e000}{index}\u{e001}"), replacement);
+    }
+    html.trim().to_owned()
+}
+
+fn html_placeholder(placeholders: &mut Vec<String>, html: String) -> String {
+    let index = placeholders.len();
+    placeholders.push(html);
+    format!("\u{e000}{index}\u{e001}")
 }
 
 fn split_text(value: &str, limit: usize) -> Vec<String> {
@@ -972,7 +1168,20 @@ fn parse_references(value: Option<&str>) -> Vec<TelegramReference> {
 mod tests {
     use poise::serenity_prelude as serenity;
 
-    use super::{is_after_checkpoint, normalize_markdown, split_text};
+    use super::{format_telegram_html, is_after_checkpoint, rewrite_telegram_links, split_text};
+    use crate::config::TelegramRoute;
+
+    fn route() -> TelegramRoute {
+        TelegramRoute {
+            id: "announcements".to_owned(),
+            discord_channel_id: serenity::ChannelId::new(1),
+            telegram_chat_id: "@org6b6t".to_owned(),
+            telegram_thread_id: Some(1),
+            include_author: false,
+            utm_topic: None,
+            utm_language: None,
+        }
+    }
 
     #[test]
     fn only_updates_after_the_checkpoint_can_create_crossposts() {
@@ -992,19 +1201,48 @@ mod tests {
     }
 
     #[test]
-    fn markdown_removes_discord_mentions_and_keeps_links() {
+    fn markdown_becomes_safe_telegram_html() {
         assert_eq!(
-            normalize_markdown("**Update** <@123> [Shop](https://www.6b6t.org/shop)"),
-            "Update Shop (https://www.6b6t.org/shop)"
+            format_telegram_html("**Update** <@123> [Shop](https://www.6b6t.org/shop?a=1&b=2)"),
+            "<b>Update</b> <a href=\"https://www.6b6t.org/shop?a=1&amp;b=2\">Shop</a>"
         );
     }
     #[test]
     fn markdown_preserves_emails_and_strips_safe_mentions_and_italics() {
         assert_eq!(
-            normalize_markdown(
+            format_telegram_html(
                 "mail@example.com @everyone *important update* @username  \nnext line"
             ),
-            "mail@example.com important update\nnext line"
+            "mail@example.com <i>important update</i>\nnext line"
+        );
+    }
+    #[test]
+    fn internal_links_receive_telegram_utms() {
+        let text = rewrite_telegram_links(
+            "[Shop](https://6b6t.org/shop?utm_source=discord&utm_medium=discord_channel&utm_campaign=event_christmas_2026&utm_content=updates_main&lang=en) https://www.6b6t.org/vote",
+            &route(),
+        );
+        assert_eq!(
+            text,
+            "[Shop](https://www.6b6t.org/shop?utm_source=telegram&utm_medium=telegram_group&utm_campaign=event_christmas_2026&utm_content=org6b6t_news_main&lang=en) https://www.6b6t.org/vote?utm_source=telegram&utm_medium=telegram_group&utm_campaign=evergreen_vote&utm_content=org6b6t_news_footer&lang=en"
+        );
+    }
+    #[test]
+    fn external_and_blog_links_are_not_rewritten() {
+        let text = "https://blog.6b6t.org/post https://youtube.com/watch?v=1";
+        assert_eq!(rewrite_telegram_links(text, &route()), text);
+    }
+    #[test]
+    fn utm_rewrite_preserves_query_data_fragments_and_route_language() {
+        let mut route = route();
+        route.utm_topic = Some("general".to_owned());
+        route.utm_language = Some("es".to_owned());
+        assert_eq!(
+            rewrite_telegram_links(
+                "https://www.6b6t.org/en/stats/player?view=compact&utm_source=discord#history",
+                &route,
+            ),
+            "https://www.6b6t.org/en/stats/player?view=compact&utm_source=telegram&utm_medium=telegram_group&utm_campaign=evergreen_website&utm_content=org6b6t_general_main&lang=es#history"
         );
     }
     #[test]
