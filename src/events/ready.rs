@@ -1,6 +1,6 @@
 use std::{collections::HashSet, future::Future, time::Duration};
 
-use anyhow::{Result, bail};
+use anyhow::{Context as _, Result, bail};
 use chrono::{Datelike as _, Timelike as _};
 use chrono_tz::Europe::Berlin;
 use futures::TryStreamExt as _;
@@ -40,7 +40,10 @@ pub async fn handle(
     let reaction_menu_ctx = ctx.clone();
     spawn_startup_retry("reaction menu initialization", move || {
         let ctx = reaction_menu_ctx.clone();
-        async move { ensure_reaction_menus(&ctx).await }
+        async move {
+            ensure_reaction_menus(&ctx).await?;
+            ensure_horizon_menu(&ctx).await
+        }
     });
 
     spawn_interval(
@@ -371,4 +374,91 @@ async fn ensure_reaction_menus(ctx: &serenity::Context) -> Result<()> {
         }
     }
     Ok(())
+}
+
+const HORIZON_MENU_CONTENT: &str = "## Choose your side for Horizon\n\nSelecting one side removes the opposing role. Click your active side again to remove it.";
+
+async fn ensure_horizon_menu(ctx: &serenity::Context) -> Result<()> {
+    let roles = config::GUILD_ID.roles(ctx).await?;
+    validate_horizon_role(
+        &roles,
+        config::HUNT_HORIZON_ROLE_ID,
+        config::HUNT_HORIZON_ROLE_NAME,
+    )?;
+    validate_horizon_role(
+        &roles,
+        config::PROTECT_HORIZON_ROLE_ID,
+        config::PROTECT_HORIZON_ROLE_NAME,
+    )?;
+
+    let messages = config::HORIZON_ROLE_MENU_ID
+        .messages(ctx, serenity::GetMessages::new().limit(100))
+        .await?;
+    let existing = messages.iter().find(|message| {
+        message.author.id == ctx.cache.current_user().id
+            && message
+                .components
+                .iter()
+                .flat_map(|row| &row.components)
+                .any(|component| {
+                    matches!(
+                        component,
+                        serenity::ActionRowComponent::Button(button)
+                            if matches!(
+                                &button.data,
+                                serenity::ButtonKind::NonLink { custom_id, .. }
+                                    if custom_id == config::HUNT_HORIZON_BUTTON_ID
+                            )
+                    )
+                })
+    });
+    if let Some(message) = existing {
+        config::HORIZON_ROLE_MENU_ID
+            .edit_message(
+                ctx,
+                message.id,
+                serenity::EditMessage::new()
+                    .content(HORIZON_MENU_CONTENT)
+                    .components(vec![horizon_buttons()]),
+            )
+            .await?;
+    } else {
+        config::HORIZON_ROLE_MENU_ID
+            .send_message(
+                ctx,
+                serenity::CreateMessage::new()
+                    .content(HORIZON_MENU_CONTENT)
+                    .components(vec![horizon_buttons()]),
+            )
+            .await?;
+    }
+    Ok(())
+}
+
+fn validate_horizon_role(
+    roles: &std::collections::HashMap<serenity::RoleId, serenity::Role>,
+    role_id: serenity::RoleId,
+    expected_name: &str,
+) -> Result<()> {
+    let role = roles
+        .get(&role_id)
+        .with_context(|| format!("the {expected_name} role ({role_id}) does not exist"))?;
+    if role.name != expected_name {
+        bail!(
+            "Horizon role {role_id} is named {:?}, expected {expected_name:?}",
+            role.name
+        );
+    }
+    Ok(())
+}
+
+fn horizon_buttons() -> serenity::CreateActionRow {
+    serenity::CreateActionRow::Buttons(vec![
+        serenity::CreateButton::new(config::HUNT_HORIZON_BUTTON_ID)
+            .label(config::HUNT_HORIZON_ROLE_NAME)
+            .style(serenity::ButtonStyle::Danger),
+        serenity::CreateButton::new(config::PROTECT_HORIZON_BUTTON_ID)
+            .label(config::PROTECT_HORIZON_ROLE_NAME)
+            .style(serenity::ButtonStyle::Success),
+    ])
 }

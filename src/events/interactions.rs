@@ -21,6 +21,11 @@ pub async fn handle(
             legend_role(ctx, component).await
         }
         serenity::Interaction::Component(component)
+            if parse_horizon_side(&component.data.custom_id).is_some() =>
+        {
+            horizon_role(ctx, component).await
+        }
+        serenity::Interaction::Component(component)
             if component.data.custom_id.starts_with("motd:") =>
         {
             motd_button(ctx, data, component).await
@@ -31,6 +36,91 @@ pub async fn handle(
         }
         _ => Ok(()),
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum HorizonSide {
+    Hunt,
+    Protect,
+}
+
+fn parse_horizon_side(custom_id: &str) -> Option<HorizonSide> {
+    match custom_id {
+        config::HUNT_HORIZON_BUTTON_ID => Some(HorizonSide::Hunt),
+        config::PROTECT_HORIZON_BUTTON_ID => Some(HorizonSide::Protect),
+        _ => None,
+    }
+}
+
+async fn horizon_role(
+    ctx: &serenity::Context,
+    interaction: &serenity::ComponentInteraction,
+) -> Result<()> {
+    interaction
+        .create_response(
+            ctx,
+            serenity::CreateInteractionResponse::Defer(
+                serenity::CreateInteractionResponseMessage::new().ephemeral(true),
+            ),
+        )
+        .await?;
+    let result = update_horizon_role(ctx, interaction).await;
+    let content = match &result {
+        Ok(content) => content.clone(),
+        Err(error) => {
+            tracing::error!(%error, user_id = %interaction.user.id, "failed to update Horizon role");
+            format!("I couldn't update your Horizon role: {error}")
+        }
+    };
+    interaction
+        .edit_response(
+            ctx,
+            serenity::EditInteractionResponse::new().content(content),
+        )
+        .await?;
+    Ok(())
+}
+
+async fn update_horizon_role(
+    ctx: &serenity::Context,
+    interaction: &serenity::ComponentInteraction,
+) -> Result<String> {
+    static ROLE_UPDATE_LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> =
+        std::sync::OnceLock::new();
+    let _guard = ROLE_UPDATE_LOCK
+        .get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await;
+    if interaction.channel_id != config::HORIZON_ROLE_MENU_ID {
+        anyhow::bail!("this button is not in the self-role channel");
+    }
+    let side =
+        parse_horizon_side(&interaction.data.custom_id).context("unknown Horizon role button")?;
+    let guild_id = interaction.guild_id.context("missing guild")?;
+    let (selected, opposing) = match side {
+        HorizonSide::Hunt => (
+            config::HUNT_HORIZON_ROLE_ID,
+            config::PROTECT_HORIZON_ROLE_ID,
+        ),
+        HorizonSide::Protect => (
+            config::PROTECT_HORIZON_ROLE_ID,
+            config::HUNT_HORIZON_ROLE_ID,
+        ),
+    };
+    let member = guild_id.member(ctx, interaction.user.id).await?;
+    let has_selected = member.roles.contains(&selected);
+    let has_opposing = member.roles.contains(&opposing);
+    if has_selected && !has_opposing {
+        member.remove_role(ctx, selected).await?;
+        return Ok(format!("Removed <@&{selected}>."));
+    }
+    if has_opposing {
+        member.remove_role(ctx, opposing).await?;
+    }
+    if !has_selected {
+        member.add_role(ctx, selected).await?;
+    }
+    Ok(format!("You are now on <@&{selected}>."))
 }
 
 async fn legend_role(
@@ -586,7 +676,8 @@ fn approval_details(action: &ApprovalAction) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_approval_id, parse_motd_id};
+    use super::{HorizonSide, parse_approval_id, parse_horizon_side, parse_motd_id};
+    use crate::config;
     #[test]
     fn approval_ids_are_strict() {
         let id = uuid::Uuid::new_v4();
@@ -602,6 +693,23 @@ mod tests {
         assert_eq!(
             parse_motd_id("motd:revision:abc:123"),
             Some(("revision", "abc:123"))
+        );
+    }
+    #[test]
+    fn horizon_buttons_only_accept_known_sides() {
+        assert_eq!(parse_horizon_side("horizon:hunt"), Some(HorizonSide::Hunt));
+        assert_eq!(
+            parse_horizon_side("horizon:protect"),
+            Some(HorizonSide::Protect)
+        );
+        assert_eq!(parse_horizon_side("horizon:other"), None);
+        assert_eq!(
+            config::HUNT_HORIZON_ROLE_ID.get(),
+            1_540_734_033_959_583_805
+        );
+        assert_eq!(
+            config::PROTECT_HORIZON_ROLE_ID.get(),
+            1_540_733_548_133_224_498
         );
     }
 }
