@@ -711,5 +711,6 @@ mod tests {
             config::PROTECT_HORIZON_ROLE_ID.get(),
             1_540_733_548_133_224_498
         );
+        assert_eq!(config::HORIZON_ROLE_MENU_ID, config::UPDATES_ID);
     }
 }

@@ -27,8 +27,7 @@ pub const ROLE_MENU_REQUIRED_ROLE_ID: serenity::RoleId =
     serenity::RoleId::new(1_349_026_308_390_391_839);
 pub const REACTION_ROLE_MENU_ID: serenity::ChannelId =
     serenity::ChannelId::new(1_330_884_299_615_895_594);
-pub const HORIZON_ROLE_MENU_ID: serenity::ChannelId =
-    serenity::ChannelId::new(1_537_725_418_000_617_512);
+pub const HORIZON_ROLE_MENU_ID: serenity::ChannelId = UPDATES_ID;
 pub const HUNT_HORIZON_ROLE_NAME: &str = "Hunt Horizon";
 pub const PROTECT_HORIZON_ROLE_NAME: &str = "Protect Horizon";
 pub const HUNT_HORIZON_ROLE_ID: serenity::RoleId = serenity::RoleId::new(1_540_734_033_959_583_805);

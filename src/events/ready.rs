@@ -377,6 +377,8 @@ async fn ensure_reaction_menus(ctx: &serenity::Context) -> Result<()> {
 }
 
 const HORIZON_MENU_CONTENT: &str = "## Choose your side for Horizon";
+const HORIZON_TEST_MENU_ID: serenity::ChannelId =
+    serenity::ChannelId::new(1_537_725_418_000_617_512);
 
 async fn ensure_horizon_menu(ctx: &serenity::Context) -> Result<()> {
     let roles = config::GUILD_ID.roles(ctx).await?;
@@ -394,24 +396,9 @@ async fn ensure_horizon_menu(ctx: &serenity::Context) -> Result<()> {
     let messages = config::HORIZON_ROLE_MENU_ID
         .messages(ctx, serenity::GetMessages::new().limit(100))
         .await?;
-    let existing = messages.iter().find(|message| {
-        message.author.id == ctx.cache.current_user().id
-            && message
-                .components
-                .iter()
-                .flat_map(|row| &row.components)
-                .any(|component| {
-                    matches!(
-                        component,
-                        serenity::ActionRowComponent::Button(button)
-                            if matches!(
-                                &button.data,
-                                serenity::ButtonKind::NonLink { custom_id, .. }
-                                    if custom_id == config::HUNT_HORIZON_BUTTON_ID
-                            )
-                    )
-                })
-    });
+    let existing = messages
+        .iter()
+        .find(|message| is_horizon_menu(ctx, message));
     if let Some(message) = existing {
         config::HORIZON_ROLE_MENU_ID
             .edit_message(
@@ -431,6 +418,40 @@ async fn ensure_horizon_menu(ctx: &serenity::Context) -> Result<()> {
                     .components(vec![horizon_buttons()]),
             )
             .await?;
+    }
+    remove_horizon_test_menu(ctx).await?;
+    Ok(())
+}
+
+fn is_horizon_menu(ctx: &serenity::Context, message: &serenity::Message) -> bool {
+    message.author.id == ctx.cache.current_user().id
+        && message
+            .components
+            .iter()
+            .flat_map(|row| &row.components)
+            .any(|component| {
+                matches!(
+                    component,
+                    serenity::ActionRowComponent::Button(button)
+                        if matches!(
+                            &button.data,
+                            serenity::ButtonKind::NonLink { custom_id, .. }
+                                if custom_id == config::HUNT_HORIZON_BUTTON_ID
+                        )
+                )
+            })
+}
+
+async fn remove_horizon_test_menu(ctx: &serenity::Context) -> Result<()> {
+    let messages = HORIZON_TEST_MENU_ID
+        .messages(ctx, serenity::GetMessages::new().limit(100))
+        .await?;
+    for message in messages
+        .iter()
+        .filter(|message| is_horizon_menu(ctx, message))
+    {
+        message.delete(ctx).await?;
+        tracing::info!(message_id = %message.id, "removed Horizon menu from test channel");
     }
     Ok(())
 }
