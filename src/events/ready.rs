@@ -376,7 +376,7 @@ async fn ensure_reaction_menus(ctx: &serenity::Context) -> Result<()> {
     Ok(())
 }
 
-const HORIZON_MENU_CONTENT: &str = "## Choose your side for Horizon\n\nSelecting one side removes the opposing role. Click your active side again to remove it.";
+const HORIZON_MENU_CONTENT: &str = "## Choose your side for Horizon";
 
 async fn ensure_horizon_menu(ctx: &serenity::Context) -> Result<()> {
     let roles = config::GUILD_ID.roles(ctx).await?;
