@@ -1,3 +1,5 @@
+use std::collections::{HashMap, HashSet};
+
 use anyhow::{Context as _, Result, bail};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use poise::{CreateReply, serenity_prelude as serenity};
@@ -479,6 +481,196 @@ fn record_purge_deletion(
     } else {
         outcome.deleted += 1;
     }
+}
+
+static LANGUAGE_REPAIR_LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> =
+    std::sync::OnceLock::new();
+
+/// Reapply language roles from the reactions on every language menu.
+#[poise::command(slash_command, guild_only)]
+pub async fn reapplylanguages(ctx: Context<'_>) -> Result<(), Error> {
+    let member = ctx
+        .author_member()
+        .await
+        .context("missing command member")?;
+    if !moderation::is_administrator(&member)
+        && !moderation::has_role(&member, config::DEVELOPER_ROLE_ID)
+    {
+        deny(
+            ctx,
+            "Only administrators or members with the Developer role can reapply language roles.",
+        )
+        .await?;
+        return Ok(());
+    }
+    let Ok(_guard) = LANGUAGE_REPAIR_LOCK
+        .get_or_init(|| tokio::sync::Mutex::new(()))
+        .try_lock()
+    else {
+        deny(ctx, "A language-role repair is already running.").await?;
+        return Ok(());
+    };
+    ctx.defer_ephemeral().await?;
+    let reply = ctx
+        .send(
+            CreateReply::default()
+                .ephemeral(true)
+                .content("Scanning all language-menu reactions and reapplying missing roles…"),
+        )
+        .await?;
+    let result = repair_language_roles(ctx.serenity_context()).await;
+    let summary = match result {
+        Ok(stats) => stats.summary(),
+        Err(error) => {
+            tracing::error!(%error, "language-role repair failed");
+            format!("Language-role repair failed: {error}")
+        }
+    };
+    log_action(&ctx, "Language Roles Reapplied", summary.clone()).await;
+    if let Err(error) = reply
+        .edit(ctx, CreateReply::default().ephemeral(true).content(summary))
+        .await
+    {
+        tracing::warn!(%error, "failed to update language-role repair response");
+    }
+    Ok(())
+}
+
+#[derive(Default)]
+struct LanguageRepairStats {
+    menus: usize,
+    users: usize,
+    assignments: usize,
+    added: usize,
+    already_present: usize,
+    failed: usize,
+}
+
+impl LanguageRepairStats {
+    fn summary(&self) -> String {
+        format!(
+            "Language-role repair complete: synced {} previously missing role assignment(s). Scanned {} menu(s), found {} user(s) and {} unique reaction assignment(s); {} were already synced and {} failed.",
+            self.added, self.menus, self.users, self.assignments, self.already_present, self.failed
+        )
+    }
+}
+
+async fn repair_language_roles(ctx: &serenity::Context) -> Result<LanguageRepairStats> {
+    let menus = language_menu_messages(ctx).await?;
+    if menus.is_empty() {
+        bail!("no bot-authored language menu was found");
+    }
+    let mut desired: HashMap<serenity::UserId, HashSet<serenity::RoleId>> = HashMap::new();
+    for message in &menus {
+        for (emoji, role_id) in &config::REACTION_ROLES[6..12] {
+            collect_reaction_users(ctx, message, emoji, *role_id, &mut desired).await?;
+        }
+    }
+    let mut stats = LanguageRepairStats {
+        menus: menus.len(),
+        users: desired.len(),
+        assignments: desired.values().map(HashSet::len).sum(),
+        ..Default::default()
+    };
+    for (user_id, roles) in desired {
+        let member = match cached_or_fetched_member(ctx, user_id).await {
+            Ok(member) => member,
+            Err(error) => {
+                stats.failed += roles.len();
+                tracing::warn!(%error, %user_id, "could not load language-role member");
+                continue;
+            }
+        };
+        for role_id in roles {
+            if member.roles.contains(&role_id) {
+                stats.already_present += 1;
+            } else if let Err(error) = member.add_role(ctx, role_id).await {
+                stats.failed += 1;
+                tracing::warn!(%error, %user_id, %role_id, "failed to reapply language role");
+            } else {
+                stats.added += 1;
+            }
+        }
+    }
+    Ok(stats)
+}
+
+async fn language_menu_messages(ctx: &serenity::Context) -> Result<Vec<serenity::Message>> {
+    let mut menus = Vec::new();
+    let mut before = None;
+    loop {
+        let mut request = serenity::GetMessages::new().limit(100);
+        if let Some(message_id) = before {
+            request = request.before(message_id);
+        }
+        let page = config::REACTION_ROLE_MENU_ID.messages(ctx, request).await?;
+        if page.is_empty() {
+            break;
+        }
+        before = page.last().map(|message| message.id);
+        menus.extend(
+            page.iter()
+                .filter(|message| {
+                    message.author.id == ctx.cache.current_user().id
+                        && message.embeds.iter().any(|embed| {
+                            embed.description.as_deref() == Some("Select your language.")
+                        })
+                })
+                .cloned(),
+        );
+        if page.len() < 100 {
+            break;
+        }
+    }
+    Ok(menus)
+}
+
+async fn collect_reaction_users(
+    ctx: &serenity::Context,
+    message: &serenity::Message,
+    emoji: &str,
+    role_id: serenity::RoleId,
+    desired: &mut HashMap<serenity::UserId, HashSet<serenity::RoleId>>,
+) -> Result<()> {
+    let mut after = None;
+    loop {
+        let users = message
+            .reaction_users(
+                ctx,
+                serenity::ReactionType::Unicode(emoji.to_owned()),
+                Some(100),
+                after,
+            )
+            .await?;
+        if users.is_empty() {
+            break;
+        }
+        after = users.last().map(|user| user.id);
+        let page_is_full = users.len() == 100;
+        for user in users {
+            if !user.bot {
+                desired.entry(user.id).or_default().insert(role_id);
+            }
+        }
+        if !page_is_full {
+            break;
+        }
+    }
+    Ok(())
+}
+
+async fn cached_or_fetched_member(
+    ctx: &serenity::Context,
+    user_id: serenity::UserId,
+) -> serenity::Result<serenity::Member> {
+    if let Some(member) = ctx
+        .cache
+        .guild(config::GUILD_ID)
+        .and_then(|guild| guild.members.get(&user_id).cloned())
+    {
+        return Ok(member);
+    }
+    config::GUILD_ID.member(ctx, user_id).await
 }
 
 /// Change the Mini-Terminator role with two-person approval.

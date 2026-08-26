@@ -37,17 +37,15 @@ pub const HUNT_HORIZON_BUTTON_ID: &str = "horizon:hunt";
 pub const PROTECT_HORIZON_BUTTON_ID: &str = "horizon:protect";
 pub const LINKED_ROLE_ID: serenity::RoleId = serenity::RoleId::new(1_325_507_259_307_921_428);
 pub const TERMINATOR_ROLE_ID: serenity::RoleId = serenity::RoleId::new(1_268_946_626_387_378_189);
+pub const DEVELOPER_ROLE_ID: serenity::RoleId = serenity::RoleId::new(1_324_344_058_138_726_481);
 
-pub const AUTHORIZED_ROLE_IDS: &[serenity::RoleId] = &[
-    TERMINATOR_ROLE_ID,
-    MARKETER_ROLE_ID,
-    serenity::RoleId::new(1_324_344_058_138_726_481),
-];
+pub const AUTHORIZED_ROLE_IDS: &[serenity::RoleId] =
+    &[TERMINATOR_ROLE_ID, MARKETER_ROLE_ID, DEVELOPER_ROLE_ID];
 pub const BAN_REASON_ROLE_IDS: &[serenity::RoleId] = &[
     TERMINATOR_ROLE_ID,
     serenity::RoleId::new(1_268_540_163_068_526_632),
     MARKETER_ROLE_ID,
-    serenity::RoleId::new(1_324_344_058_138_726_481),
+    DEVELOPER_ROLE_ID,
     serenity::RoleId::new(1_349_758_583_859_970_140),
     COMMAND_ADMIN_ROLE_ID,
 ];
