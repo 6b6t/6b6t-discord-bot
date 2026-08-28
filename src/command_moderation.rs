@@ -276,9 +276,9 @@ pub async fn terminatorunban(
 #[poise::command(slash_command, guild_only)]
 pub async fn purge(
     ctx: Context<'_>,
-    #[description = "Number of messages to delete (1-1000)"]
+    #[description = "Number of messages to delete (1-100)"]
     #[min = 1]
-    #[max = 1000]
+    #[max = 100]
     amount: u16,
     #[description = "Only delete messages from this user"] user: Option<serenity::User>,
 ) -> Result<(), Error> {
@@ -367,7 +367,7 @@ pub async fn purge(
 
 fn purge_scan_limit(amount: usize, filtered: bool) -> usize {
     if filtered {
-        amount.saturating_mul(100).clamp(1_000, 10_000)
+        amount.saturating_mul(5).min(100)
     } else {
         amount
     }
@@ -393,36 +393,25 @@ async fn collect_purge_messages(
 ) -> serenity::Result<PurgeSelection> {
     let cutoff = chrono::Utc::now().timestamp() - 14 * 24 * 60 * 60;
     let scan_limit = purge_scan_limit(amount, target.is_some());
-    let mut cursor = None;
     let mut fresh = Vec::new();
     let mut old = Vec::new();
-    let mut scanned = 0usize;
+    let page_size = u8::try_from(scan_limit).expect("purge scan is capped at 100 messages");
+    let messages = channel_id
+        .messages(http, serenity::GetMessages::new().limit(page_size))
+        .await?;
+    let scanned = messages.len();
 
-    while fresh.len() + old.len() < amount && scanned < scan_limit {
-        let page_size = u8::try_from((scan_limit - scanned).min(100))
-            .expect("Discord message page size is capped at 100");
-        let mut request = serenity::GetMessages::new().limit(page_size);
-        if let Some(cursor) = cursor {
-            request = request.before(cursor);
-        }
-        let messages = channel_id.messages(http, request).await?;
-        if messages.is_empty() {
+    for message in messages {
+        if fresh.len() + old.len() >= amount {
             break;
         }
-        cursor = messages.last().map(|message| message.id);
-        scanned += messages.len();
-        for message in messages {
-            if fresh.len() + old.len() >= amount {
-                break;
-            }
-            if target.is_some_and(|id| message.author.id != id) {
-                continue;
-            }
-            if message.id.created_at().unix_timestamp() >= cutoff {
-                fresh.push(message.id);
-            } else {
-                old.push(message.id);
-            }
+        if target.is_some_and(|id| message.author.id != id) {
+            continue;
+        }
+        if message.id.created_at().unix_timestamp() >= cutoff {
+            fresh.push(message.id);
+        } else {
+            old.push(message.id);
         }
     }
     Ok(PurgeSelection {
@@ -1090,9 +1079,10 @@ mod tests {
     }
 
     #[test]
-    fn filtered_purges_search_beyond_the_immediate_messages() {
+    fn purge_search_is_bounded_to_one_page() {
         assert_eq!(purge_scan_limit(2, false), 2);
-        assert_eq!(purge_scan_limit(2, true), 1_000);
-        assert_eq!(purge_scan_limit(1_000, true), 10_000);
+        assert_eq!(purge_scan_limit(2, true), 10);
+        assert_eq!(purge_scan_limit(20, true), 100);
+        assert_eq!(purge_scan_limit(100, true), 100);
     }
 }
