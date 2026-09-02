@@ -38,6 +38,7 @@ pub const PROTECT_HORIZON_BUTTON_ID: &str = "horizon:protect";
 pub const LINKED_ROLE_ID: serenity::RoleId = serenity::RoleId::new(1_325_507_259_307_921_428);
 pub const TERMINATOR_ROLE_ID: serenity::RoleId = serenity::RoleId::new(1_268_946_626_387_378_189);
 pub const DEVELOPER_ROLE_ID: serenity::RoleId = serenity::RoleId::new(1_324_344_058_138_726_481);
+pub const EVENTS_ROLE_ID: serenity::RoleId = serenity::RoleId::new(1_155_462_541_871_415_326);
 
 pub const AUTHORIZED_ROLE_IDS: &[serenity::RoleId] =
     &[TERMINATOR_ROLE_ID, MARKETER_ROLE_ID, DEVELOPER_ROLE_ID];
@@ -73,7 +74,7 @@ pub const REACTION_ROLES: &[(&str, serenity::RoleId)] = &[
     ("✨", serenity::RoleId::new(942_861_111_089_324_142)),
     ("⚔️", serenity::RoleId::new(942_860_042_871_402_567)),
     ("🌩️", serenity::RoleId::new(942_858_847_058_555_000)),
-    ("🎉", serenity::RoleId::new(1_155_462_541_871_415_326)),
+    ("🎉", EVENTS_ROLE_ID),
     ("🏄", serenity::RoleId::new(1_389_335_267_394_982_040)),
     ("🎥", serenity::RoleId::new(1_423_961_521_997_746_227)),
     ("🇺🇸", serenity::RoleId::new(1_051_075_005_250_809_966)),
@@ -125,6 +126,13 @@ pub struct DatabaseConfig {
     pub password: String,
     pub link_database: String,
     pub stats_database: String,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct EventChannels {
+    pub events: serenity::ChannelId,
+    pub review: serenity::ChannelId,
+    pub logs: serenity::ChannelId,
 }
 
 #[derive(Clone, Debug)]
@@ -231,6 +239,7 @@ pub struct Environment {
     pub redis: Option<RedisConfig>,
     pub database: Option<DatabaseConfig>,
     pub telegram: Option<TelegramConfig>,
+    pub event_channels: Option<EventChannels>,
 }
 
 impl Environment {
@@ -290,7 +299,28 @@ impl Environment {
             }),
             database,
             telegram,
+            event_channels: parse_event_channels().unwrap_or_else(|error| {
+                tracing::error!(%error, "event submission configuration is invalid; feature is disabled");
+                None
+            }),
         })
+    }
+}
+
+fn parse_event_channels() -> Result<Option<EventChannels>> {
+    let events = optional_id("EVENTS_CHANNEL_ID")?;
+    let review = optional_id("EVENTS_REVIEW_CHANNEL_ID")?;
+    let logs = optional_id("EVENTS_LOG_CHANNEL_ID")?;
+    match (events, review, logs) {
+        (None, None, None) => Ok(None),
+        (Some(events), Some(review), Some(logs)) => Ok(Some(EventChannels {
+            events,
+            review,
+            logs,
+        })),
+        _ => bail!(
+            "EVENTS_CHANNEL_ID, EVENTS_REVIEW_CHANNEL_ID, and EVENTS_LOG_CHANNEL_ID must be configured together"
+        ),
     }
 }
 

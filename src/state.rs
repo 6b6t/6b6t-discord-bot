@@ -5,8 +5,9 @@ use tokio::sync::{Mutex, RwLock};
 
 use crate::{
     anarchy::AnarchyService, community_event::CommunityEventService, config::Environment,
-    database::Databases, media::MediaState, moderation::PendingApprovals, server::ServerService,
-    telegram::TelegramService, youtube::YoutubeService,
+    database::Databases, event_submissions::EventSubmissionService, media::MediaState,
+    moderation::PendingApprovals, server::ServerService, telegram::TelegramService,
+    youtube::YoutubeService,
 };
 
 #[derive(Clone)]
@@ -21,6 +22,7 @@ pub struct AppState {
     pub youtube: YoutubeService,
     pub anarchy: Option<AnarchyService>,
     pub community_event: Option<CommunityEventService>,
+    pub event_submissions: Option<EventSubmissionService>,
     pub role_sync_cache: Arc<RwLock<HashMap<String, CachedUserInfo>>>,
     pub ready_started: Arc<Mutex<bool>>,
 }
@@ -60,6 +62,16 @@ impl AppState {
             .map(|config| TelegramService::new(http.clone(), config.clone(), databases.clone()));
         let anarchy = load_anarchy(&environment);
         let community_event = load_community_event(&environment);
+        let event_submissions = match (environment.event_channels, databases.clone()) {
+            (Some(channels), Some(databases)) => {
+                Some(EventSubmissionService::new(channels, databases))
+            }
+            (Some(_), None) => {
+                tracing::error!("community events require MySQL; event submissions are disabled");
+                None
+            }
+            (None, _) => None,
+        };
 
         Ok(Self {
             server: ServerService::new(http.clone(), Arc::clone(&environment), databases.clone()),
@@ -72,6 +84,7 @@ impl AppState {
             telegram,
             anarchy,
             community_event,
+            event_submissions,
             role_sync_cache: Arc::new(RwLock::new(HashMap::new())),
             ready_started: Arc::new(Mutex::new(false)),
         })

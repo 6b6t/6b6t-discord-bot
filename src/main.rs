@@ -4,6 +4,7 @@ mod commands;
 mod community_event;
 mod config;
 mod database;
+mod event_submissions;
 mod events;
 mod media;
 mod moderation;

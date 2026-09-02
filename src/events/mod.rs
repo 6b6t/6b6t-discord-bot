@@ -17,6 +17,9 @@ pub async fn handle(
             ready::handle(ctx, data, data_about_bot).await
         }
         serenity::FullEvent::Message { new_message } => {
+            if let Some(service) = &data.event_submissions {
+                service.on_message(ctx, new_message).await;
+            }
             messages::create(ctx, data, new_message).await
         }
         serenity::FullEvent::MessageUpdate { event, new, .. } => {
@@ -39,6 +42,23 @@ pub async fn handle(
             if let Some(telegram) = &data.telegram {
                 telegram
                     .queue_message_delete(*channel_id, *deleted_message_id)
+                    .await;
+            }
+            if let Some(service) = &data.event_submissions {
+                service
+                    .on_delete(ctx, *channel_id, *deleted_message_id)
+                    .await;
+            }
+            Ok(())
+        }
+        serenity::FullEvent::MessageDeleteBulk {
+            channel_id,
+            multiple_deleted_messages_ids,
+            ..
+        } => {
+            if let Some(service) = &data.event_submissions {
+                service
+                    .on_bulk_delete(ctx, *channel_id, multiple_deleted_messages_ids)
                     .await;
             }
             Ok(())

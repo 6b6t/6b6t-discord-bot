@@ -32,6 +32,21 @@ pub async fn handle(
             async move { telegram.ready(&ctx).await }
         });
     }
+    if let Some(service) = &data.event_submissions {
+        let startup_ctx = ctx.clone();
+        let service = service.clone();
+        spawn_startup_retry("event submission initialization", move || {
+            let ctx = startup_ctx.clone();
+            let service = service.clone();
+            async move { service.ready(&ctx).await }
+        });
+        spawn_interval(
+            ctx.clone(),
+            data.clone(),
+            Duration::from_secs(30),
+            |ctx, data| Box::pin(event_submission_worker(ctx, data)),
+        );
+    }
     let role_menu_ctx = ctx.clone();
     spawn_startup_retry("role menu initialization", move || {
         let ctx = role_menu_ctx.clone();
@@ -210,6 +225,12 @@ async fn community_event_announcements(ctx: &serenity::Context, data: &AppState)
     };
     if let Err(error) = service.poll(ctx).await {
         tracing::error!(%error, "community-event Discord announcement check failed");
+    }
+}
+
+async fn event_submission_worker(ctx: &serenity::Context, data: &AppState) {
+    if let Some(service) = &data.event_submissions {
+        service.poll(ctx).await;
     }
 }
 

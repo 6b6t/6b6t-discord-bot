@@ -14,6 +14,19 @@ pub async fn handle(
     data: &AppState,
     interaction: &serenity::Interaction,
 ) -> Result<()> {
+    if let Some(service) = &data.event_submissions {
+        match interaction {
+            serenity::Interaction::Component(component)
+                if service.handle_component(ctx, component).await? =>
+            {
+                return Ok(());
+            }
+            serenity::Interaction::Modal(modal) if service.handle_modal(ctx, modal).await? => {
+                return Ok(());
+            }
+            _ => {}
+        }
+    }
     match interaction {
         serenity::Interaction::Component(component)
             if component.data.custom_id == "legend_role_menu" =>

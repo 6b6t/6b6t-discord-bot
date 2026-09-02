@@ -42,6 +42,24 @@ Guild registration makes command changes available immediately.
 Discord application, guild, channel, and role IDs that define the 6b6t server
 layout are typed constants in [`src/config.rs`](src/config.rs).
 
+### Community event submissions
+
+The event workflow is enabled only when all three channel IDs and MariaDB are
+configured. `EVENTS_CHANNEL_ID` must identify an Announcement channel. The bot
+keeps the application message at the bottom, sends valid applications to the
+review channel, and records privacy-safe audit entries in the log channel.
+
+| Variable | Required | Purpose |
+| --- | --- | --- |
+| `EVENTS_CHANNEL_ID` | Together | Public Announcement channel containing approved events and the Apply button |
+| `EVENTS_REVIEW_CHANNEL_ID` | Together | Private Terminator/Marketer review channel |
+| `EVENTS_LOG_CHANNEL_ID` | Together | Private event audit channel |
+
+The bot needs View Channel, Read Message History, Send Messages, Embed Links,
+Manage Messages, and View Audit Log. It must also be able to mention the Events
+role. Approved posts are automatically published 120 minutes after posting;
+the MariaDB-backed worker resumes pending posts and publications after restart.
+
 ### MariaDB
 
 | Variable | Required | Purpose |
