@@ -54,6 +54,7 @@ review channel, and records privacy-safe audit entries in the log channel.
 | `EVENTS_CHANNEL_ID` | Together | Public Announcement channel containing approved events and the Apply button |
 | `EVENTS_REVIEW_CHANNEL_ID` | Together | Private Terminator/Marketer review channel |
 | `EVENTS_LOG_CHANNEL_ID` | Together | Private event audit channel |
+| `EVENTS_TEST_USER_ID` | No | Discord user allowed to bypass only the 100-hour check for testing; unset in normal operation |
 
 The bot needs View Channel, Read Message History, Send Messages, Embed Links,
 Manage Messages, and View Audit Log. It must also be able to mention the Events

@@ -25,6 +25,7 @@ const DISCLAIMER: &str = "This event is organized by members of the 6b6t communi
 pub struct EventSubmissionService {
     channels: EventChannels,
     databases: Databases,
+    test_user_id: Option<serenity::UserId>,
     initialized: std::sync::Arc<AtomicBool>,
     drafts: std::sync::Arc<Mutex<HashMap<Uuid, Draft>>>,
     menu_message: std::sync::Arc<Mutex<Option<serenity::MessageId>>>,
@@ -83,10 +84,15 @@ enum VoteResult {
 }
 
 impl EventSubmissionService {
-    pub fn new(channels: EventChannels, databases: Databases) -> Self {
+    pub fn new(
+        channels: EventChannels,
+        databases: Databases,
+        test_user_id: Option<serenity::UserId>,
+    ) -> Self {
         Self {
             channels,
             databases,
+            test_user_id,
             initialized: std::sync::Arc::default(),
             drafts: std::sync::Arc::default(),
             menu_message: std::sync::Arc::default(),
@@ -432,15 +438,14 @@ impl EventSubmissionService {
             .player_info(&mapping.uuid)
             .await?
             .context("your linked Minecraft player could not be found")?;
-        let denial = if minecraft_names_match(&player.name, &form.minecraft_username) {
-            let playtime = self.playtime_60_days(&mapping.uuid).await?;
-            (!meets_playtime_requirement(playtime)).then_some((
-                "Less than 100 hours played in the latest 60 UTC days",
-                "insufficient_playtime",
-            ))
-        } else {
-            Some(("Minecraft account mismatch", "linked_account_mismatch"))
-        };
+        let (denial, playtime_bypassed) = self
+            .submission_denial(
+                interaction.user.id,
+                &player.name,
+                &form.minecraft_username,
+                &mapping.uuid,
+            )
+            .await?;
         let status = if denial.is_some() {
             "auto_denied"
         } else {
@@ -480,6 +485,9 @@ impl EventSubmissionService {
             0x00FF_F11A,
         )
         .await;
+        if playtime_bypassed {
+            self.log_test_bypass(ctx, id, interaction.user.id).await;
+        }
         if let Some((reason, category)) = denial {
             self.log(
                 ctx,
@@ -1269,6 +1277,23 @@ impl EventSubmissionService {
         }
     }
 
+    async fn log_test_bypass(
+        &self,
+        ctx: &serenity::Context,
+        event_id: u64,
+        user_id: serenity::UserId,
+    ) {
+        self.log(
+            ctx,
+            "Event test bypass used",
+            format!(
+                "EVT-{event_id}\nSubmitter: <@{user_id}>\nBypass: 100-hour playtime requirement"
+            ),
+            0x00FF_F11A,
+        )
+        .await;
+    }
+
     async fn has_pending(&self, user_id: serenity::UserId) -> Result<bool> {
         let count: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM event_submissions WHERE submitter_discord_id = ? AND status IN ('pending', 'approved', 'posting') AND (status = 'pending' OR event_message_id IS NULL)",
@@ -1287,6 +1312,29 @@ impl EventSubmissionService {
         .fetch_one(&self.databases.stats)
         .await
         .context("failed to calculate 60-day playtime")
+    }
+
+    async fn submission_denial(
+        &self,
+        user_id: serenity::UserId,
+        linked_name: &str,
+        submitted_name: &str,
+        uuid: &str,
+    ) -> Result<(Option<(&'static str, &'static str)>, bool)> {
+        if !minecraft_names_match(linked_name, submitted_name) {
+            return Ok((
+                Some(("Minecraft account mismatch", "linked_account_mismatch")),
+                false,
+            ));
+        }
+        if playtime_check_bypassed(self.test_user_id, user_id) {
+            return Ok((None, true));
+        }
+        let denial = (!meets_playtime_requirement(self.playtime_60_days(uuid).await?)).then_some((
+            "Less than 100 hours played in the latest 60 UTC days",
+            "insufficient_playtime",
+        ));
+        Ok((denial, false))
     }
 
     async fn submission(&self, id: u64) -> Result<Option<Submission>> {
@@ -1644,6 +1692,13 @@ fn minecraft_names_match(linked_name: &str, submitted_name: &str) -> bool {
     linked_name.eq_ignore_ascii_case(submitted_name)
 }
 
+fn playtime_check_bypassed(
+    configured_user: Option<serenity::UserId>,
+    submitting_user: serenity::UserId,
+) -> bool {
+    configured_user == Some(submitting_user)
+}
+
 fn is_unknown_message(error: &serenity::Error) -> bool {
     matches!(
         error,
@@ -1728,6 +1783,17 @@ mod tests {
     fn minecraft_names_are_compared_case_insensitively() {
         assert!(minecraft_names_match("adzfoofie", "AdzFoofie"));
         assert!(!minecraft_names_match("adzfoofie", "other_player"));
+    }
+
+    #[test]
+    fn playtime_bypass_only_matches_the_configured_user() {
+        let configured = serenity::UserId::new(681_552_494_064_697_350);
+        assert!(playtime_check_bypassed(Some(configured), configured));
+        assert!(!playtime_check_bypassed(
+            Some(configured),
+            serenity::UserId::new(1)
+        ));
+        assert!(!playtime_check_bypassed(None, configured));
     }
 
     #[test]

@@ -240,6 +240,7 @@ pub struct Environment {
     pub database: Option<DatabaseConfig>,
     pub telegram: Option<TelegramConfig>,
     pub event_channels: Option<EventChannels>,
+    pub events_test_user_id: Option<serenity::UserId>,
 }
 
 impl Environment {
@@ -303,6 +304,7 @@ impl Environment {
                 tracing::error!(%error, "event submission configuration is invalid; feature is disabled");
                 None
             }),
+            events_test_user_id: optional_id("EVENTS_TEST_USER_ID")?,
         })
     }
 }

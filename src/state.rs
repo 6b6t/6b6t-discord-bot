@@ -63,9 +63,11 @@ impl AppState {
         let anarchy = load_anarchy(&environment);
         let community_event = load_community_event(&environment);
         let event_submissions = match (environment.event_channels, databases.clone()) {
-            (Some(channels), Some(databases)) => {
-                Some(EventSubmissionService::new(channels, databases))
-            }
+            (Some(channels), Some(databases)) => Some(EventSubmissionService::new(
+                channels,
+                databases,
+                environment.events_test_user_id,
+            )),
             (Some(_), None) => {
                 tracing::error!("community events require MySQL; event submissions are disabled");
                 None
