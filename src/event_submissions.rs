@@ -396,7 +396,7 @@ impl EventSubmissionService {
                 ctx,
                 serenity::EditInteractionResponse::new().content(
                     outcome.unwrap_or_else(|error| {
-                        tracing::error!(%error, user_id = %interaction.user.id, "event submission failed");
+                        tracing::error!(?error, user_id = %interaction.user.id, "event submission failed");
                         format!("I couldn't submit your event: {error}")
                     }),
                 ),
@@ -1280,13 +1280,12 @@ impl EventSubmissionService {
     }
 
     async fn playtime_60_days(&self, uuid: &str) -> Result<i64> {
-        sqlx::query_scalar::<_, Option<i64>>(
-            "SELECT SUM(value) FROM player_stats_per_day WHERE uuid = ? AND type = 'play_time' AND day BETWEEN DATE_SUB(UTC_DATE(), INTERVAL 59 DAY) AND UTC_DATE()",
+        sqlx::query_scalar::<_, i64>(
+            "SELECT CAST(COALESCE(SUM(value), 0) AS SIGNED) FROM player_stats_per_day WHERE uuid = ? AND type = 'play_time' AND day BETWEEN DATE_SUB(UTC_DATE(), INTERVAL 59 DAY) AND UTC_DATE()",
         )
         .bind(uuid)
         .fetch_one(&self.databases.stats)
         .await
-        .map(|value| value.unwrap_or(0))
         .context("failed to calculate 60-day playtime")
     }
 
