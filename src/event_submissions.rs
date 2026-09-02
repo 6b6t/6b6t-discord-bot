@@ -59,7 +59,7 @@ struct CompletedForm {
 
 #[derive(Clone, Debug, sqlx::FromRow)]
 struct Submission {
-    id: i64,
+    id: u64,
     submitter_discord_id: String,
     minecraft_username: String,
     event_name: String,
@@ -465,7 +465,7 @@ impl EventSubmissionService {
         .execute(&self.databases.link)
         .await
         .context("failed to save event application")?;
-        let id = i64::try_from(result.last_insert_id()).context("event ID exceeded i64")?;
+        let id = result.last_insert_id();
         let submission = self
             .submission(id)
             .await?
@@ -511,7 +511,7 @@ impl EventSubmissionService {
         &self,
         ctx: &serenity::Context,
         interaction: &serenity::ComponentInteraction,
-        id: i64,
+        id: u64,
     ) -> Result<()> {
         let member = interaction
             .member
@@ -580,7 +580,7 @@ impl EventSubmissionService {
         &self,
         ctx: &serenity::Context,
         interaction: &serenity::ComponentInteraction,
-        id: i64,
+        id: u64,
     ) -> Result<()> {
         let member = interaction
             .member
@@ -628,7 +628,7 @@ impl EventSubmissionService {
         &self,
         ctx: &serenity::Context,
         interaction: &serenity::ModalInteraction,
-        id: i64,
+        id: u64,
     ) -> Result<()> {
         let member = interaction
             .member
@@ -710,7 +710,7 @@ impl EventSubmissionService {
         Ok(())
     }
 
-    async fn record_vote(&self, id: i64, voter: serenity::UserId) -> Result<VoteResult> {
+    async fn record_vote(&self, id: u64, voter: serenity::UserId) -> Result<VoteResult> {
         let mut tx = self.databases.link.begin().await?;
         let Some(submission) = locked_submission(&mut tx, id).await? else {
             tx.rollback().await?;
@@ -780,7 +780,7 @@ impl EventSubmissionService {
             }
             return;
         }
-        match sqlx::query_scalar::<_, i64>(
+        match sqlx::query_scalar::<_, u64>(
             "SELECT id FROM event_submissions WHERE event_message_id = ? AND status = 'approved' LIMIT 1",
         )
         .bind(message_id.to_string())
@@ -835,7 +835,7 @@ impl EventSubmissionService {
                 *self.menu_message.lock().await = None;
                 continue;
             }
-            match sqlx::query_scalar::<_, i64>(
+            match sqlx::query_scalar::<_, u64>(
                 "SELECT id FROM event_submissions WHERE event_message_id = ? AND status = 'approved' LIMIT 1",
             )
             .bind(message_id.to_string())
@@ -913,7 +913,7 @@ impl EventSubmissionService {
         let Ok(_guard) = self.worker_lock.try_lock() else {
             return;
         };
-        let approved = sqlx::query_scalar::<_, i64>(
+        let approved = sqlx::query_scalar::<_, u64>(
             "SELECT id FROM event_submissions WHERE status = 'approved' AND event_message_id IS NULL ORDER BY id LIMIT 20",
         )
         .fetch_all(&self.databases.link)
@@ -960,7 +960,7 @@ impl EventSubmissionService {
         }
     }
 
-    async fn post_approved(&self, ctx: &serenity::Context, id: i64) -> Result<()> {
+    async fn post_approved(&self, ctx: &serenity::Context, id: u64) -> Result<()> {
         let Some(submission) = self.submission(id).await? else {
             return Ok(());
         };
@@ -1025,7 +1025,7 @@ impl EventSubmissionService {
 
     async fn attach_post(
         &self,
-        id: i64,
+        id: u64,
         message_id: serenity::MessageId,
         posted_at: i64,
     ) -> Result<()> {
@@ -1289,7 +1289,7 @@ impl EventSubmissionService {
         .context("failed to calculate 60-day playtime")
     }
 
-    async fn submission(&self, id: i64) -> Result<Option<Submission>> {
+    async fn submission(&self, id: u64) -> Result<Option<Submission>> {
         sqlx::query_as::<_, Submission>(
             "SELECT id, submitter_discord_id, minecraft_username, event_name, explanation, discord_invite, promotion_url, event_at, event_time_input, join_instructions, status, denial_reason, review_message_id, event_message_id FROM event_submissions WHERE id = ? LIMIT 1",
         )
@@ -1299,7 +1299,7 @@ impl EventSubmissionService {
         .context("failed to load event submission")
     }
 
-    async fn voters(&self, id: i64) -> Result<Vec<serenity::UserId>> {
+    async fn voters(&self, id: u64) -> Result<Vec<serenity::UserId>> {
         let values = sqlx::query_scalar::<_, String>(
             "SELECT voter_discord_id FROM event_votes WHERE event_id = ? ORDER BY created_at, voter_discord_id",
         )
@@ -1321,7 +1321,7 @@ impl EventSubmissionService {
     }
 }
 
-async fn locked_submission(tx: &mut Transaction<'_, MySql>, id: i64) -> Result<Option<Submission>> {
+async fn locked_submission(tx: &mut Transaction<'_, MySql>, id: u64) -> Result<Option<Submission>> {
     sqlx::query_as::<_, Submission>(
         "SELECT id, submitter_discord_id, minecraft_username, event_name, explanation, discord_invite, promotion_url, event_at, event_time_input, join_instructions, status, denial_reason, review_message_id, event_message_id FROM event_submissions WHERE id = ? FOR UPDATE",
     )
@@ -1492,7 +1492,7 @@ fn review_embed(
         })
 }
 
-fn review_buttons(id: i64, disabled: bool) -> Vec<serenity::CreateActionRow> {
+fn review_buttons(id: u64, disabled: bool) -> Vec<serenity::CreateActionRow> {
     vec![serenity::CreateActionRow::Buttons(vec![
         serenity::CreateButton::new(format!("events:approve:{id}"))
             .label("Approve")
@@ -1624,9 +1624,9 @@ fn parse_event_time(value: &str) -> Result<i64> {
     Ok(timestamp)
 }
 
-fn parse_event_id(value: &str) -> Result<i64> {
-    let id = value.parse::<i64>().context("invalid event ID")?;
-    if id <= 0 {
+fn parse_event_id(value: &str) -> Result<u64> {
+    let id = value.parse::<u64>().context("invalid event ID")?;
+    if id == 0 {
         bail!("invalid event ID");
     }
     Ok(id)
@@ -1744,6 +1744,7 @@ mod tests {
     #[test]
     fn button_ids_only_accept_positive_event_ids() {
         assert_eq!(parse_event_id("21").unwrap(), 21);
+        assert_eq!(parse_event_id(&u64::MAX.to_string()).unwrap(), u64::MAX);
         assert!(parse_event_id("0").is_err());
         assert!(parse_event_id("EVT-21").is_err());
     }
