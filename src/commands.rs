@@ -39,7 +39,7 @@ pub fn all() -> Vec<poise::Command<AppState, Error>> {
 /// See 6b6t's IP.
 #[poise::command(slash_command, user_cooldown = 60)]
 async fn ip(ctx: Context<'_>) -> Result<(), Error> {
-    ctx.say("Join 6b6t using the IP `bedrock.6b6t.org` with the port 19132 on Bedrock Edition. To play 6b6t on Java Edition, download [AnarchyMod](<https://6b6t.org/mod>) and join using the IP `play.6b6t.org`.").await?;
+    ctx.say("Join 6b6t using the IP `br.6b6t.org` with the port 19132 on Bedrock Edition. To play 6b6t on Java Edition, download [AnarchyMod](<https://6b6t.org/mod>) and join using the IP `play.6b6t.org`.").await?;
     Ok(())
 }
 
