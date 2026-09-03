@@ -337,7 +337,7 @@ async fn ensure_reaction_menus(ctx: &serenity::Context) -> Result<()> {
         (
             "Select your language.",
             0x0007_CFFA,
-            &config::REACTION_ROLES[6..12],
+            &config::REACTION_ROLES[6..13],
             None,
         ),
         (
@@ -349,7 +349,7 @@ async fn ensure_reaction_menus(ctx: &serenity::Context) -> Result<()> {
         (
             "🎮 - Get notifications about Hytale.",
             0x0082_C0EF,
-            &config::REACTION_ROLES[12..],
+            &config::REACTION_ROLES[13..],
             None,
         ),
     ];
