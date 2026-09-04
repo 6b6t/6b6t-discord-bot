@@ -366,11 +366,7 @@ pub async fn purge(
 }
 
 fn purge_scan_limit(amount: usize, filtered: bool) -> usize {
-    if filtered {
-        amount.saturating_mul(5).min(100)
-    } else {
-        amount
-    }
+    if filtered { 1_000 } else { amount }
 }
 
 struct PurgeSelection {
@@ -390,28 +386,42 @@ async fn collect_purge_messages(
     channel_id: serenity::ChannelId,
     amount: usize,
     target: Option<serenity::UserId>,
-) -> serenity::Result<PurgeSelection> {
+) -> Result<PurgeSelection> {
     let cutoff = chrono::Utc::now().timestamp() - 14 * 24 * 60 * 60;
     let scan_limit = purge_scan_limit(amount, target.is_some());
     let mut fresh = Vec::new();
     let mut old = Vec::new();
-    let page_size = u8::try_from(scan_limit).expect("purge scan is capped at 100 messages");
-    let messages = channel_id
-        .messages(http, serenity::GetMessages::new().limit(page_size))
-        .await?;
-    let scanned = messages.len();
+    let mut scanned = 0;
+    let mut before = None;
 
-    for message in messages {
-        if fresh.len() + old.len() >= amount {
+    while scanned < scan_limit && fresh.len() + old.len() < amount {
+        let page_size = u8::try_from((scan_limit - scanned).min(100))
+            .expect("Discord message pages are capped at 100");
+        let mut request = serenity::GetMessages::new().limit(page_size);
+        if let Some(message_id) = before {
+            request = request.before(message_id);
+        }
+        let messages = channel_id.messages(http, request).await?;
+        let page_len = messages.len();
+        before = messages.last().map(|message| message.id);
+        scanned += page_len;
+
+        for message in messages {
+            if fresh.len() + old.len() >= amount {
+                break;
+            }
+            if target.is_some_and(|id| message.author.id != id) {
+                continue;
+            }
+            if message.id.created_at().unix_timestamp() >= cutoff {
+                fresh.push(message.id);
+            } else {
+                old.push(message.id);
+            }
+        }
+
+        if page_len < usize::from(page_size) {
             break;
-        }
-        if target.is_some_and(|id| message.author.id != id) {
-            continue;
-        }
-        if message.id.created_at().unix_timestamp() >= cutoff {
-            fresh.push(message.id);
-        } else {
-            old.push(message.id);
         }
     }
     Ok(PurgeSelection {
@@ -651,7 +661,7 @@ async fn collect_reaction_users(
 async fn cached_or_fetched_member(
     ctx: &serenity::Context,
     user_id: serenity::UserId,
-) -> serenity::Result<serenity::Member> {
+) -> Result<serenity::Member> {
     if let Some(member) = ctx
         .cache
         .guild(config::GUILD_ID)
@@ -659,7 +669,7 @@ async fn cached_or_fetched_member(
     {
         return Ok(member);
     }
-    config::GUILD_ID.member(ctx, user_id).await
+    Ok(config::GUILD_ID.member(ctx, user_id).await?)
 }
 
 /// Change the Mini-Terminator role with two-person approval.
@@ -1079,10 +1089,10 @@ mod tests {
     }
 
     #[test]
-    fn purge_search_is_bounded_to_one_page() {
+    fn filtered_purge_searches_multiple_pages_with_a_fixed_bound() {
         assert_eq!(purge_scan_limit(2, false), 2);
-        assert_eq!(purge_scan_limit(2, true), 10);
-        assert_eq!(purge_scan_limit(20, true), 100);
-        assert_eq!(purge_scan_limit(100, true), 100);
+        assert_eq!(purge_scan_limit(2, true), 1_000);
+        assert_eq!(purge_scan_limit(20, true), 1_000);
+        assert_eq!(purge_scan_limit(100, true), 1_000);
     }
 }
