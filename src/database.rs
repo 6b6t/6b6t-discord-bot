@@ -139,7 +139,10 @@ async fn create_database(pool: &MySqlPool, database: &str) -> Result<()> {
 }
 
 async fn ensure_link_schema(pool: &MySqlPool) -> Result<()> {
+    let notifications_exist: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = 'event_notifications'")
+        .fetch_one(pool).await?;
     for statement in [
+        "CREATE TABLE IF NOT EXISTS event_notifications (event_id BIGINT UNSIGNED NOT NULL, status VARCHAR(24) NOT NULL, delivered BOOLEAN NOT NULL DEFAULT FALSE, review_updated BOOLEAN NOT NULL DEFAULT FALSE, updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY (event_id, status)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
         "CREATE TABLE IF NOT EXISTS discord_tokens (user_id VARCHAR(64) NOT NULL PRIMARY KEY, access_token TEXT NOT NULL, refresh_token TEXT NOT NULL, expires_in INT NOT NULL, expires_at BIGINT NOT NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
         "CREATE TABLE IF NOT EXISTS discord_role_metadata (user_id VARCHAR(64) NOT NULL PRIMARY KEY, metadata TEXT NOT NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
         "CREATE TABLE IF NOT EXISTS uuid_to_discord (uuid CHAR(36) NOT NULL PRIMARY KEY, discord_id VARCHAR(64) NOT NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP, UNIQUE KEY unique_discord_id (discord_id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
@@ -152,6 +155,11 @@ async fn ensure_link_schema(pool: &MySqlPool) -> Result<()> {
             .execute(pool)
             .await
             .context("failed to initialize link database schema")?;
+    }
+    if notifications_exist == 0 {
+        // Existing resolutions predate notification tracking; do not send historical DMs.
+        sqlx::query("INSERT IGNORE INTO event_notifications (event_id, status, delivered, review_updated) SELECT id, status, TRUE, TRUE FROM event_submissions WHERE status IN ('approved', 'denied', 'auto_denied', 'expired') AND (status != 'approved' OR event_message_id IS NOT NULL)")
+            .execute(pool).await?;
     }
     Ok(())
 }

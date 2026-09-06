@@ -18,7 +18,8 @@ use crate::{
 
 const APPLY_ID: &str = "events:apply";
 const DRAFT_TTL: Duration = Duration::from_mins(30);
-const REQUIRED_PLAYTIME_MILLIS: i64 = 100 * 60 * 60 * 1_000;
+const REQUIRED_PLAYTIME_HOURS: i64 = 50;
+const REQUIRED_PLAYTIME_MILLIS: i64 = REQUIRED_PLAYTIME_HOURS * 60 * 60 * 1_000;
 const DISCLAIMER: &str = "This event is organized by members of the 6b6t community and is not operated or endorsed by 6b6t. Participate at your own risk.";
 
 #[derive(Clone)]
@@ -33,6 +34,7 @@ pub struct EventSubmissionService {
     review_lock: std::sync::Arc<Mutex<()>>,
     submission_lock: std::sync::Arc<Mutex<()>>,
     worker_lock: std::sync::Arc<Mutex<()>>,
+    post_lock: std::sync::Arc<Mutex<()>>,
 }
 
 #[derive(Clone, Debug)]
@@ -100,6 +102,7 @@ impl EventSubmissionService {
             review_lock: std::sync::Arc::default(),
             submission_lock: std::sync::Arc::default(),
             worker_lock: std::sync::Arc::default(),
+            post_lock: std::sync::Arc::default(),
         }
     }
 
@@ -119,6 +122,15 @@ impl EventSubmissionService {
         let serenity::Channel::Guild(events) = events else {
             bail!("EVENTS_CHANNEL_ID is not a guild channel");
         };
+        if events.guild_id != config::GUILD_ID {
+            bail!("the events channel must belong to the configured server");
+        }
+        if self.channels.events == self.channels.review
+            || self.channels.events == self.channels.logs
+            || self.channels.review == self.channels.logs
+        {
+            bail!("events, review, and audit logs must use separate channels");
+        }
         if events.kind != serenity::ChannelType::News {
             bail!("EVENTS_CHANNEL_ID must be an Announcement channel");
         }
@@ -127,8 +139,9 @@ impl EventSubmissionService {
             ("EVENTS_LOG_CHANNEL_ID", self.channels.logs),
         ] {
             let channel = id.to_channel(ctx).await?;
-            if !matches!(channel, serenity::Channel::Guild(_)) {
-                bail!("{name} is not a guild channel");
+            if !matches!(channel, serenity::Channel::Guild(channel) if channel.guild_id == config::GUILD_ID)
+            {
+                bail!("{name} must be a channel in the configured server");
             }
         }
         let roles = config::GUILD_ID.roles(ctx).await?;
@@ -314,11 +327,7 @@ impl EventSubmissionService {
             ctx,
             interaction,
             "Part one is saved for 30 minutes. Continue to enter the date and joining instructions.",
-            vec![serenity::CreateActionRow::Buttons(vec![
-                serenity::CreateButton::new(format!("events:continue:{id}"))
-                    .label("Continue")
-                    .style(serenity::ButtonStyle::Primary),
-            ])],
+            continue_button(id),
         )
         .await
     }
@@ -357,7 +366,7 @@ impl EventSubmissionService {
     ) -> Result<()> {
         let draft_id = Uuid::parse_str(value).context("invalid event draft ID")?;
         self.cleanup_drafts().await;
-        let Some(draft) = self.drafts.lock().await.remove(&draft_id) else {
+        let Some(draft) = self.drafts.lock().await.get(&draft_id).cloned() else {
             return modal_reply(
                 ctx,
                 interaction,
@@ -367,7 +376,6 @@ impl EventSubmissionService {
             .await;
         };
         if draft.owner != interaction.user.id {
-            self.drafts.lock().await.insert(draft_id, draft);
             return modal_reply(
                 ctx,
                 interaction,
@@ -377,16 +385,33 @@ impl EventSubmissionService {
             .await;
         }
         let fields = modal_fields(interaction);
-        let time_input = required_field(&fields, "event_time", 64)?;
+        let validated = (|| -> Result<_> {
+            let time_input = required_field(&fields, "event_time", 64)?;
+            let event_at = parse_event_time(&time_input)?;
+            let instructions = required_field(&fields, "join_instructions", 1_000)?;
+            Ok((time_input, event_at, instructions))
+        })();
+        let (time_input, event_at, instructions) = match validated {
+            Ok(values) => values,
+            Err(error) => return modal_reply(
+                ctx,
+                interaction,
+                format!(
+                    "Please check your details: {error}. Your saved application is still available."
+                ),
+                continue_button(draft_id),
+            )
+            .await,
+        };
         let form = CompletedForm {
             event_name: draft.event_name,
             explanation: draft.explanation,
             minecraft_username: draft.minecraft_username,
             discord_invite: draft.discord_invite,
             promotion_url: draft.promotion_url,
-            event_at: parse_event_time(&time_input)?,
+            event_at,
             event_time_input: time_input,
-            join_instructions: required_field(&fields, "join_instructions", 1_000)?,
+            join_instructions: instructions,
         };
         interaction
             .create_response(
@@ -397,20 +422,29 @@ impl EventSubmissionService {
             )
             .await?;
         let outcome = self.complete_submission(ctx, interaction, form).await;
+        let content = match outcome {
+            Ok(content) => {
+                self.drafts.lock().await.remove(&draft_id);
+                content
+            }
+            Err(error) => {
+                tracing::error!(?error, user_id = %interaction.user.id, "event submission failed");
+                interaction.edit_response(ctx, serenity::EditInteractionResponse::new()
+                    .content("We could not submit your application. Your saved details are available until the draft expires. Please try again.")
+                    .components(continue_button(draft_id))).await?;
+                return Ok(());
+            }
+        };
         interaction
             .edit_response(
                 ctx,
-                serenity::EditInteractionResponse::new().content(
-                    outcome.unwrap_or_else(|error| {
-                        tracing::error!(?error, user_id = %interaction.user.id, "event submission failed");
-                        format!("I couldn't submit your event: {error}")
-                    }),
-                ),
+                serenity::EditInteractionResponse::new().content(content),
             )
             .await?;
         Ok(())
     }
 
+    #[allow(clippy::too_many_lines)] // Keep validation, persistence, and the submission receipt together.
     async fn complete_submission(
         &self,
         ctx: &serenity::Context,
@@ -418,8 +452,15 @@ impl EventSubmissionService {
         form: CompletedForm,
     ) -> Result<String> {
         let _guard = self.submission_lock.lock().await;
-        if self.has_pending(interaction.user.id).await? {
-            bail!("you already have a pending event application");
+        if form.event_at <= Utc::now().timestamp() {
+            bail!("the event start time has passed; please choose a future date");
+        }
+        let existing: Option<u64> = sqlx::query_scalar("SELECT id FROM event_submissions WHERE submitter_discord_id = ? AND event_at > UNIX_TIMESTAMP() AND status IN ('pending', 'approved', 'posting') AND (status = 'pending' OR event_message_id IS NULL) ORDER BY id DESC LIMIT 1")
+            .bind(interaction.user.id.to_string()).fetch_optional(&self.databases.link).await?;
+        if let Some(id) = existing {
+            return Ok(format!(
+                "Application EVT-{id} is already saved and awaiting review or posting. You do not need to submit it again."
+            ));
         }
         if !interaction
             .member
@@ -499,9 +540,8 @@ impl EventSubmissionService {
                 0x00ED_4245,
             )
             .await;
-            self.dm_resolution(ctx, &submission, reason).await;
             return Ok(format!(
-                "EVT-{id} was automatically denied: {reason}. I sent you a copy of the form."
+                "Application EVT-{id} does not meet the requirements: {reason}. We will attempt to send a copy to your direct messages."
             ));
         }
         match self.deliver_review(ctx, &submission).await {
@@ -552,8 +592,12 @@ impl EventSubmissionService {
                     .create_response(ctx, serenity::CreateInteractionResponse::Acknowledge)
                     .await?;
                 let voters = self.voters(id).await?;
-                self.update_review(ctx, interaction.message.id, &submission, &voters, approved)
-                    .await?;
+                if let Err(error) = self
+                    .update_review(ctx, interaction.message.id, &submission, &voters, approved)
+                    .await
+                {
+                    tracing::warn!(%error, event_id = id, "failed to update event review");
+                }
                 self.log(
                     ctx,
                     "Event approval vote",
@@ -608,7 +652,7 @@ impl EventSubmissionService {
         if submission.submitter_discord_id == interaction.user.id.to_string() {
             return component_reply(ctx, interaction, "You cannot vote on your own event.").await;
         }
-        if submission.status != "pending" {
+        if submission.status != "pending" || submission.event_at <= Utc::now().timestamp() {
             return component_reply(ctx, interaction, "This event has already been resolved.")
                 .await;
         }
@@ -667,7 +711,7 @@ impl EventSubmissionService {
             )
             .await;
         }
-        if submission.status != "pending" {
+        if submission.status != "pending" || submission.event_at <= Utc::now().timestamp() {
             tx.rollback().await?;
             return modal_reply(
                 ctx,
@@ -685,6 +729,16 @@ impl EventSubmissionService {
         .execute(&mut *tx)
         .await?;
         tx.commit().await?;
+        self.log(
+            ctx,
+            "Event denied",
+            format!(
+                "EVT-{id}\nReviewer: <@{}>\nReason: {reason}",
+                interaction.user.id
+            ),
+            0x00ED_4245,
+        )
+        .await;
         interaction
             .create_response(
                 ctx,
@@ -701,20 +755,13 @@ impl EventSubmissionService {
             .and_then(parse_message_id)
         {
             let voters = self.voters(id).await?;
-            self.update_review(ctx, message_id, &submission, &voters, true)
-                .await?;
+            if let Err(error) = self
+                .update_review(ctx, message_id, &submission, &voters, true)
+                .await
+            {
+                tracing::warn!(%error, event_id = id, "failed to update denied event review");
+            }
         }
-        self.log(
-            ctx,
-            "Event denied",
-            format!(
-                "EVT-{id}\nDenied by: <@{}>\nReason: {reason}",
-                interaction.user.id
-            ),
-            0x00ED_4245,
-        )
-        .await;
-        self.dm_resolution(ctx, &submission, &reason).await;
         Ok(())
     }
 
@@ -724,7 +771,7 @@ impl EventSubmissionService {
             tx.rollback().await?;
             return Ok(VoteResult::Resolved);
         };
-        if submission.status != "pending" {
+        if submission.status != "pending" || submission.event_at <= Utc::now().timestamp() {
             tx.rollback().await?;
             return Ok(VoteResult::Resolved);
         }
@@ -873,9 +920,8 @@ impl EventSubmissionService {
                 Err(error) => tracing::error!(%error, "failed to correlate bulk-deleted event message"),
             }
         }
-        if self.menu_message.lock().await.is_none()
-            && let Err(error) = self.ensure_menu(ctx).await
-        {
+        let menu_missing = self.menu_message.lock().await.is_none();
+        if menu_missing && let Err(error) = self.ensure_menu(ctx).await {
             tracing::error!(%error, "failed to restore bulk-deleted event menu");
         }
     }
@@ -921,8 +967,12 @@ impl EventSubmissionService {
         let Ok(_guard) = self.worker_lock.try_lock() else {
             return;
         };
+        if let Err(error) = sqlx::query("UPDATE event_submissions SET status = 'expired' WHERE status = 'pending' AND event_at <= UNIX_TIMESTAMP()")
+            .execute(&self.databases.link).await {
+            tracing::error!(%error, "failed to expire pending events");
+        }
         let approved = sqlx::query_scalar::<_, u64>(
-            "SELECT id FROM event_submissions WHERE status = 'approved' AND event_message_id IS NULL ORDER BY id LIMIT 20",
+            "SELECT id FROM event_submissions WHERE status IN ('approved', 'posting') AND event_message_id IS NULL ORDER BY id LIMIT 20",
         )
         .fetch_all(&self.databases.link)
         .await;
@@ -937,7 +987,7 @@ impl EventSubmissionService {
             Err(error) => tracing::error!(%error, "failed to load approved events"),
         }
         let undelivered_reviews = sqlx::query_as::<_, Submission>(
-            "SELECT id, submitter_discord_id, minecraft_username, event_name, explanation, discord_invite, promotion_url, event_at, event_time_input, join_instructions, status, denial_reason, review_message_id, event_message_id FROM event_submissions WHERE status = 'pending' AND review_message_id IS NULL ORDER BY id LIMIT 20",
+            "SELECT id, submitter_discord_id, minecraft_username, event_name, explanation, discord_invite, promotion_url, event_at, event_time_input, join_instructions, status, denial_reason, review_message_id, event_message_id FROM event_submissions WHERE status = 'pending' ORDER BY review_message_id IS NOT NULL, updated_at, id LIMIT 20",
         )
         .fetch_all(&self.databases.link)
         .await;
@@ -966,13 +1016,78 @@ impl EventSubmissionService {
             }
             Err(error) => tracing::error!(%error, "failed to load due event publications"),
         }
+        if let Err(error) = self.notify_resolutions(ctx).await {
+            tracing::error!(%error, "event resolution notification retry failed");
+        }
+    }
+
+    async fn expire(&self, id: u64) -> Result<()> {
+        sqlx::query("UPDATE event_submissions SET status = 'expired' WHERE id = ? AND status IN ('pending', 'approved', 'posting')")
+            .bind(id).execute(&self.databases.link).await?;
+        Ok(())
+    }
+
+    async fn notify_resolutions(&self, ctx: &serenity::Context) -> Result<()> {
+        let submissions = sqlx::query_as::<_, Submission>(
+            "SELECT e.id, e.submitter_discord_id, e.minecraft_username, e.event_name, e.explanation, e.discord_invite, e.promotion_url, e.event_at, e.event_time_input, e.join_instructions, e.status, e.denial_reason, e.review_message_id, e.event_message_id FROM event_submissions e LEFT JOIN event_notifications n ON n.event_id = e.id AND n.status = e.status WHERE e.status IN ('approved', 'denied', 'auto_denied', 'expired') AND (e.status != 'approved' OR e.event_message_id IS NOT NULL) AND (n.event_id IS NULL OR ((n.delivered = 0 OR n.review_updated = 0) AND n.updated_at <= DATE_SUB(UTC_TIMESTAMP(), INTERVAL 1 HOUR))) ORDER BY n.updated_at, e.id LIMIT 20"
+        ).fetch_all(&self.databases.link).await?;
+        for submission in submissions {
+            let reason = submission
+                .denial_reason
+                .as_deref()
+                .unwrap_or("The event start time has passed.");
+            let previous: Option<(bool, bool)> = sqlx::query_as("SELECT delivered, review_updated FROM event_notifications WHERE event_id = ? AND status = ?")
+                .bind(submission.id).bind(&submission.status).fetch_optional(&self.databases.link).await?;
+            let (mut delivered, mut review_updated) = previous.unwrap_or_default();
+            if !delivered {
+                delivered = self.dm_resolution(ctx, &submission, reason).await;
+            }
+            // Record the DM outcome before attempting the independent review update.
+            sqlx::query("INSERT INTO event_notifications (event_id, status, delivered, updated_at) VALUES (?, ?, ?, UTC_TIMESTAMP()) ON DUPLICATE KEY UPDATE delivered = VALUES(delivered), updated_at = UTC_TIMESTAMP()")
+                .bind(submission.id).bind(&submission.status).bind(delivered).execute(&self.databases.link).await?;
+            if !review_updated {
+                review_updated = if let Some(id) = submission
+                    .review_message_id
+                    .as_deref()
+                    .and_then(parse_message_id)
+                {
+                    let voters = self.voters(submission.id).await?;
+                    match self
+                        .update_review(ctx, id, &submission, &voters, true)
+                        .await
+                    {
+                        Ok(()) => true,
+                        Err(error)
+                            if error
+                                .downcast_ref::<serenity::Error>()
+                                .is_some_and(is_unknown_message) =>
+                        {
+                            true
+                        }
+                        Err(error) => {
+                            tracing::warn!(%error, event_id = submission.id, "failed to update resolved event review");
+                            false
+                        }
+                    }
+                } else {
+                    true
+                };
+            }
+            sqlx::query("INSERT INTO event_notifications (event_id, status, delivered, review_updated, updated_at) VALUES (?, ?, ?, ?, UTC_TIMESTAMP()) ON DUPLICATE KEY UPDATE delivered = VALUES(delivered), review_updated = VALUES(review_updated), updated_at = UTC_TIMESTAMP()")
+                .bind(submission.id).bind(&submission.status).bind(delivered).bind(review_updated).execute(&self.databases.link).await?;
+        }
+        Ok(())
     }
 
     async fn post_approved(&self, ctx: &serenity::Context, id: u64) -> Result<()> {
+        // ponytail: one process serializes event posts; use database leases before running replicas.
+        let _guard = self.post_lock.lock().await;
         let Some(submission) = self.submission(id).await? else {
             return Ok(());
         };
-        if submission.status != "approved" || submission.event_message_id.is_some() {
+        if !matches!(submission.status.as_str(), "approved" | "posting")
+            || submission.event_message_id.is_some()
+        {
             return Ok(());
         }
         let recent = self
@@ -981,25 +1096,30 @@ impl EventSubmissionService {
             .messages(ctx, serenity::GetMessages::new().limit(100))
             .await?;
         if let Some(message) = recent.iter().find(|message| {
-            message.embeds.iter().any(|embed| {
-                embed
-                    .footer
-                    .as_ref()
-                    .is_some_and(|footer| footer.text == format!("EVT-{id}"))
-            })
+            message.author.id == ctx.cache.current_user().id
+                && message.embeds.iter().any(|embed| {
+                    embed
+                        .footer
+                        .as_ref()
+                        .is_some_and(|footer| footer.text == format!("EVT-{id}"))
+                })
         }) {
             self.attach_post(id, message.id, message.timestamp.unix_timestamp())
                 .await?;
             return Ok(());
         }
+        if submission.event_at <= Utc::now().timestamp() {
+            self.expire(id).await?;
+            return Ok(());
+        }
         let claimed = sqlx::query(
-            "UPDATE event_submissions SET status = 'posting' WHERE id = ? AND status = 'approved' AND event_message_id IS NULL",
+            "UPDATE event_submissions SET status = 'posting' WHERE id = ? AND status IN ('approved', 'posting') AND event_message_id IS NULL",
         )
         .bind(id)
         .execute(&self.databases.link)
         .await?
         .rows_affected();
-        if claimed == 0 {
+        if claimed == 0 && submission.status != "posting" {
             return Ok(());
         }
         let message = self
@@ -1047,6 +1167,10 @@ impl EventSubmissionService {
     }
 
     async fn publish(&self, ctx: &serenity::Context, submission: &Submission) -> Result<()> {
+        if submission.event_at <= Utc::now().timestamp() {
+            self.expire(submission.id).await?;
+            return Ok(());
+        }
         let message_id = submission
             .event_message_id
             .as_deref()
@@ -1097,7 +1221,8 @@ impl EventSubmissionService {
 
     async fn ensure_menu(&self, ctx: &serenity::Context) -> Result<()> {
         let _guard = self.menu_lock.lock().await;
-        if let Some(id) = *self.menu_message.lock().await
+        let cached_menu = *self.menu_message.lock().await;
+        if let Some(id) = cached_menu
             && self.channels.events.message(ctx, id).await.is_ok()
         {
             let latest = self
@@ -1106,8 +1231,13 @@ impl EventSubmissionService {
                 .messages(ctx, serenity::GetMessages::new().limit(1))
                 .await?;
             if latest.first().is_some_and(|message| message.id == id) {
+                self.channels
+                    .events
+                    .edit_message(ctx, id, serenity::EditMessage::new().embed(menu_embed()))
+                    .await?;
                 return Ok(());
             }
+            *self.menu_message.lock().await = None;
             if let Err(error) = self.channels.events.delete_message(ctx, id).await {
                 tracing::warn!(%error, message_id = %id, "failed to remove old event application menu");
             }
@@ -1145,6 +1275,8 @@ impl EventSubmissionService {
             .send_message(
                 ctx,
                 serenity::CreateMessage::new()
+                    .nonce(serenity::Nonce::String(format!("r{}", submission.id)))
+                    .enforce_nonce(true)
                     .embed(review_embed(submission, voters, false))
                     .components(review_buttons(submission.id, false))
                     .allowed_mentions(serenity::CreateAllowedMentions::new()),
@@ -1154,16 +1286,43 @@ impl EventSubmissionService {
     }
 
     async fn deliver_review(&self, ctx: &serenity::Context, submission: &Submission) -> Result<()> {
-        if submission.review_message_id.is_some() {
-            return Ok(());
-        }
         let _guard = self.review_lock.lock().await;
         let fresh = self
             .submission(submission.id)
             .await?
             .context("event submission disappeared before review delivery")?;
-        if fresh.status != "pending" || fresh.review_message_id.is_some() {
+        if fresh.status != "pending" {
             return Ok(());
+        }
+        if let Some(message_id) = fresh
+            .review_message_id
+            .as_deref()
+            .and_then(parse_message_id)
+        {
+            match self.channels.review.message(ctx, message_id).await {
+                Ok(_) => {
+                    self.update_review(
+                        ctx,
+                        message_id,
+                        &fresh,
+                        &self.voters(fresh.id).await?,
+                        false,
+                    )
+                    .await?;
+                    sqlx::query(
+                        "UPDATE event_submissions SET updated_at = UTC_TIMESTAMP() WHERE id = ?",
+                    )
+                    .bind(fresh.id)
+                    .execute(&self.databases.link)
+                    .await?;
+                    return Ok(());
+                }
+                Err(error) if is_unknown_message(&error) => {
+                    sqlx::query("UPDATE event_submissions SET review_message_id = NULL WHERE id = ? AND status = 'pending'")
+                        .bind(fresh.id).execute(&self.databases.link).await?;
+                }
+                Err(error) => return Err(error.into()),
+            }
         }
         let marker = format!("EVT-{}", fresh.id);
         let recent = self
@@ -1172,16 +1331,19 @@ impl EventSubmissionService {
             .messages(ctx, serenity::GetMessages::new().limit(100))
             .await?;
         let message_id = if let Some(message) = recent.iter().find(|message| {
-            message.embeds.iter().any(|embed| {
-                embed
-                    .footer
-                    .as_ref()
-                    .is_some_and(|footer| footer.text == marker)
-            })
+            message.author.id == ctx.cache.current_user().id
+                && message.embeds.iter().any(|embed| {
+                    embed
+                        .footer
+                        .as_ref()
+                        .is_some_and(|footer| footer.text == marker)
+                })
         }) {
             message.id
         } else {
-            self.send_review(ctx, &fresh, &[]).await?.id
+            self.send_review(ctx, &fresh, &self.voters(fresh.id).await?)
+                .await?
+                .id
         };
         sqlx::query("UPDATE event_submissions SET review_message_id = ? WHERE id = ? AND status = 'pending' AND review_message_id IS NULL")
             .bind(message_id.to_string())
@@ -1203,6 +1365,7 @@ impl EventSubmissionService {
             .submission(submission.id)
             .await?
             .unwrap_or_else(|| submission.clone());
+        let resolved = resolved || fresh.status != "pending";
         self.channels
             .review
             .edit_message(
@@ -1216,14 +1379,19 @@ impl EventSubmissionService {
         Ok(())
     }
 
-    async fn dm_resolution(&self, ctx: &serenity::Context, submission: &Submission, reason: &str) {
+    async fn dm_resolution(
+        &self,
+        ctx: &serenity::Context,
+        submission: &Submission,
+        reason: &str,
+    ) -> bool {
         let Some(user_id) = submission
             .submitter_discord_id
             .parse::<u64>()
             .ok()
             .map(serenity::UserId::new)
         else {
-            return;
+            return false;
         };
         let result = async {
             let channel = user_id.create_dm_channel(ctx).await?;
@@ -1231,10 +1399,7 @@ impl EventSubmissionService {
                 .send_message(
                     ctx,
                     serenity::CreateMessage::new()
-                        .content(format!(
-                            "EVT-{} was denied.\nReason: {reason}",
-                            submission.id
-                        ))
+                        .content(resolution_message(submission, reason))
                         .embed(form_embed(submission, true))
                         .allowed_mentions(serenity::CreateAllowedMentions::new()),
                 )
@@ -1253,7 +1418,9 @@ impl EventSubmissionService {
                 0x00ED_4245,
             )
             .await;
+            return false;
         }
+        true
     }
 
     async fn log(&self, ctx: &serenity::Context, title: &str, description: String, colour: u32) {
@@ -1287,7 +1454,7 @@ impl EventSubmissionService {
             ctx,
             "Event test bypass used",
             format!(
-                "EVT-{event_id}\nSubmitter: <@{user_id}>\nBypass: 100-hour playtime requirement"
+                "EVT-{event_id}\nSubmitter: <@{user_id}>\nBypass: {REQUIRED_PLAYTIME_HOURS}-hour playtime requirement"
             ),
             0x00FF_F11A,
         )
@@ -1296,7 +1463,7 @@ impl EventSubmissionService {
 
     async fn has_pending(&self, user_id: serenity::UserId) -> Result<bool> {
         let count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM event_submissions WHERE submitter_discord_id = ? AND status IN ('pending', 'approved', 'posting') AND (status = 'pending' OR event_message_id IS NULL)",
+            "SELECT COUNT(*) FROM event_submissions WHERE submitter_discord_id = ? AND event_at > UNIX_TIMESTAMP() AND status IN ('pending', 'approved', 'posting') AND (status = 'pending' OR event_message_id IS NULL)",
         )
         .bind(user_id.to_string())
         .fetch_one(&self.databases.link)
@@ -1331,7 +1498,7 @@ impl EventSubmissionService {
             return Ok((None, true));
         }
         let denial = (!meets_playtime_requirement(self.playtime_60_days(uuid).await?)).then_some((
-            "Less than 100 hours played in the latest 60 UTC days",
+            "At least 50 hours of playtime in the past 60 days is required",
             "insufficient_playtime",
         ));
         Ok((denial, false))
@@ -1381,18 +1548,54 @@ async fn locked_submission(tx: &mut Transaction<'_, MySql>, id: u64) -> Result<O
 
 fn first_modal() -> serenity::CreateModal {
     serenity::CreateModal::new("events:form1", "Submit a 6b6t Event — Part 1").components(vec![
-        input("Event Name", "event_name", 1, 100, false),
-        input("Event Explanation", "explanation", 1, 1_000, true),
-        input("Username on 6b6t", "minecraft_username", 1, 16, false),
-        input("Discord Server Invite", "discord_invite", 1, 512, false),
+        input("Event name", "event_name", 1, 100, false),
+        input("Event description", "explanation", 1, 1_000, true),
         input(
-            "YouTube Video or Reddit Post",
+            "Linked Minecraft username",
+            "minecraft_username",
+            1,
+            16,
+            false,
+        ),
+        input("Discord invite link", "discord_invite", 1, 512, false),
+        input(
+            "YouTube video or r/6b6t post",
             "promotion_url",
             1,
             512,
             false,
         ),
     ])
+}
+
+fn continue_button(id: Uuid) -> Vec<serenity::CreateActionRow> {
+    vec![serenity::CreateActionRow::Buttons(vec![
+        serenity::CreateButton::new(format!("events:continue:{id}"))
+            .label("Continue application")
+            .style(serenity::ButtonStyle::Primary),
+    ])]
+}
+
+fn resolution_message(submission: &Submission, reason: &str) -> String {
+    match submission.status.as_str() {
+        "approved" => format!(
+            "Your event application EVT-{} has been approved and posted in the events channel.",
+            submission.id
+        ),
+        "expired" => format!(
+            "Your event application EVT-{} has expired because its start time has passed. Submit a new application with a future date if you would like to reschedule.",
+            submission.id
+        ),
+        _ => format!(
+            "Your event application EVT-{} was not approved.\nReason: {reason}",
+            submission.id
+        ),
+    }
+}
+
+fn valid_utc_offset(value: &str) -> bool {
+    matches!(value.as_bytes(), [b'+' | b'-', a, b, b':', c, d]
+        if [a, b, c, d].iter().all(|byte| byte.is_ascii_digit()))
 }
 
 fn second_modal(id: Uuid) -> serenity::CreateModal {
@@ -1430,15 +1633,17 @@ fn input(label: &str, id: &str, min: u16, max: u16, paragraph: bool) -> serenity
     )
 }
 
+fn menu_embed() -> serenity::CreateEmbed {
+    serenity::CreateEmbed::new()
+                .title("6b6t Events")
+                .description(format!("Discover events organized by the 6b6t community.\n\nTo apply, link your Minecraft account and play at least {REQUIRED_PLAYTIME_HOURS} hours in the past 60 days. Playtime is measured by UTC calendar days. Provide an event description, your linked Minecraft username, a Discord invite, a YouTube video or r/6b6t post, a future start time with a UTC offset, and joining instructions.\n\nThree staff approvals are required. Approved events appear here immediately and are published to following servers after two hours, provided the event has not started.\n\n{DISCLAIMER}\n\nSelect Apply to begin."))
+                .thumbnail("https://www.6b6t.org/logo.png")
+                .colour(0x00FF_F11A)
+}
+
 fn menu_message() -> serenity::CreateMessage {
     serenity::CreateMessage::new()
-        .embed(
-            serenity::CreateEmbed::new()
-                .title("6b6t Events")
-                .description("Welcome to the 6b6t Events channel! In here you can find all events created by the 6b6t community. Join these events at your own responsibility. Remember that the server is anarchy.\n\nIf you wish to submit your own event, read the requirements and apply by clicking on the button below.")
-                .thumbnail("https://www.6b6t.org/logo.png")
-                .colour(0x00FF_F11A),
-        )
+        .embed(menu_embed())
         .components(vec![serenity::CreateActionRow::Buttons(vec![
             serenity::CreateButton::new(APPLY_ID)
                 .label("Apply")
@@ -1449,6 +1654,8 @@ fn menu_message() -> serenity::CreateMessage {
 
 fn approved_message(submission: &Submission) -> serenity::CreateMessage {
     serenity::CreateMessage::new()
+        .nonce(serenity::Nonce::String(format!("e{}", submission.id)))
+        .enforce_nonce(true)
         .content(format!("<@&{}>", config::EVENTS_ROLE_ID))
         .embed(
             form_embed(submission, true)
@@ -1517,6 +1724,7 @@ fn review_embed(
                 .as_deref()
                 .unwrap_or("No reason recorded")
         ),
+        "expired" => "Expired — the event start time has passed".into(),
         _ => format!("Pending — {remaining} approval(s) remaining"),
     };
     form_embed(submission, true)
@@ -1582,12 +1790,13 @@ fn modal_fields(interaction: &serenity::ModalInteraction) -> HashMap<String, Str
 }
 
 fn required_field(fields: &HashMap<String, String>, id: &str, max: usize) -> Result<String> {
+    let label = id.replace('_', " ");
     let value = fields
         .get(id)
-        .with_context(|| format!("missing {id}"))?
+        .with_context(|| format!("please provide {label}"))?
         .trim();
     if value.is_empty() || value.chars().count() > max {
-        bail!("{id} must contain between 1 and {max} characters");
+        bail!("{label} must contain between 1 and {max} characters");
     }
     Ok(value.to_owned())
 }
@@ -1606,16 +1815,21 @@ fn minecraft_name(value: &str) -> Result<String> {
 fn validate_invite(value: &str) -> Result<String> {
     let url = reqwest::Url::parse(value).context("Discord invite must be a valid URL")?;
     let host = url.host_str().unwrap_or_default().to_ascii_lowercase();
-    let valid = (host == "discord.gg" && url.path().trim_matches('/').split('/').count() == 1)
-        || (matches!(host.as_str(), "discord.com" | "www.discord.com")
-            && url.path().starts_with("/invite/")
-            && url
-                .path()
-                .trim_start_matches("/invite/")
-                .trim_matches('/')
-                .split('/')
-                .count()
-                == 1);
+    let code = if host == "discord.gg" {
+        Some(url.path().trim_matches('/'))
+    } else if matches!(host.as_str(), "discord.com" | "www.discord.com") {
+        url.path()
+            .strip_prefix("/invite/")
+            .map(|path| path.trim_end_matches('/'))
+    } else {
+        None
+    };
+    let valid = code.is_some_and(|code| {
+        !code.is_empty()
+            && code
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    });
     if url.scheme() != "https" || !valid {
         bail!(
             "Discord invite must be an https://discord.gg/... or https://discord.com/invite/... URL"
@@ -1631,9 +1845,33 @@ fn validate_promotion(value: &str) -> Result<String> {
         .unwrap_or_default()
         .trim_start_matches("www.")
         .to_ascii_lowercase();
-    let youtube = matches!(host.as_str(), "youtube.com" | "youtu.be");
+    let segments: Vec<_> = url.path().trim_matches('/').split('/').collect();
+    let video_id = |id: &str| {
+        id.len() == 11
+            && id
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    };
+    let youtube = match host.as_str() {
+        "youtu.be" => segments.len() == 1 && video_id(segments[0]),
+        "youtube.com" => {
+            (url.path() == "/watch"
+                && url
+                    .query_pairs()
+                    .any(|(key, value)| key == "v" && video_id(&value)))
+                || (segments.len() == 2
+                    && matches!(segments[0], "shorts" | "live" | "embed")
+                    && video_id(segments[1]))
+        }
+        _ => false,
+    };
     let reddit = matches!(host.as_str(), "reddit.com" | "old.reddit.com")
-        && url.path().to_ascii_lowercase().starts_with("/r/6b6t/");
+        && segments.len() >= 4
+        && segments[0] == "r"
+        && segments[1].eq_ignore_ascii_case("6b6t")
+        && segments[2] == "comments"
+        && !segments[3].is_empty()
+        && segments[3].bytes().all(|byte| byte.is_ascii_alphanumeric());
     if url.scheme() != "https" || !(youtube || reddit) {
         bail!("event post must be an HTTPS YouTube URL or a post in reddit.com/r/6b6t");
     }
@@ -1646,7 +1884,7 @@ fn parse_event_time(value: &str) -> Result<i64> {
         .context("date must use YYYY-MM-DD HH:MM UTC±HH:MM")?;
     let local = NaiveDateTime::parse_from_str(date, "%Y-%m-%d %H:%M")
         .context("date must use YYYY-MM-DD HH:MM")?;
-    if offset.len() != 6 || !matches!(offset.as_bytes()[0], b'+' | b'-') || &offset[3..4] != ":" {
+    if !valid_utc_offset(offset) {
         bail!("UTC offset must use +HH:MM or -HH:MM");
     }
     let hours: i32 = offset[1..3].parse().context("invalid UTC offset hour")?;
@@ -1766,17 +2004,17 @@ mod tests {
     fn validates_supported_urls() {
         assert!(validate_invite("https://discord.gg/6b6t").is_ok());
         assert!(validate_invite("https://example.com/6b6t").is_err());
-        assert!(validate_promotion("https://youtu.be/example").is_ok());
+        assert!(validate_promotion("https://youtu.be/dQw4w9WgXcQ").is_ok());
         assert!(validate_promotion("https://reddit.com/r/6b6t/comments/example").is_ok());
         assert!(validate_promotion("https://reddit.com/r/other/comments/example").is_err());
     }
 
     #[test]
     fn playtime_threshold_is_exact() {
-        assert_eq!(REQUIRED_PLAYTIME_MILLIS, 360_000_000);
-        assert!(!meets_playtime_requirement(359_964_000)); // 99.99 hours
-        assert!(meets_playtime_requirement(360_000_000));
-        assert!(meets_playtime_requirement(360_000_001));
+        assert_eq!(REQUIRED_PLAYTIME_MILLIS, 180_000_000);
+        assert!(!meets_playtime_requirement(179_999_999));
+        assert!(meets_playtime_requirement(180_000_000));
+        assert!(meets_playtime_requirement(180_000_001));
     }
 
     #[test]
@@ -1813,5 +2051,65 @@ mod tests {
         assert_eq!(parse_event_id(&u64::MAX.to_string()).unwrap(), u64::MAX);
         assert!(parse_event_id("0").is_err());
         assert!(parse_event_id("EVT-21").is_err());
+    }
+
+    #[test]
+    fn malformed_times_and_non_post_urls_are_rejected() {
+        for offset in ["+0é00", "+-1:00", "+00:-1", "+14:01", "+00:60", "+0:00"] {
+            assert!(parse_event_time(&format!("2099-09-15 20:00 UTC{offset}")).is_err());
+        }
+        for url in [
+            "https://discord.gg/",
+            "https://discord.com/invite/",
+            "https://discord.gg/a/b",
+        ] {
+            assert!(validate_invite(url).is_err());
+        }
+        for url in [
+            "https://youtube.com/",
+            "https://youtube.com/watch",
+            "https://youtu.be/",
+            "https://reddit.com/r/6b6t/",
+            "https://reddit.com/r/6b6t/comments/",
+        ] {
+            assert!(validate_promotion(url).is_err());
+        }
+        assert!(validate_promotion("https://www.youtube.com/watch?v=dQw4w9WgXcQ").is_ok());
+        assert!(validate_promotion("https://youtube.com/shorts/dQw4w9WgXcQ").is_ok());
+    }
+
+    #[test]
+    fn event_messages_show_requirements_and_correct_resolution() {
+        let mut submission = Submission {
+            id: u64::MAX,
+            submitter_discord_id: "1".into(),
+            minecraft_username: "Player".into(),
+            event_name: "Community meetup".into(),
+            explanation: "Meet other players.".into(),
+            discord_invite: "https://discord.gg/6b6t".into(),
+            promotion_url: "https://youtu.be/dQw4w9WgXcQ".into(),
+            event_at: 4_102_444_800,
+            event_time_input: "2100-01-01 00:00 UTC+00:00".into(),
+            join_instructions: "Join the server.".into(),
+            status: "approved".into(),
+            denial_reason: None,
+            review_message_id: None,
+            event_message_id: Some("2".into()),
+        };
+        assert!(resolution_message(&submission, "").contains("approved and posted"));
+        submission.status = "denied".into();
+        assert!(resolution_message(&submission, "Missing details").contains("Missing details"));
+        submission.status = "expired".into();
+        assert!(resolution_message(&submission, "").contains("start time has passed"));
+        let menu = serde_json::to_value(menu_message()).unwrap();
+        let text = menu["embeds"][0]["description"].as_str().unwrap();
+        assert!(text.contains("50 hours"));
+        assert!(text.contains("60 days"));
+        assert!(!text.contains("100 hours"));
+        let post = serde_json::to_value(approved_message(&submission)).unwrap();
+        assert!(post["nonce"].as_str().unwrap().len() <= 25);
+        assert_eq!(post["enforce_nonce"], true);
+        let review = serde_json::to_value(review_embed(&submission, &[], true)).unwrap();
+        assert!(review.to_string().contains("Expired"));
     }
 }

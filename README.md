@@ -54,12 +54,30 @@ review channel, and records privacy-safe audit entries in the log channel.
 | `EVENTS_CHANNEL_ID` | Together | Public Announcement channel containing approved events and the Apply button |
 | `EVENTS_REVIEW_CHANNEL_ID` | Together | Private Terminator/Marketer review channel |
 | `EVENTS_LOG_CHANNEL_ID` | Together | Private event audit channel |
-| `EVENTS_TEST_USER_ID` | No | Discord user allowed to bypass only the 100-hour check for testing; unset in normal operation |
+| `EVENTS_TEST_USER_ID` | No | Discord user allowed to bypass only the 50-hour playtime requirement for testing; unset in normal operation |
 
 The bot needs View Channel, Read Message History, Send Messages, Embed Links,
 Manage Messages, and View Audit Log. It must also be able to mention the Events
 role. Approved posts are automatically published 120 minutes after posting;
 the MariaDB-backed worker resumes pending posts and publications after restart.
+
+Applicants must link their Minecraft account and have at least **50 hours of
+playtime in the past 60 UTC calendar days**, including today. Applications
+require an event description, the linked Minecraft username, a Discord invite,
+a YouTube video or r/6b6t post, a future start time with a UTC offset, and joining
+instructions. Three distinct Terminators or Marketers must approve an event;
+one reviewer may decline it with a reason. Applicants cannot review their own events.
+
+Approved events are posted immediately. Publication to following servers happens
+two hours after posting, only if the event has not started. Applications whose
+start time passes before approval or publication expire. The bot attempts to
+notify applicants by direct message of approval, denial, or expiry. Failed DMs
+are retried hourly. Delivery receipts are stored in MariaDB.
+
+Drafts remain available for 30 minutes, including after validation or submission
+errors, but are lost if the bot restarts. Deleted pending review messages are
+recreated automatically. Run a single bot instance: event posting is serialized
+within the process, and recent Discord messages are checked during recovery.
 
 ### MariaDB
 
