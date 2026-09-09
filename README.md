@@ -252,3 +252,26 @@ cargo build --release --locked
 Railpack detects the root `Cargo.toml`, builds the release binary, and starts
 `./bin/sixbsixt-discord-bot`. Configure the environment variables in the
 deployment service and deploy the repository root.
+
+### Publish to GHCR and deploy with Dokploy
+
+On each push to `main`, `.github/workflows/publish-ghcr.yml` builds an image
+with Railpack on a Blacksmith runner. It publishes these tags to GHCR:
+
+- `ghcr.io/6b6t/6b6t-discord-bot:main`
+- `ghcr.io/6b6t/6b6t-discord-bot:latest`
+- `ghcr.io/6b6t/6b6t-discord-bot:sha-<first-12-commit-characters>`
+
+After all three tags upload, the workflow sends a POST request to the Dokploy
+deployment webhook. A missing webhook secret or an HTTP error fails the workflow.
+
+1. Configure the Dokploy application to pull `ghcr.io/6b6t/6b6t-discord-bot:main` as a Docker image.
+2. If the GHCR package is private, configure Dokploy with registry credentials that have `read:packages` access.
+3. Add the bot's runtime environment variables to the Dokploy application.
+4. Add the application's deployment webhook URL as the GitHub Actions repository secret `DOKPLOY_DEPLOY_URL`.
+5. Push to `main` to publish the image and trigger deployment.
+
+The workflow uses the automatic `GITHUB_TOKEN` to publish packages. It requires
+access to the `blacksmith-4vcpu-ubuntu-2404` runner, as the website workflow does.
+Runtime credentials stay in Dokploy. No build environment secret is required,
+and `.dockerignore` excludes local environment files from the build context.
