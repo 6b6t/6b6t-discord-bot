@@ -94,6 +94,35 @@ impl Databases {
         .await
         .context("failed to load Minecraft player information")
     }
+
+    pub async fn state_value(&self, name: &str) -> Result<Option<String>> {
+        sqlx::query_scalar("SELECT value FROM bot_state WHERE name = ?")
+            .bind(name)
+            .fetch_optional(&self.link)
+            .await
+            .context("failed to load bot state")
+    }
+
+    pub async fn set_state_value(&self, name: &str, value: &str) -> Result<()> {
+        sqlx::query(
+            "INSERT INTO bot_state (name, value) VALUES (?, ?) ON DUPLICATE KEY UPDATE value = VALUES(value)",
+        )
+        .bind(name)
+        .bind(value)
+        .execute(&self.link)
+        .await
+        .context("failed to save bot state")?;
+        Ok(())
+    }
+
+    pub async fn clear_state_value(&self, name: &str) -> Result<()> {
+        sqlx::query("DELETE FROM bot_state WHERE name = ?")
+            .bind(name)
+            .execute(&self.link)
+            .await
+            .context("failed to clear bot state")?;
+        Ok(())
+    }
 }
 
 fn normalize_uuid(uuid: &str) -> String {
@@ -150,6 +179,7 @@ async fn ensure_link_schema(pool: &MySqlPool) -> Result<()> {
         "CREATE TABLE IF NOT EXISTS telegram_crosspost_routes (route_id VARCHAR(64) NOT NULL PRIMARY KEY, last_discord_message_id VARCHAR(64) NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
         "CREATE TABLE IF NOT EXISTS event_submissions (id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY, submitter_discord_id VARCHAR(64) NOT NULL, linked_uuid CHAR(36) NOT NULL, minecraft_username VARCHAR(16) NOT NULL, event_name VARCHAR(100) NOT NULL, explanation TEXT NOT NULL, discord_invite VARCHAR(512) NOT NULL, promotion_url VARCHAR(512) NOT NULL, event_at BIGINT NOT NULL, event_time_input VARCHAR(64) NOT NULL, join_instructions TEXT NOT NULL, status VARCHAR(24) NOT NULL, denial_reason TEXT NULL, review_message_id VARCHAR(64) NULL, event_message_id VARCHAR(64) NULL, publish_at DATETIME NULL, published_at DATETIME NULL, deleted_at DATETIME NULL, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP, INDEX idx_event_submitter_status (submitter_discord_id, status), INDEX idx_event_publish (status, publish_at), UNIQUE KEY unique_event_message (event_message_id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
         "CREATE TABLE IF NOT EXISTS event_votes (event_id BIGINT UNSIGNED NOT NULL, voter_discord_id VARCHAR(64) NOT NULL, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, PRIMARY KEY (event_id, voter_discord_id), INDEX idx_event_votes_event (event_id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
+        "CREATE TABLE IF NOT EXISTS bot_state (name VARCHAR(64) NOT NULL PRIMARY KEY, value VARCHAR(64) NOT NULL, updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
     ] {
         sqlx::query(statement)
             .execute(pool)

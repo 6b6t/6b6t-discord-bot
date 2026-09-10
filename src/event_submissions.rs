@@ -22,6 +22,9 @@ const REQUIRED_PLAYTIME_HOURS: i64 = 50;
 // The player statistics service stores play_time in Minecraft ticks (20 per second).
 const REQUIRED_PLAYTIME_TICKS: i64 = REQUIRED_PLAYTIME_HOURS * 60 * 60 * 20;
 const DISCLAIMER: &str = "This event is organized by members of the 6b6t community and is not operated or endorsed by 6b6t. Participate at your own risk.";
+const MENU_STATE_KEY_PREFIX: &str = "events_menu_message_id";
+const MENU_SCAN_PAGE_LIMIT: u8 = 100;
+const MENU_SCAN_MAX_PAGES: usize = 20;
 
 #[derive(Clone)]
 pub struct EventSubmissionService {
@@ -113,7 +116,7 @@ impl EventSubmissionService {
             .execute(&self.databases.link)
             .await
             .context("failed to recover interrupted event posts")?;
-        self.ensure_menu(ctx).await?;
+        self.ensure_menu(ctx, true).await?;
         self.initialized.store(true, Ordering::Release);
         Ok(())
     }
@@ -815,7 +818,7 @@ impl EventSubmissionService {
             *self.menu_message.lock().await = Some(message.id);
             return;
         }
-        if let Err(error) = self.ensure_menu(ctx).await {
+        if let Err(error) = self.ensure_menu(ctx, false).await {
             tracing::error!(%error, "failed to keep event application menu at channel bottom");
         }
     }
@@ -831,7 +834,7 @@ impl EventSubmissionService {
         }
         if *self.menu_message.lock().await == Some(message_id) {
             *self.menu_message.lock().await = None;
-            if let Err(error) = self.ensure_menu(ctx).await {
+            if let Err(error) = self.ensure_menu(ctx, false).await {
                 tracing::error!(%error, "failed to restore deleted event menu");
             }
             return;
@@ -922,7 +925,7 @@ impl EventSubmissionService {
             }
         }
         let menu_missing = self.menu_message.lock().await.is_none();
-        if menu_missing && let Err(error) = self.ensure_menu(ctx).await {
+        if menu_missing && let Err(error) = self.ensure_menu(ctx, false).await {
             tracing::error!(%error, "failed to restore bulk-deleted event menu");
         }
     }
@@ -1019,6 +1022,9 @@ impl EventSubmissionService {
         }
         if let Err(error) = self.notify_resolutions(ctx).await {
             tracing::error!(%error, "event resolution notification retry failed");
+        }
+        if let Err(error) = self.reconcile_menu(ctx).await {
+            tracing::error!(%error, "event menu reconciliation failed");
         }
     }
 
@@ -1139,7 +1145,7 @@ impl EventSubmissionService {
                     0x0057_F287,
                 )
                 .await;
-                self.ensure_menu(ctx).await?;
+                self.ensure_menu(ctx, false).await?;
                 Ok(())
             }
             Err(error) => {
@@ -1220,48 +1226,192 @@ impl EventSubmissionService {
         Ok(())
     }
 
-    async fn ensure_menu(&self, ctx: &serenity::Context) -> Result<()> {
+    /// Keep exactly one application menu in the events channel, positioned at
+    /// the bottom. `deep` scans the channel history so menus that predate the
+    /// persisted identity are also removed, which is only needed at startup.
+    async fn ensure_menu(&self, ctx: &serenity::Context, deep: bool) -> Result<()> {
         let _guard = self.menu_lock.lock().await;
-        let cached_menu = *self.menu_message.lock().await;
-        if let Some(id) = cached_menu
-            && self.channels.events.message(ctx, id).await.is_ok()
-        {
+        let key = self.menu_state_key();
+        let known = self.known_menu_id(&key).await?;
+        let mut keep = None;
+
+        if let Some(id) = known {
             let latest = self
                 .channels
                 .events
                 .messages(ctx, serenity::GetMessages::new().limit(1))
                 .await?;
             if latest.first().is_some_and(|message| message.id == id) {
-                self.channels
-                    .events
-                    .edit_message(ctx, id, serenity::EditMessage::new().embed(menu_embed()))
-                    .await?;
-                return Ok(());
-            }
-            *self.menu_message.lock().await = None;
-            if let Err(error) = self.channels.events.delete_message(ctx, id).await {
-                tracing::warn!(%error, message_id = %id, "failed to remove old event application menu");
+                self.edit_menu(ctx, id).await?;
+                keep = Some(id);
+            } else {
+                self.delete_menu(ctx, id).await?;
+                self.clear_menu_state(&key).await?;
             }
         }
-        let messages = self
+
+        if keep.is_none() || deep {
+            for id in self.scan_menus(ctx, deep).await? {
+                if keep == Some(id) {
+                    continue;
+                }
+                self.delete_menu(ctx, id).await?;
+            }
+        }
+        if keep.is_some() {
+            return Ok(());
+        }
+        self.post_menu(ctx, &key).await
+    }
+
+    /// Heal any menu drift without waiting for a message event. Runs from the
+    /// background poll and always leaves exactly one menu at the channel bottom.
+    async fn reconcile_menu(&self, ctx: &serenity::Context) -> Result<()> {
+        let _guard = self.menu_lock.lock().await;
+        let key = self.menu_state_key();
+        let known = self.known_menu_id(&key).await?;
+        let recent = self
             .channels
             .events
             .messages(ctx, serenity::GetMessages::new().limit(100))
             .await?;
-        for message in messages
+        let menus = recent
             .iter()
             .filter(|message| is_menu_message(ctx, message))
+            .map(|message| message.id)
+            .collect::<Vec<_>>();
+        if menu_is_healthy(&menus, recent.first().map(|message| message.id), known) {
+            return Ok(());
+        }
+        if let Some(id) = known
+            && !menus.contains(&id)
         {
-            if let Err(error) = message.delete(ctx).await {
-                tracing::warn!(%error, message_id = %message.id, "failed to remove duplicate event menu");
+            self.delete_menu(ctx, id).await?;
+        }
+        for id in menus {
+            self.delete_menu(ctx, id).await?;
+        }
+        self.clear_menu_state(&key).await?;
+        self.post_menu(ctx, &key).await
+    }
+
+    fn menu_state_key(&self) -> String {
+        format!("{MENU_STATE_KEY_PREFIX}:{}", self.channels.events)
+    }
+
+    async fn known_menu_id(&self, key: &str) -> Result<Option<serenity::MessageId>> {
+        if let Some(id) = *self.menu_message.lock().await {
+            return Ok(Some(id));
+        }
+        let Some(value) = self.databases.state_value(key).await? else {
+            return Ok(None);
+        };
+        if let Some(id) = parse_message_id(&value) {
+            *self.menu_message.lock().await = Some(id);
+            Ok(Some(id))
+        } else {
+            tracing::warn!(value, "ignoring invalid stored event menu ID");
+            self.databases.clear_state_value(key).await?;
+            Ok(None)
+        }
+    }
+
+    async fn clear_menu_state(&self, key: &str) -> Result<()> {
+        *self.menu_message.lock().await = None;
+        self.databases.clear_state_value(key).await
+    }
+
+    async fn edit_menu(&self, ctx: &serenity::Context, id: serenity::MessageId) -> Result<()> {
+        self.channels
+            .events
+            .edit_message(
+                ctx,
+                id,
+                serenity::EditMessage::new()
+                    .embed(menu_embed())
+                    .components(menu_components()),
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// Delete an application menu. An unknown message counts as success because
+    /// the goal is absence, and every other failure aborts the caller so a
+    /// replacement is never posted next to a surviving menu.
+    async fn delete_menu(&self, ctx: &serenity::Context, id: serenity::MessageId) -> Result<()> {
+        match self.channels.events.delete_message(ctx, id).await {
+            Ok(()) => {
+                tracing::info!(message_id = %id, "removed event application menu");
+                Ok(())
+            }
+            Err(error) if is_unknown_message(&error) => Ok(()),
+            Err(error) => {
+                tracing::error!(
+                    %error,
+                    message_id = %id,
+                    "failed to remove event application menu; not posting a replacement"
+                );
+                Err(error.into())
             }
         }
+    }
+
+    async fn scan_menus(
+        &self,
+        ctx: &serenity::Context,
+        deep: bool,
+    ) -> Result<Vec<serenity::MessageId>> {
+        let pages = if deep { MENU_SCAN_MAX_PAGES } else { 1 };
+        let mut menus = Vec::new();
+        let mut before = None;
+        for _ in 0..pages {
+            let mut request = serenity::GetMessages::new().limit(MENU_SCAN_PAGE_LIMIT);
+            if let Some(before) = before {
+                request = request.before(before);
+            }
+            let page = self.channels.events.messages(ctx, request).await?;
+            let page_len = page.len();
+            menus.extend(
+                page.iter()
+                    .filter(|message| is_menu_message(ctx, message))
+                    .map(|message| message.id),
+            );
+            if page_len < usize::from(MENU_SCAN_PAGE_LIMIT) {
+                return Ok(menus);
+            }
+            before = page.last().map(|message| message.id);
+        }
+        if deep {
+            tracing::warn!(
+                pages = MENU_SCAN_MAX_PAGES,
+                "event menu history scan reached its page cap; older duplicates may remain"
+            );
+        }
+        Ok(menus)
+    }
+
+    async fn post_menu(&self, ctx: &serenity::Context, key: &str) -> Result<()> {
         let message = self
             .channels
             .events
             .send_message(ctx, menu_message())
             .await?;
+        if let Err(error) = self
+            .databases
+            .set_state_value(key, &message.id.to_string())
+            .await
+        {
+            if let Err(delete_error) = self.channels.events.delete_message(ctx, message.id).await {
+                tracing::error!(
+                    %delete_error,
+                    message_id = %message.id,
+                    "failed to remove event menu after state write failure"
+                );
+            }
+            return Err(error);
+        }
         *self.menu_message.lock().await = Some(message.id);
+        tracing::info!(message_id = %message.id, "posted event application menu");
         Ok(())
     }
 
@@ -1643,14 +1793,18 @@ fn menu_embed() -> serenity::CreateEmbed {
                 .colour(0x00FF_F11A)
 }
 
+fn menu_components() -> Vec<serenity::CreateActionRow> {
+    vec![serenity::CreateActionRow::Buttons(vec![
+        serenity::CreateButton::new(APPLY_ID)
+            .label("Apply")
+            .style(serenity::ButtonStyle::Primary),
+    ])]
+}
+
 fn menu_message() -> serenity::CreateMessage {
     serenity::CreateMessage::new()
         .embed(menu_embed())
-        .components(vec![serenity::CreateActionRow::Buttons(vec![
-            serenity::CreateButton::new(APPLY_ID)
-                .label("Apply")
-                .style(serenity::ButtonStyle::Primary),
-        ])])
+        .components(menu_components())
         .allowed_mentions(serenity::CreateAllowedMentions::new())
 }
 
@@ -1768,6 +1922,16 @@ fn is_menu_message(ctx: &serenity::Context, message: &serenity::Message) -> bool
         && message.components.iter().flat_map(|row| &row.components).any(|component| {
             matches!(component, serenity::ActionRowComponent::Button(button) if matches!(&button.data, serenity::ButtonKind::NonLink { custom_id, .. } if custom_id == APPLY_ID))
         })
+}
+
+/// The menu is healthy when exactly one exists, it is the newest message, and
+/// the persisted identity matches it.
+fn menu_is_healthy(
+    menu_ids: &[serenity::MessageId],
+    newest: Option<serenity::MessageId>,
+    known: Option<serenity::MessageId>,
+) -> bool {
+    matches!(menu_ids, [only] if Some(*only) == newest && Some(*only) == known)
 }
 
 fn is_reviewer(member: &serenity::Member) -> bool {
@@ -2109,10 +2273,28 @@ mod tests {
         assert!(text.contains("50 hours"));
         assert!(text.contains("60 days"));
         assert!(!text.contains("100 hours"));
+        assert!(
+            menu.to_string()
+                .contains(&format!("\"custom_id\":\"{APPLY_ID}\""))
+        );
         let post = serde_json::to_value(approved_message(&submission)).unwrap();
         assert!(post["nonce"].as_str().unwrap().len() <= 25);
         assert_eq!(post["enforce_nonce"], true);
         let review = serde_json::to_value(review_embed(&submission, &[], true)).unwrap();
         assert!(review.to_string().contains("Expired"));
+    }
+
+    #[test]
+    fn menu_health_requires_one_newest_persisted_menu() {
+        let id = serenity::MessageId::new(123);
+        let other = serenity::MessageId::new(456);
+        assert!(menu_is_healthy(&[id], Some(id), Some(id)));
+        assert!(!menu_is_healthy(&[], None, None));
+        assert!(!menu_is_healthy(&[], None, Some(id)));
+        assert!(!menu_is_healthy(&[id], Some(id), None));
+        assert!(!menu_is_healthy(&[id], Some(id), Some(other)));
+        assert!(!menu_is_healthy(&[id], Some(other), Some(id)));
+        assert!(!menu_is_healthy(&[id, other], Some(other), Some(other)));
+        assert!(!menu_is_healthy(&[id, other], Some(id), Some(id)));
     }
 }
