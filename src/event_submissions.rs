@@ -19,7 +19,8 @@ use crate::{
 const APPLY_ID: &str = "events:apply";
 const DRAFT_TTL: Duration = Duration::from_mins(30);
 const REQUIRED_PLAYTIME_HOURS: i64 = 50;
-const REQUIRED_PLAYTIME_MILLIS: i64 = REQUIRED_PLAYTIME_HOURS * 60 * 60 * 1_000;
+// The player statistics service stores play_time in Minecraft ticks (20 per second).
+const REQUIRED_PLAYTIME_TICKS: i64 = REQUIRED_PLAYTIME_HOURS * 60 * 60 * 20;
 const DISCLAIMER: &str = "This event is organized by members of the 6b6t community and is not operated or endorsed by 6b6t. Participate at your own risk.";
 
 #[derive(Clone)]
@@ -1471,7 +1472,7 @@ impl EventSubmissionService {
         Ok(count > 0)
     }
 
-    async fn playtime_60_days(&self, uuid: &str) -> Result<i64> {
+    async fn playtime_ticks_60_days(&self, uuid: &str) -> Result<i64> {
         sqlx::query_scalar::<_, i64>(
             "SELECT CAST(COALESCE(SUM(value), 0) AS SIGNED) FROM player_stats_per_day WHERE uuid = ? AND type = 'play_time' AND day BETWEEN DATE_SUB(UTC_DATE(), INTERVAL 59 DAY) AND UTC_DATE()",
         )
@@ -1497,10 +1498,11 @@ impl EventSubmissionService {
         if playtime_check_bypassed(self.test_user_id, user_id) {
             return Ok((None, true));
         }
-        let denial = (!meets_playtime_requirement(self.playtime_60_days(uuid).await?)).then_some((
-            "At least 50 hours of playtime in the past 60 days is required",
-            "insufficient_playtime",
-        ));
+        let denial = (!meets_playtime_requirement(self.playtime_ticks_60_days(uuid).await?))
+            .then_some((
+                "At least 50 hours of playtime in the past 60 days is required",
+                "insufficient_playtime",
+            ));
         Ok((denial, false))
     }
 
@@ -1922,8 +1924,8 @@ fn parse_message_id(value: &str) -> Option<serenity::MessageId> {
     value.parse::<u64>().ok().map(serenity::MessageId::new)
 }
 
-fn meets_playtime_requirement(playtime_millis: i64) -> bool {
-    playtime_millis >= REQUIRED_PLAYTIME_MILLIS
+fn meets_playtime_requirement(playtime_ticks: i64) -> bool {
+    playtime_ticks >= REQUIRED_PLAYTIME_TICKS
 }
 
 fn minecraft_names_match(linked_name: &str, submitted_name: &str) -> bool {
@@ -2011,10 +2013,11 @@ mod tests {
 
     #[test]
     fn playtime_threshold_is_exact() {
-        assert_eq!(REQUIRED_PLAYTIME_MILLIS, 180_000_000);
-        assert!(!meets_playtime_requirement(179_999_999));
-        assert!(meets_playtime_requirement(180_000_000));
-        assert!(meets_playtime_requirement(180_000_001));
+        assert_eq!(REQUIRED_PLAYTIME_TICKS, 3_600_000);
+        assert!(!meets_playtime_requirement(3_599_999));
+        assert!(meets_playtime_requirement(3_600_000));
+        assert!(meets_playtime_requirement(3_600_001));
+        assert!(meets_playtime_requirement(10 * 24 * 60 * 60 * 20)); // Ten days in ticks.
     }
 
     #[test]
