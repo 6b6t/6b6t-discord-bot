@@ -74,14 +74,15 @@ impl AppState {
             }
             (None, _) => None,
         };
+        let media = Arc::new(MediaState::load(databases.clone()).await?);
 
         Ok(Self {
             server: ServerService::new(http.clone(), Arc::clone(&environment), databases.clone()),
-            youtube: YoutubeService::new(environment.youtube_api_key.clone())?,
+            youtube: YoutubeService::new(http.clone(), environment.youtube_api_key.clone()),
             environment,
             http,
             databases,
-            media: Arc::new(MediaState::load().await?),
+            media,
             pending: Arc::new(PendingApprovals::default()),
             telegram,
             anarchy,

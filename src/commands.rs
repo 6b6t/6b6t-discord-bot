@@ -5,7 +5,7 @@ use poise::{CreateReply, serenity_prelude as serenity};
 
 use crate::{
     command_moderation, config,
-    database::Databases,
+    database::{Databases, normalize_uuid},
     moderation,
     server::format_duration,
     state::{AppState, Context, Error},
@@ -449,13 +449,6 @@ fn select_linked_uuid(linked: Vec<String>) -> PlayerUuidResolution {
         [uuid] => PlayerUuidResolution::Found(uuid.clone()),
         _ => PlayerUuidResolution::Ambiguous,
     }
-}
-
-fn normalize_uuid(uuid: &str) -> String {
-    uuid.chars()
-        .filter(|character| *character != '-')
-        .flat_map(char::to_lowercase)
-        .collect()
 }
 
 /// Parse `<@123...>` or the legacy `<@!123...>` user mention into a snowflake.

@@ -1,40 +1,41 @@
-use std::{collections::HashMap, path::PathBuf};
+use std::collections::HashMap;
 
 use anyhow::{Context as _, Result};
-use serde::{Deserialize, Serialize};
 use tokio::sync::{Mutex, RwLock};
+
+use crate::database::Databases;
 
 const DEFAULT_FREQUENCY: u16 = 3;
 pub const MIN_FREQUENCY: u16 = 1;
 pub const MAX_FREQUENCY: u16 = 100;
 
-#[derive(Debug, Deserialize, Serialize)]
-struct MediaSettings {
-    frequency: u16,
-}
+const FREQUENCY_STATE_KEY: &str = "media_channel_frequency";
 
 pub struct MediaState {
     frequency: RwLock<u16>,
     counts: Mutex<HashMap<poise::serenity_prelude::ChannelId, u16>>,
-    path: PathBuf,
+    databases: Option<Databases>,
 }
 
 impl MediaState {
-    pub async fn load() -> Result<Self> {
-        let path = PathBuf::from("data/media-channel-settings.json");
-        let frequency = match tokio::fs::read_to_string(&path).await {
-            Ok(content) => serde_json::from_str::<MediaSettings>(&content)
-                .map_or(DEFAULT_FREQUENCY, |settings| normalize(settings.frequency)),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => DEFAULT_FREQUENCY,
-            Err(error) => {
-                tracing::warn!(%error, path = %path.display(), "failed to read media channel settings; using the default frequency");
-                DEFAULT_FREQUENCY
-            }
+    pub async fn load(databases: Option<Databases>) -> Result<Self> {
+        let frequency = if let Some(databases) = &databases {
+            databases
+                .state_value(FREQUENCY_STATE_KEY)
+                .await
+                .context("failed to load media channel frequency")?
+                .and_then(|value| value.parse().ok())
+                .map_or(DEFAULT_FREQUENCY, normalize)
+        } else {
+            tracing::warn!(
+                "MySQL is unavailable; media channel frequency changes will reset on restart"
+            );
+            DEFAULT_FREQUENCY
         };
         Ok(Self {
             frequency: RwLock::new(frequency),
             counts: Mutex::new(HashMap::new()),
-            path,
+            databases,
         })
     }
 
@@ -44,15 +45,12 @@ impl MediaState {
 
     pub async fn set_frequency(&self, frequency: u16) -> Result<()> {
         let frequency = normalize(frequency);
-        if let Some(parent) = self.path.parent() {
-            tokio::fs::create_dir_all(parent)
+        if let Some(databases) = &self.databases {
+            databases
+                .set_state_value(FREQUENCY_STATE_KEY, &frequency.to_string())
                 .await
-                .context("failed to create data directory")?;
+                .context("failed to save media channel frequency")?;
         }
-        let content = serde_json::to_string_pretty(&MediaSettings { frequency })?;
-        tokio::fs::write(&self.path, content)
-            .await
-            .context("failed to save media channel settings")?;
         *self.frequency.write().await = frequency;
         Ok(())
     }

@@ -25,13 +25,8 @@ pub struct TelegramService {
     config: Arc<TelegramConfig>,
     databases: Option<Databases>,
     jobs: Arc<Mutex<()>>,
-    tasks: Arc<Mutex<TaskQueue>>,
+    tasks: Arc<Mutex<JoinSet<()>>>,
     shutting_down: Arc<AtomicBool>,
-}
-
-struct TaskQueue {
-    accepting: bool,
-    tasks: JoinSet<()>,
 }
 
 #[derive(Clone)]
@@ -122,22 +117,19 @@ impl TelegramService {
             config: Arc::new(config),
             databases,
             jobs: Arc::new(Mutex::new(())),
-            tasks: Arc::new(Mutex::new(TaskQueue {
-                accepting: true,
-                tasks: JoinSet::new(),
-            })),
+            tasks: Arc::new(Mutex::new(JoinSet::new())),
             shutting_down: Arc::new(AtomicBool::new(false)),
         }
     }
 
     pub async fn queue_message_create(&self, message: serenity::Message) {
         let mut queue = self.tasks.lock().await;
-        if !queue.accepting || self.is_shutting_down() {
+        if self.is_shutting_down() {
             return;
         }
-        reap_completed_tasks(&mut queue.tasks);
+        reap_completed_tasks(&mut queue);
         let service = self.clone();
-        queue.tasks.spawn(async move {
+        queue.spawn(async move {
             if let Err(error) = service.message_create(&message).await {
                 tracing::error!(%error, message_id = %message.id, "Telegram create crosspost failed");
             }
@@ -146,12 +138,12 @@ impl TelegramService {
 
     pub async fn queue_message_update(&self, message: serenity::Message) {
         let mut queue = self.tasks.lock().await;
-        if !queue.accepting || self.is_shutting_down() {
+        if self.is_shutting_down() {
             return;
         }
-        reap_completed_tasks(&mut queue.tasks);
+        reap_completed_tasks(&mut queue);
         let service = self.clone();
-        queue.tasks.spawn(async move {
+        queue.spawn(async move {
             if let Err(error) = service.message_update(&message).await {
                 tracing::error!(%error, message_id = %message.id, "Telegram update crosspost failed");
             }
@@ -164,12 +156,12 @@ impl TelegramService {
         message_id: serenity::MessageId,
     ) {
         let mut queue = self.tasks.lock().await;
-        if !queue.accepting || self.is_shutting_down() {
+        if self.is_shutting_down() {
             return;
         }
-        reap_completed_tasks(&mut queue.tasks);
+        reap_completed_tasks(&mut queue);
         let service = self.clone();
-        queue.tasks.spawn(async move {
+        queue.spawn(async move {
             if let Err(error) = service.message_delete(channel_id, message_id).await {
                 tracing::error!(%error, %channel_id, %message_id, "Telegram delete crosspost failed");
             }
@@ -300,8 +292,7 @@ impl TelegramService {
         self.shutting_down
             .store(true, std::sync::atomic::Ordering::Release);
         let mut queue = self.tasks.lock().await;
-        queue.accepting = false;
-        while let Some(result) = queue.tasks.join_next().await {
+        while let Some(result) = queue.join_next().await {
             if let Err(error) = result {
                 tracing::error!(%error, "Telegram delivery task failed while shutting down");
             }

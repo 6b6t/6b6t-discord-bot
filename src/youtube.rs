@@ -1,20 +1,8 @@
-use std::{collections::HashSet, path::PathBuf, sync::Arc};
+use std::collections::HashSet;
 
 use anyhow::{Context as _, Result};
-use google_youtube3::{
-    YouTube,
-    api::SearchResult,
-    common::NoToken,
-    hyper_rustls::{HttpsConnector, HttpsConnectorBuilder},
-    hyper_util::{
-        client::legacy::{Client, connect::HttpConnector},
-        rt::TokioExecutor,
-    },
-};
 use poise::serenity_prelude as serenity;
-use tokio::sync::Mutex;
-
-type YoutubeHub = YouTube<HttpsConnector<HttpConnector>>;
+use serde::Deserialize;
 
 const QUERIES: &[&str] = &["6b6t.org", "6b6t"];
 const WHITELISTED_CHANNELS: &[&str] = &[
@@ -49,10 +37,39 @@ const IGNORE_WORDS: &[&str] = &[
 
 #[derive(Clone)]
 pub struct YoutubeService {
-    hub: Arc<YoutubeHub>,
+    http: reqwest::Client,
     api_key: Option<String>,
-    posted: Arc<Mutex<Option<HashSet<String>>>>,
-    path: PathBuf,
+}
+
+#[derive(Deserialize)]
+struct SearchResponse {
+    #[serde(default)]
+    items: Vec<SearchResult>,
+}
+
+#[derive(Deserialize)]
+struct SearchResult {
+    id: Option<ResourceId>,
+    snippet: Option<SearchResultSnippet>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ResourceId {
+    video_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SearchResultSnippet {
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    description: String,
+    #[serde(default)]
+    channel_title: String,
+    #[serde(default)]
+    channel_id: String,
 }
 
 struct YoutubeVideo {
@@ -64,20 +81,8 @@ struct YoutubeVideo {
 }
 
 impl YoutubeService {
-    pub fn new(api_key: Option<String>) -> Result<Self> {
-        let connector = HttpsConnectorBuilder::new()
-            .with_native_roots()
-            .context("failed to load native root certificates for YouTube")?
-            .https_only()
-            .enable_http2()
-            .build();
-        let client = Client::builder(TokioExecutor::new()).build(connector);
-        Ok(Self {
-            hub: Arc::new(YouTube::new(client, NoToken)),
-            api_key,
-            posted: Arc::new(Mutex::new(None)),
-            path: PathBuf::from("data/youtube-posted.json"),
-        })
+    pub fn new(http: reqwest::Client, api_key: Option<String>) -> Self {
+        Self { http, api_key }
     }
 
     pub async fn notify(
@@ -88,30 +93,35 @@ impl YoutubeService {
         let Some(api_key) = &self.api_key else {
             return Ok(());
         };
-        let parts = vec!["snippet".to_owned()];
-        let (_, response) = self
-            .hub
-            .search()
-            .list(&parts)
-            .q("6b6t.org OR 6b6t")
-            .order("date")
-            .max_results(5)
-            .add_type("video")
-            .param("key", api_key)
-            .clear_scopes()
-            .doit()
+        let messages = channel_id
+            .messages(ctx, serenity::GetMessages::new().limit(100))
             .await
-            .context("YouTube search request failed")?;
-        let mut posted_guard = self.posted.lock().await;
-        if posted_guard.is_none() {
-            *posted_guard = Some(load_posted(&self.path).await?);
-        }
-        let posted = posted_guard.as_mut().expect("posted set was initialized");
-        let video = find_video(response.items.unwrap_or_default(), posted);
+            .context("failed to load recent YouTube announcements")?;
+        let posted = publish_due(ctx, &messages).await;
+        let response = self
+            .http
+            .get("https://www.googleapis.com/youtube/v3/search")
+            .query(&[
+                ("part", "snippet"),
+                ("q", "6b6t.org OR 6b6t"),
+                ("order", "date"),
+                ("maxResults", "5"),
+                ("type", "video"),
+                ("key", api_key),
+            ])
+            .send()
+            .await
+            .context("YouTube search request failed")?
+            .error_for_status()
+            .context("YouTube search returned an error")?
+            .json::<SearchResponse>()
+            .await
+            .context("YouTube search returned invalid JSON")?;
+        let video = find_video(response.items, &posted);
         let Some(video) = video else { return Ok(()) };
         let title = html_escape::decode_html_entities(&video.title);
         let url = format!("https://www.youtube.com/watch?v={}", video.id);
-        let message = channel_id
+        channel_id
             .send_message(
                 ctx,
                 serenity::CreateMessage::new()
@@ -119,34 +129,52 @@ impl YoutubeService {
                     .allowed_mentions(serenity::CreateAllowedMentions::new()),
             )
             .await?;
-        // Only suppress the video after Discord has accepted the message. A
-        // transient send failure must remain eligible for the next poll.
-        posted.insert(video.id.clone());
-        save_posted(&self.path, posted).await?;
-        drop(posted_guard);
-        let http = ctx.http.clone();
-        tokio::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_hours(12)).await;
-            if let Err(error) = message.crosspost(&http).await {
-                tracing::error!(%error, "failed to publish YouTube announcement");
-            }
-        });
         Ok(())
     }
+}
+
+async fn publish_due(ctx: &serenity::Context, messages: &[serenity::Message]) -> HashSet<String> {
+    let cutoff = chrono::Utc::now().timestamp() - 12 * 60 * 60;
+    // ponytail: 100 messages is one Discord request; persist IDs if this channel ever exceeds it between polls.
+    let mut posted = HashSet::new();
+    for message in messages
+        .iter()
+        .filter(|message| message.author.id == ctx.cache.current_user().id)
+    {
+        let Some(id) = youtube_video_id(&message.content) else {
+            continue;
+        };
+        posted.insert(id.to_owned());
+        if message.timestamp.unix_timestamp() <= cutoff
+            && !message
+                .flags
+                .is_some_and(|flags| flags.contains(serenity::MessageFlags::CROSSPOSTED))
+            && let Err(error) = message.crosspost(ctx).await
+        {
+            tracing::error!(%error, message_id = %message.id, "failed to publish YouTube announcement");
+        }
+    }
+    posted
+}
+
+fn youtube_video_id(content: &str) -> Option<&str> {
+    content
+        .lines()
+        .find_map(|line| line.strip_prefix("https://www.youtube.com/watch?v="))
+        .filter(|id| !id.is_empty())
 }
 
 fn find_video(items: Vec<SearchResult>, posted: &HashSet<String>) -> Option<YoutubeVideo> {
     items
         .into_iter()
         .filter_map(|item| {
-            let id = item.id?.video_id?;
             let snippet = item.snippet?;
             Some(YoutubeVideo {
-                id,
-                title: snippet.title.unwrap_or_default(),
-                description: snippet.description.unwrap_or_default(),
-                channel_title: snippet.channel_title.unwrap_or_default(),
-                channel_id: snippet.channel_id.unwrap_or_default(),
+                id: item.id?.video_id?,
+                title: snippet.title,
+                description: snippet.description,
+                channel_title: snippet.channel_title,
+                channel_id: snippet.channel_id,
             })
         })
         .find(|video| {
@@ -168,30 +196,8 @@ fn find_video(items: Vec<SearchResult>, posted: &HashSet<String>) -> Option<Yout
         })
 }
 
-async fn load_posted(path: &PathBuf) -> Result<HashSet<String>> {
-    match tokio::fs::read_to_string(path).await {
-        Ok(content) => serde_json::from_str::<Vec<String>>(&content)
-            .map(|ids| ids.into_iter().collect())
-            .context("invalid YouTube storage file"),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(HashSet::new()),
-        Err(error) => Err(error).context("failed to read YouTube storage file"),
-    }
-}
-async fn save_posted(path: &PathBuf, posted: &HashSet<String>) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        tokio::fs::create_dir_all(parent).await?;
-    }
-    let mut values = posted.iter().cloned().collect::<Vec<_>>();
-    values.sort();
-    tokio::fs::write(path, serde_json::to_string_pretty(&values)?)
-        .await
-        .context("failed to save YouTube storage")
-}
-
 #[cfg(test)]
 mod tests {
-    use google_youtube3::api::{ResourceId, SearchResultSnippet};
-
     use super::*;
 
     #[test]
@@ -242,25 +248,31 @@ mod tests {
     #[test]
     fn channel_name_alone_does_not_match_a_query() {
         let mut unrelated = result("unrelated", "A completely unrelated video", "channel");
-        unrelated.snippet.as_mut().expect("snippet").channel_title =
-            Some("6b6t creator".to_owned());
+        unrelated.snippet.as_mut().unwrap().channel_title = "6b6t creator".to_owned();
 
         assert!(find_video(vec![unrelated], &HashSet::new()).is_none());
+    }
+
+    #[test]
+    fn announcement_video_ids_are_recovered_from_discord_content() {
+        assert_eq!(
+            youtube_video_id("**Title** - Creator\nhttps://www.youtube.com/watch?v=abc123"),
+            Some("abc123")
+        );
+        assert_eq!(youtube_video_id("unrelated"), None);
     }
 
     fn result(id: &str, title: &str, channel_id: &str) -> SearchResult {
         SearchResult {
             id: Some(ResourceId {
                 video_id: Some(id.to_owned()),
-                ..Default::default()
             }),
             snippet: Some(SearchResultSnippet {
-                title: Some(title.to_owned()),
-                channel_id: Some(channel_id.to_owned()),
-                channel_title: Some("Creator".to_owned()),
-                ..Default::default()
+                title: title.to_owned(),
+                description: String::new(),
+                channel_id: channel_id.to_owned(),
+                channel_title: "Creator".to_owned(),
             }),
-            ..Default::default()
         }
     }
 }

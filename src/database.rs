@@ -125,7 +125,7 @@ impl Databases {
     }
 }
 
-fn normalize_uuid(uuid: &str) -> String {
+pub(crate) fn normalize_uuid(uuid: &str) -> String {
     uuid.chars()
         .filter(|character| *character != '-')
         .flat_map(char::to_lowercase)

@@ -55,6 +55,6 @@ mod tests {
         reqwest::Client::builder()
             .build()
             .expect("the shared HTTP client should initialize");
-        crate::youtube::YoutubeService::new(None).expect("the YouTube client should initialize");
+        crate::youtube::YoutubeService::new(reqwest::Client::new(), None);
     }
 }

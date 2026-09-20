@@ -1788,7 +1788,7 @@ fn input(label: &str, id: &str, min: u16, max: u16, paragraph: bool) -> serenity
 fn menu_embed() -> serenity::CreateEmbed {
     serenity::CreateEmbed::new()
                 .title("6b6t Events")
-                .description(format!("Discover events organized by the 6b6t community.\n\nTo apply, link your Minecraft account and play at least {REQUIRED_PLAYTIME_HOURS} hours in the past 60 days. Playtime is measured by UTC calendar days. Provide an event description, your linked Minecraft username, a Discord invite, a YouTube video or r/6b6t post, a future start time with a UTC offset, and joining instructions.\n\nThree staff approvals are required. Approved events appear here immediately and are published to following servers after two hours, provided the event has not started.\n\n{DISCLAIMER}\n\nSelect Apply to begin."))
+                .description(format!("Discover events organized by the 6b6t community.\nTo apply, link your Minecraft account (join 6b6t and run /link) and play at least {REQUIRED_PLAYTIME_HOURS} hours in the past 60 days. Provide event name, an event description, your linked Minecraft username, a Discord invite, a YouTube video or post on 6b6t subreddit, a future start time, and joining instructions.\n{DISCLAIMER}\nSelect Apply to begin."))
                 .thumbnail("https://www.6b6t.org/logo.png")
                 .colour(0x00FF_F11A)
 }
@@ -2270,9 +2270,10 @@ mod tests {
         assert!(resolution_message(&submission, "").contains("start time has passed"));
         let menu = serde_json::to_value(menu_message()).unwrap();
         let text = menu["embeds"][0]["description"].as_str().unwrap();
-        assert!(text.contains("50 hours"));
-        assert!(text.contains("60 days"));
-        assert!(!text.contains("100 hours"));
+        assert_eq!(
+            text,
+            "Discover events organized by the 6b6t community.\nTo apply, link your Minecraft account (join 6b6t and run /link) and play at least 50 hours in the past 60 days. Provide event name, an event description, your linked Minecraft username, a Discord invite, a YouTube video or post on 6b6t subreddit, a future start time, and joining instructions.\nThis event is organized by members of the 6b6t community and is not operated or endorsed by 6b6t. Participate at your own risk.\nSelect Apply to begin."
+        );
         assert!(
             menu.to_string()
                 .contains(&format!("\"custom_id\":\"{APPLY_ID}\""))
