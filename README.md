@@ -58,8 +58,8 @@ review channel, and records privacy-safe audit entries in the log channel.
 
 The bot needs View Channel, Read Message History, Send Messages, Embed Links,
 Manage Messages, and View Audit Log. It must also be able to mention the Events
-role. Approved posts are automatically published 120 minutes after posting;
-the MariaDB-backed worker resumes pending posts and publications after restart.
+role. Approved posts must be published manually using Discord's Publish action;
+the MariaDB-backed worker resumes pending posts after restart.
 
 Applicants must link their Minecraft account and have at least **50 hours of
 playtime in the past 60 UTC calendar days**, including today. Applications
@@ -68,9 +68,10 @@ a YouTube video or r/6b6t post, a future start time with a UTC offset, and joini
 instructions. Three distinct Terminators or Marketers must approve an event;
 one reviewer may decline it with a reason. Applicants cannot review their own events.
 
-Approved events are posted immediately. Publication to following servers happens
-two hours after posting, only if the event has not started. Applications whose
-start time passes before approval or publication expire. The bot attempts to
+Approved events are posted immediately. Staff must manually publish them to
+following servers; the bot never automatically publishes community events,
+including posts previously scheduled for publication. Applications whose
+start time passes before approval or posting expire. The bot attempts to
 notify applicants by direct message of approval, denial, or expiry. Failed DMs
 are retried hourly. Delivery receipts are stored in MariaDB.
 

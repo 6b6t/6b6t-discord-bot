@@ -1005,21 +1005,6 @@ impl EventSubmissionService {
             }
             Err(error) => tracing::error!(%error, "failed to load undelivered event reviews"),
         }
-        let due = sqlx::query_as::<_, Submission>(
-            "SELECT id, submitter_discord_id, minecraft_username, event_name, explanation, discord_invite, promotion_url, event_at, event_time_input, join_instructions, status, denial_reason, review_message_id, event_message_id FROM event_submissions WHERE status = 'approved' AND event_message_id IS NOT NULL AND publish_at <= UTC_TIMESTAMP() AND published_at IS NULL ORDER BY publish_at LIMIT 20",
-        )
-        .fetch_all(&self.databases.link)
-        .await;
-        match due {
-            Ok(submissions) => {
-                for submission in submissions {
-                    if let Err(error) = self.publish(ctx, &submission).await {
-                        tracing::error!(%error, event_id = submission.id, "event publication failed; will retry");
-                    }
-                }
-            }
-            Err(error) => tracing::error!(%error, "failed to load due event publications"),
-        }
         if let Err(error) = self.notify_resolutions(ctx).await {
             tracing::error!(%error, "event resolution notification retry failed");
         }
@@ -1111,8 +1096,7 @@ impl EventSubmissionService {
                         .is_some_and(|footer| footer.text == format!("EVT-{id}"))
                 })
         }) {
-            self.attach_post(id, message.id, message.timestamp.unix_timestamp())
-                .await?;
+            self.attach_post(id, message.id).await?;
             return Ok(());
         }
         if submission.event_at <= Utc::now().timestamp() {
@@ -1136,8 +1120,7 @@ impl EventSubmissionService {
             .await;
         match message {
             Ok(message) => {
-                self.attach_post(id, message.id, message.timestamp.unix_timestamp())
-                    .await?;
+                self.attach_post(id, message.id).await?;
                 self.log(
                     ctx,
                     "Approved event posted",
@@ -1158,71 +1141,12 @@ impl EventSubmissionService {
         }
     }
 
-    async fn attach_post(
-        &self,
-        id: u64,
-        message_id: serenity::MessageId,
-        posted_at: i64,
-    ) -> Result<()> {
-        sqlx::query("UPDATE event_submissions SET status = 'approved', event_message_id = ?, publish_at = DATE_ADD(TIMESTAMPADD(SECOND, ?, '1970-01-01 00:00:00'), INTERVAL 120 MINUTE) WHERE id = ? AND event_message_id IS NULL")
+    async fn attach_post(&self, id: u64, message_id: serenity::MessageId) -> Result<()> {
+        sqlx::query("UPDATE event_submissions SET status = 'approved', event_message_id = ?, publish_at = NULL WHERE id = ? AND event_message_id IS NULL")
             .bind(message_id.to_string())
-            .bind(posted_at)
             .bind(id)
             .execute(&self.databases.link)
             .await?;
-        Ok(())
-    }
-
-    async fn publish(&self, ctx: &serenity::Context, submission: &Submission) -> Result<()> {
-        if submission.event_at <= Utc::now().timestamp() {
-            self.expire(submission.id).await?;
-            return Ok(());
-        }
-        let message_id = submission
-            .event_message_id
-            .as_deref()
-            .and_then(parse_message_id)
-            .context("approved event has an invalid message ID")?;
-        let message = self.channels.events.message(ctx, message_id).await;
-        let message = match message {
-            Ok(message) => message,
-            Err(error) if is_unknown_message(&error) => {
-                tracing::warn!(%error, event_id = submission.id, "approved event message no longer exists");
-                sqlx::query("UPDATE event_submissions SET status = 'deleted', deleted_at = UTC_TIMESTAMP() WHERE id = ?")
-                    .bind(submission.id)
-                    .execute(&self.databases.link)
-                    .await?;
-                self.log(
-                    ctx,
-                    "Approved event deleted",
-                    format!(
-                        "EVT-{}\nDeleted by: Attribution unavailable (deleted while bot was offline)",
-                        submission.id
-                    ),
-                    0x00ED_4245,
-                )
-                .await;
-                return Ok(());
-            }
-            Err(error) => return Err(error.into()),
-        };
-        if !message
-            .flags
-            .is_some_and(|flags| flags.contains(serenity::MessageFlags::CROSSPOSTED))
-        {
-            message.crosspost(ctx).await?;
-        }
-        sqlx::query("UPDATE event_submissions SET published_at = UTC_TIMESTAMP() WHERE id = ? AND published_at IS NULL")
-            .bind(submission.id)
-            .execute(&self.databases.link)
-            .await?;
-        self.log(
-            ctx,
-            "Event published",
-            format!("EVT-{}\nMessage: {}", submission.id, message.link()),
-            0x0057_F287,
-        )
-        .await;
         Ok(())
     }
 
