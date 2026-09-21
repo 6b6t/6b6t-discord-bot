@@ -19,6 +19,8 @@ use crate::{
 const APPLY_ID: &str = "events:apply";
 const DRAFT_TTL: Duration = Duration::from_mins(30);
 const REQUIRED_PLAYTIME_HOURS: i64 = 50;
+// Temporary pause: set back to true to restore enforcement without changing the copy.
+const ENFORCE_PLAYTIME_REQUIREMENT: bool = false;
 // The player statistics service stores play_time in Minecraft ticks (20 per second).
 const REQUIRED_PLAYTIME_TICKS: i64 = REQUIRED_PLAYTIME_HOURS * 60 * 60 * 20;
 const DISCLAIMER: &str = "This event is organized by members of the 6b6t community and is not operated or endorsed by 6b6t. Participate at your own risk.";
@@ -1569,6 +1571,9 @@ impl EventSubmissionService {
                 false,
             ));
         }
+        if !ENFORCE_PLAYTIME_REQUIREMENT {
+            return Ok((None, false));
+        }
         if playtime_check_bypassed(self.test_user_id, user_id) {
             return Ok((None, true));
         }
@@ -2106,6 +2111,44 @@ mod tests {
         assert!(meets_playtime_requirement(3_600_000));
         assert!(meets_playtime_requirement(3_600_001));
         assert!(meets_playtime_requirement(10 * 24 * 60 * 60 * 20)); // Ten days in ticks.
+    }
+
+    #[tokio::test]
+    async fn paused_playtime_check_skips_stats_but_still_checks_linked_name() {
+        let pool = sqlx::mysql::MySqlPoolOptions::new()
+            .connect_lazy("mysql://localhost/unused")
+            .unwrap();
+        pool.close().await;
+        let service = EventSubmissionService::new(
+            EventChannels {
+                events: serenity::ChannelId::new(1),
+                review: serenity::ChannelId::new(2),
+                logs: serenity::ChannelId::new(3),
+            },
+            Databases {
+                link: pool.clone(),
+                stats: pool,
+            },
+            None,
+        );
+        let user = serenity::UserId::new(4);
+        assert_eq!(
+            service
+                .submission_denial(user, "Player", "player", "unused")
+                .await
+                .unwrap(),
+            (None, false)
+        );
+        assert_eq!(
+            service
+                .submission_denial(user, "Player", "Other", "unused")
+                .await
+                .unwrap(),
+            (
+                Some(("Minecraft account mismatch", "linked_account_mismatch")),
+                false
+            )
+        );
     }
 
     #[test]
