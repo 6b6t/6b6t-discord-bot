@@ -10,7 +10,10 @@ const WHITELISTED_CHANNELS: &[&str] = &[
     "UCBrOlHTLhY0dnmqBWqbD3IQ",
     "UCoXqVBjCPgKkoI_KZA3tutw",
 ];
-const BLOCKED_CHANNELS: &[&str] = &["UClo41vgAsX7YkhpxMW42WvA"];
+const BLOCKED_CHANNELS: &[&str] = &[
+    "UClo41vgAsX7YkhpxMW42WvA",
+    "UCgs1Uk7zf_NQ4lEzSWwZGBQ", // @ak_mini_vlog-q2b
+];
 const IGNORE_WORDS: &[&str] = &[
     "2b2t",
     "5b5t",
@@ -233,16 +236,18 @@ mod tests {
 
     #[test]
     fn blocked_channels_are_never_selected() {
-        let selected = find_video(
-            vec![
-                result("blocked", "6b6t base tour", BLOCKED_CHANNELS[0]),
-                result("allowed", "6b6t base tour", "allowed-channel"),
-            ],
-            &HashSet::new(),
-        )
-        .expect("the allowed result should be selected");
+        for channel_id in BLOCKED_CHANNELS {
+            let selected = find_video(
+                vec![
+                    result("blocked", "6b6t base tour", channel_id),
+                    result("allowed", "6b6t base tour", "allowed-channel"),
+                ],
+                &HashSet::new(),
+            )
+            .expect("the allowed result should be selected");
 
-        assert_eq!(selected.id, "allowed");
+            assert_eq!(selected.id, "allowed");
+        }
     }
 
     #[test]
