@@ -434,7 +434,7 @@ async fn motd_button(
             .await?;
         return Ok(());
     }
-    if action != "approve" {
+    if !matches!(action, "approve" | "mark_ad") {
         return Ok(());
     }
     interaction
@@ -451,7 +451,7 @@ async fn motd_button(
             .member
             .as_ref()
             .context("MOTD review used outside a guild")?,
-        "approve",
+        action,
         request_id,
         None,
     )
@@ -460,7 +460,7 @@ async fn motd_button(
         .edit_response(
             ctx,
             serenity::EditInteractionResponse::new()
-                .content(result.unwrap_or_else(|error| format!("Failed to approve MOTD: {error}"))),
+                .content(result.unwrap_or_else(|error| format!("Failed to review MOTD: {error}"))),
         )
         .await?;
     Ok(())
