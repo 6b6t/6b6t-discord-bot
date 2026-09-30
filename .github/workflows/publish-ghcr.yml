@@ -35,9 +35,12 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install Railpack
+        env:
+          RAILPACK_VERSION: "0.40.1"
         run: |
+          set -euo pipefail
           mkdir -p "$HOME/.local/bin"
-          curl --fail --silent --show-error --location https://railpack.com/install.sh | sh -s -- --bin-dir "$HOME/.local/bin"
+          curl --fail --silent --show-error --location https://railpack.com/install.sh | bash -s -- --bin-dir "$HOME/.local/bin" --yes
           "$HOME/.local/bin/railpack" --version
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
