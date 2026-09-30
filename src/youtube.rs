@@ -13,6 +13,7 @@ const WHITELISTED_CHANNELS: &[&str] = &[
 const BLOCKED_CHANNELS: &[&str] = &[
     "UClo41vgAsX7YkhpxMW42WvA",
     "UCgs1Uk7zf_NQ4lEzSWwZGBQ", // @ak_mini_vlog-q2b
+    "UCaPS1QMix2OZU5Czu16zBpA",
 ];
 const IGNORE_WORDS: &[&str] = &[
     "2b2t",
