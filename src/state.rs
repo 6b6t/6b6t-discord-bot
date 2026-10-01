@@ -60,8 +60,8 @@ impl AppState {
             .telegram
             .as_ref()
             .map(|config| TelegramService::new(http.clone(), config.clone(), databases.clone()));
-        let anarchy = load_anarchy(&environment);
-        let community_event = load_community_event(&environment);
+        let anarchy = load_anarchy(&environment, &http);
+        let community_event = load_community_event(&environment, &http);
         let event_submissions = match (environment.event_channels, databases.clone()) {
             (Some(channels), Some(databases)) => Some(EventSubmissionService::new(
                 channels,
@@ -104,11 +104,18 @@ impl AppState {
     }
 }
 
-fn load_community_event(environment: &Arc<Environment>) -> Option<CommunityEventService> {
+fn load_community_event(
+    environment: &Arc<Environment>,
+    http: &reqwest::Client,
+) -> Option<CommunityEventService> {
     if !environment.community_event_announcements_enabled {
         return None;
     }
     let channel_id = environment.community_event_announcement_channel_id?;
+    let Some(secret) = environment.motd_review_secret.clone() else {
+        tracing::error!("community-event announcements require MOTD_REVIEW_BOT_SECRET");
+        return None;
+    };
     let Some(redis) = environment.redis.as_ref() else {
         tracing::error!(
             "community-event Discord announcements require Redis; announcements are disabled"
@@ -117,6 +124,7 @@ fn load_community_event(environment: &Arc<Environment>) -> Option<CommunityEvent
     };
     match CommunityEventService::new(
         redis,
+        (http.clone(), environment.website_data_url.clone(), secret),
         channel_id,
         environment.community_event_announcement_channel_id_es,
         environment.community_event_announcement_channel_id_de,
@@ -134,21 +142,18 @@ fn load_community_event(environment: &Arc<Environment>) -> Option<CommunityEvent
 pub type Error = anyhow::Error;
 pub type Context<'a> = poise::Context<'a, AppState, Error>;
 
-fn load_anarchy(environment: &Arc<Environment>) -> Option<AnarchyService> {
-    let (Some(channel_id), Some(redis)) = (
-        environment.anarchy_analytics_channel_id,
-        environment.redis.as_ref(),
-    ) else {
-        tracing::warn!(
-            "anarchy analytics require ANARCHY_ANALYTICS_CHANNEL_ID and REDIS_HOST; analytics are disabled"
-        );
+fn load_anarchy(environment: &Arc<Environment>, http: &reqwest::Client) -> Option<AnarchyService> {
+    let Some(secret) = environment.motd_review_secret.clone() else {
+        tracing::warn!("anarchy analytics require MOTD_REVIEW_BOT_SECRET; analytics are disabled");
         return None;
     };
-    match AnarchyService::new(redis, channel_id) {
-        Ok(service) => Some(service),
-        Err(error) => {
-            tracing::error!(%error, "failed to initialize anarchy mod analytics; disabled");
-            None
-        }
-    }
+    let channel_id = environment
+        .anarchy_analytics_channel_id
+        .unwrap_or_else(|| poise::serenity_prelude::ChannelId::new(1_535_676_602_665_533_530));
+    Some(AnarchyService::new(
+        http.clone(),
+        environment.website_data_url.clone(),
+        secret,
+        channel_id,
+    ))
 }

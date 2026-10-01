@@ -122,28 +122,21 @@ variables are not set.
 ### Anarchy mod analytics
 
 Every hour the bot posts anarchy mod tracking analytics (all-time, today, and
-yesterday hits and unique IPs) to a Discord channel. When the backend also
-maintains the optional keys below, the report additionally shows the share of
-online players and of today's active players using the mod; each percentage
-line is omitted while its key is empty or missing.
-
-| Key | Type | Purpose |
-| --- | --- | --- |
-| `anarchymod:hits:total` | Counter | All-time hits |
-| `anarchymod:unique_ips:all_time` | Set | All-time unique IPs |
-| `anarchymod:hits:daily:YYYY-MM-DD` | Counter | Daily hits |
-| `anarchymod:unique_ips:daily:YYYY-MM-DD` | Set | Daily unique IPs |
-
-The service reads these historical keys from Redis. Current online AnarchyMod
+yesterday hits and unique IPs) to `#anarchy-mod` (channel `1535676602665533530`
+unless overridden). It fetches current D1 counters from the website's authenticated
+`/api/discord/data?resource=anarchy-mod` endpoint. Daily dates use UTC, matching
+the website's counters. Redis is not required for analytics. Current online AnarchyMod
 users come from the authenticated `/anarchymod-players` command-service endpoint,
 while `/network-players` supplies the total online-player denominator. Analytics
-is enabled when both the channel and Redis are configured.
+is enabled when `MOTD_REVIEW_BOT_SECRET` is configured on both the bot and website.
 
 | Variable | Required | Purpose |
 | --- | --- | --- |
-| `ANARCHY_ANALYTICS_CHANNEL_ID` | For analytics | Channel receiving the hourly report |
-| `REDIS_URI` | Either this or host | Full Redis connection string, e.g. `redis://default:pass@host:6379` |
-| `REDIS_HOST` | For analytics | Redis host (when `REDIS_URI` is not set); a full `redis://` URI here is also accepted |
+| `ANARCHY_ANALYTICS_CHANNEL_ID` | No | Override the default hourly report channel |
+| `MOTD_REVIEW_BOT_SECRET` | For analytics and events | Existing shared website API secret |
+| `WEBSITE_BASE_URL` | No | Website origin; defaults to `https://www.6b6t.org` |
+| `REDIS_URI` | For event checkpoints; either this or host | Full Redis connection string, e.g. `redis://default:pass@host:6379` |
+| `REDIS_HOST` | For event delivery checkpoints | Redis host (when `REDIS_URI` is not set); a full `redis://` URI here is also accepted |
 | `REDIS_PORT` | No | Redis port, defaults to `6379` |
 | `REDIS_PASSWORD` | No | Redis password |
 | `REDIS_DB` | No | Redis database number, defaults to `0` |
@@ -151,8 +144,12 @@ is enabled when both the channel and Redis are configured.
 ### Community-event announcements
 
 Set `COMMUNITY_EVENT_ANNOUNCEMENTS_ENABLED=true` and configure the English channel to enable purchase announcements. The bot reads the
-website's community-event history from the existing Redis host and posts one message for each unseen
-extension. Redis is also used to track the last delivered event so announcements are not duplicated.
+website's D1 community-event history through `/api/discord/data?resource=community-event` and posts one message for each unseen
+extension. Redis stores only the last delivered event and countdown locks. Preserve its checkpoint
+keys when migrating; the historical website Redis counters and history keys are no longer read.
+The website owns Minecraft proxy announcements; this bot owns the localized Discord messages.
+Keep the Redis deployment variables while community-event announcements are enabled;
+they can be removed when this feature is disabled, since analytics no longer uses Redis.
 
 | Variable | Required | Purpose |
 | --- | --- | --- |
@@ -162,7 +159,7 @@ extension. Redis is also used to track the last delivered event so announcements
 | `COMMUNITY_EVENT_ANNOUNCEMENT_CHANNEL_ID_DE` | No | German Discord channel |
 | `COMMUNITY_EVENT_ANNOUNCEMENT_CHANNEL_ID_TR` | No | Turkish Discord channel |
 | `COMMUNITY_EVENT_ANNOUNCEMENT_CHANNEL_ID_DUPE` | No | Dedicated English `#dupe-event` channel; backfills existing extension history on first enable |
-| `REDIS_HOST` | To enable | Reads the event history and stores the last delivered event |
+| `REDIS_HOST` | To enable | Stores Discord delivery checkpoints and countdown locks; event history comes from website D1 |
 
 The bot role needs **View Channel** and **Send Messages** in the configured
 channels, plus **Add Reactions** for the automatic fire reaction. General channels checkpoint the

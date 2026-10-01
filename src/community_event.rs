@@ -13,10 +13,6 @@ const TURKISH_CHECKPOINT_KEY: &str = "community-event:discord:last-history-id:tr
 const DUPE_EVENT_CHECKPOINT_KEY: &str = "community-event:discord:last-history-id:dupe-event";
 const DUPE_EVENT_COUNTDOWN_CHECKPOINT_KEY: &str =
     "community-event:discord:dupe-event:countdown-hour-checkpoint";
-const EVENT_STATE_KEY: &str = "community:event:dupe-2026:state";
-const HISTORY_KEY: &str = "community:event:dupe-2026:history";
-const HISTORY_INDEX_KEY: &str = "community:event:dupe-2026:history-index";
-const HISTORY_LIMIT: usize = 50;
 const EMPTY_HISTORY_CHECKPOINT: &str = "__empty_history__";
 
 #[derive(Clone, Copy, Debug)]
@@ -39,6 +35,9 @@ struct AnnouncementChannel {
 #[derive(Clone)]
 pub struct CommunityEventService {
     redis: redis::Client,
+    http: reqwest::Client,
+    url: String,
+    secret: String,
     channels: Vec<AnnouncementChannel>,
     dupe_event_channel_id: Option<serenity::ChannelId>,
 }
@@ -63,6 +62,12 @@ struct StoredEventState {
     ends_at_ms: i64,
 }
 
+#[derive(Deserialize)]
+struct WebsiteEventData {
+    state: Option<StoredEventState>,
+    history: Vec<HistoryItem>,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct CountdownCheckpoint {
@@ -74,6 +79,7 @@ struct CountdownCheckpoint {
 impl CommunityEventService {
     pub fn new(
         redis: &RedisConfig,
+        website: (reqwest::Client, String, String),
         english_channel_id: serenity::ChannelId,
         spanish_channel_id: Option<serenity::ChannelId>,
         german_channel_id: Option<serenity::ChannelId>,
@@ -131,12 +137,28 @@ impl CommunityEventService {
         }
         Ok(Self {
             redis,
+            http: website.0,
+            url: website.1,
+            secret: website.2,
             channels,
             dupe_event_channel_id,
         })
     }
 
     pub async fn poll(&self, ctx: &serenity::Context) -> Result<()> {
+        let data = self
+            .http
+            .get(&self.url)
+            .query(&[("resource", "community-event")])
+            .bearer_auth(&self.secret)
+            .send()
+            .await
+            .context("failed to fetch website community-event data")?
+            .error_for_status()
+            .context("website community-event request failed")?
+            .json::<WebsiteEventData>()
+            .await
+            .context("website community-event data is invalid")?;
         let mut connection = self
             .redis
             .get_multiplexed_async_connection()
@@ -145,7 +167,7 @@ impl CommunityEventService {
         let mut first_error = None;
         if let Some(channel_id) = self.dupe_event_channel_id
             && let Err(error) = self
-                .poll_dupe_event_countdown(ctx, &mut connection, channel_id)
+                .poll_dupe_event_countdown(ctx, &mut connection, channel_id, data.state.as_ref())
                 .await
         {
             tracing::error!(
@@ -156,7 +178,7 @@ impl CommunityEventService {
             first_error = Some(error);
         }
 
-        let history = self.fetch_history(&mut connection).await?;
+        let history = data.history;
         if history.is_empty() {
             for channel in &self.channels {
                 connection
@@ -283,18 +305,13 @@ impl CommunityEventService {
         ctx: &serenity::Context,
         connection: &mut redis::aio::MultiplexedConnection,
         channel_id: serenity::ChannelId,
+        state: Option<&StoredEventState>,
     ) -> Result<()> {
-        let state_raw: Option<String> = connection
-            .get(EVENT_STATE_KEY)
-            .await
-            .context("failed to read the community-event state")?;
-        let Some(state_raw) = state_raw else {
+        let Some(state) = state else {
             return Ok(());
         };
-        let state: StoredEventState = serde_json::from_str(&state_raw)
-            .context("Redis contains an invalid community-event state")?;
         let now_ms = chrono::Utc::now().timestamp_millis();
-        let Some(remaining_hours) = countdown_hours_remaining(&state, now_ms) else {
+        let Some(remaining_hours) = countdown_hours_remaining(state, now_ms) else {
             return Ok(());
         };
         let checkpoint = CountdownCheckpoint {
@@ -373,36 +390,6 @@ impl CommunityEventService {
             .await
             .context("failed to finalize the Discord countdown delivery")?;
         Ok(())
-    }
-
-    async fn fetch_history(
-        &self,
-        connection: &mut redis::aio::MultiplexedConnection,
-    ) -> Result<Vec<HistoryItem>> {
-        let ids: Vec<String> = redis::cmd("ZREVRANGE")
-            .arg(HISTORY_INDEX_KEY)
-            .arg(0)
-            .arg(HISTORY_LIMIT - 1)
-            .query_async(connection)
-            .await
-            .context("failed to load the community-event history index")?;
-        if ids.is_empty() {
-            return Ok(Vec::new());
-        }
-        let values: Vec<Option<String>> = redis::cmd("HMGET")
-            .arg(HISTORY_KEY)
-            .arg(&ids)
-            .query_async(connection)
-            .await
-            .context("failed to load community-event history records")?;
-        values
-            .into_iter()
-            .flatten()
-            .map(|raw| {
-                serde_json::from_str(&raw)
-                    .context("Redis contains an invalid community-event history record")
-            })
-            .collect()
     }
 
     async fn announce(

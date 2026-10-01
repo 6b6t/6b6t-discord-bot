@@ -2,16 +2,10 @@ use std::fmt::Write as _;
 
 use anyhow::{Context as _, Result};
 use poise::serenity_prelude as serenity;
-use redis::AsyncCommands;
+use serde::Deserialize;
 
-use crate::config::RedisConfig;
-
-const TOTAL_HITS_KEY: &str = "anarchymod:hits:total";
-const UNIQUE_ALL_TIME_KEY: &str = "anarchymod:unique_ips:all_time";
-const DAILY_HITS_PREFIX: &str = "anarchymod:hits:daily:";
-const DAILY_UNIQUE_PREFIX: &str = "anarchymod:unique_ips:daily:";
-
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AnarchyStats {
     pub total_hits: u64,
     pub unique_all_time: u64,
@@ -19,10 +13,11 @@ pub struct AnarchyStats {
     pub yesterday: DailyStats,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Deserialize)]
 pub struct DailyStats {
     pub date: String,
     pub hits: u64,
+    #[serde(rename = "uniques")]
     pub unique: u64,
 }
 
@@ -77,15 +72,25 @@ impl AnarchyStats {
 
 #[derive(Clone)]
 pub struct AnarchyService {
-    client: redis::Client,
+    http: reqwest::Client,
+    url: String,
+    secret: String,
     channel_id: serenity::ChannelId,
 }
 
 impl AnarchyService {
-    pub fn new(config: &RedisConfig, channel_id: serenity::ChannelId) -> Result<Self> {
-        let client = redis::Client::open(config.connection_url())
-            .context("failed to parse the Redis connection URI; check REDIS_URI/REDIS_HOST and make sure the password contains no raw '#' or '?' characters")?;
-        Ok(Self { client, channel_id })
+    pub fn new(
+        http: reqwest::Client,
+        url: String,
+        secret: String,
+        channel_id: serenity::ChannelId,
+    ) -> Self {
+        Self {
+            http,
+            url,
+            secret,
+            channel_id,
+        }
     }
 
     pub async fn report(
@@ -108,58 +113,19 @@ impl AnarchyService {
     }
 
     pub async fn fetch(&self) -> Result<AnarchyStats> {
-        let mut connection = self
-            .client
-            .get_multiplexed_async_connection()
+        self.http
+            .get(&self.url)
+            .query(&[("resource", "anarchy-mod")])
+            .bearer_auth(&self.secret)
+            .send()
             .await
-            .context("failed to connect to Redis")?;
-        let now = chrono::Utc::now().with_timezone(&chrono_tz::Europe::Berlin);
-        let today = now.format("%Y-%m-%d").to_string();
-        let yesterday = (now - chrono::Duration::days(1))
-            .format("%Y-%m-%d")
-            .to_string();
-
-        let total_hits = fetch_counter(&mut connection, TOTAL_HITS_KEY).await?;
-        let unique_all_time = connection
-            .scard::<_, u64>(UNIQUE_ALL_TIME_KEY)
+            .context("failed to fetch website analytics")?
+            .error_for_status()
+            .context("website analytics returned an error")?
+            .json()
             .await
-            .context("failed to read all-time unique IPs")?;
-        let today = DailyStats {
-            date: today.clone(),
-            hits: fetch_counter(&mut connection, &format!("{DAILY_HITS_PREFIX}{today}")).await?,
-            unique: connection
-                .scard::<_, u64>(format!("{DAILY_UNIQUE_PREFIX}{today}"))
-                .await
-                .context("failed to read today's unique IPs")?,
-        };
-        let yesterday = DailyStats {
-            date: yesterday.clone(),
-            hits: fetch_counter(&mut connection, &format!("{DAILY_HITS_PREFIX}{yesterday}"))
-                .await?,
-            unique: connection
-                .scard::<_, u64>(format!("{DAILY_UNIQUE_PREFIX}{yesterday}"))
-                .await
-                .context("failed to read yesterday's unique IPs")?,
-        };
-
-        Ok(AnarchyStats {
-            total_hits,
-            unique_all_time,
-            today,
-            yesterday,
-        })
+            .context("website analytics returned invalid data")
     }
-}
-
-async fn fetch_counter(
-    connection: &mut redis::aio::MultiplexedConnection,
-    key: &str,
-) -> Result<u64> {
-    let value: Option<String> = connection
-        .get(key)
-        .await
-        .context("failed to read analytics counter")?;
-    Ok(value.and_then(|value| value.parse().ok()).unwrap_or(0))
 }
 
 /// Rounded percentage of `numerator` over `denominator`, clamped to 100.
@@ -191,6 +157,42 @@ fn comma_count(value: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::{AnarchyStats, DailyStats, comma_count, percentage};
+
+    #[tokio::test]
+    async fn fetches_utc_d1_stats_without_redis_and_rejects_errors() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/api/discord/data", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            for status in ["200 OK", "503 Service Unavailable"] {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = [0; 2048];
+                let size = stream.read(&mut request).await.unwrap();
+                let request = String::from_utf8_lossy(&request[..size]);
+                assert!(request.contains("resource=anarchy-mod"));
+                assert!(
+                    request
+                        .to_ascii_lowercase()
+                        .contains("authorization: bearer test-secret")
+                );
+                let body = r#"{"totalHits":123,"uniqueAllTime":42,"today":{"date":"2026-10-02","hits":12,"uniques":6},"yesterday":{"date":"2026-10-01","hits":10,"uniques":5}}"#;
+                stream.write_all(format!("HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+            }
+        });
+        crate::install_crypto_provider().unwrap();
+        let service = super::AnarchyService::new(
+            reqwest::Client::new(),
+            url,
+            "test-secret".into(),
+            poise::serenity_prelude::ChannelId::new(1),
+        );
+        let stats = service.fetch().await.unwrap();
+        assert_eq!(stats.total_hits, 123);
+        assert_eq!(stats.today.date, "2026-10-02");
+        assert_eq!(stats.today.unique, 6);
+        assert!(service.fetch().await.is_err());
+        server.await.unwrap();
+    }
 
     #[test]
     fn counters_are_grouped_with_thousands_separators() {
