@@ -229,6 +229,7 @@ pub struct Environment {
     pub hytale_username: Option<String>,
     pub hytale_password: Option<String>,
     pub motd_review_url: String,
+    pub website_data_url: String,
     pub motd_review_secret: Option<String>,
     pub anarchy_analytics_channel_id: Option<serenity::ChannelId>,
     pub community_event_announcements_enabled: bool,
@@ -275,6 +276,7 @@ impl Environment {
                 format!("{}/api/discord/motd/review", website.trim_end_matches('/'))
             }),
             motd_review_secret: optional_env("MOTD_REVIEW_BOT_SECRET"),
+            website_data_url: format!("{}/api/discord/data", website.trim_end_matches('/')),
             anarchy_analytics_channel_id: optional_id("ANARCHY_ANALYTICS_CHANNEL_ID")?,
             community_event_announcements_enabled: env_bool(
                 "COMMUNITY_EVENT_ANNOUNCEMENTS_ENABLED",
