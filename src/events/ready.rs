@@ -173,7 +173,7 @@ async fn update_status(ctx: &serenity::Context, data: &AppState) {
     match data.server.server_data().await {
         Ok(server) => ctx.set_activity(Some(serenity::ActivityData::playing(format!(
             "IP: play.6b6t.org - Join {} other players online!",
-            server.player_count
+            server.players.humans
         )))),
         Err(error) => tracing::error!(%error, "failed to update Discord presence"),
     }

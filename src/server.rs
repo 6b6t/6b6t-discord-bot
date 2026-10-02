@@ -18,9 +18,31 @@ pub struct UserInfo {
 
 #[derive(Clone, Debug)]
 pub struct ServerData {
-    pub player_count: u64,
+    pub players: PlayerCounts,
     pub server_start_unix: Option<i64>,
     pub current_uptime_hours: Option<f64>,
+}
+
+/// Network player counts. Player-made bots are accounts the proxy marks as known bots.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PlayerCounts {
+    /// Everyone online, player-made bots included.
+    pub total: u64,
+    /// Real players: everyone online except known player-made bots.
+    pub humans: u64,
+    /// Known player-made bots. Zero when the proxy does not report them.
+    pub bots: u64,
+}
+
+impl PlayerCounts {
+    fn from_response(total: u64, bots: Option<u64>) -> Self {
+        let bots = bots.unwrap_or(0).min(total);
+        Self {
+            total,
+            humans: total - bots,
+            bots,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -74,10 +96,10 @@ impl ServerService {
 
     pub async fn server_data(&self) -> Result<ServerData> {
         let (players, uptime) = tokio::join!(
-            self.player_count_request("network-players"),
+            self.players_request("network-players"),
             self.http.get(format!("{SERVER_API}/uptime")).send(),
         );
-        let player_count = players?;
+        let players = players?;
         let uptime = match uptime {
             Ok(response) if response.status().is_success() => response
                 .json::<UptimeResponse>()
@@ -87,13 +109,17 @@ impl ServerService {
             _ => None,
         };
         Ok(ServerData {
-            player_count,
+            players: PlayerCounts::from_response(players.player_count, players.bot_count),
             server_start_unix: uptime.as_ref().and_then(|value| value.server_start_unix),
             current_uptime_hours: uptime.and_then(|value| value.current_uptime_hours),
         })
     }
 
     async fn player_count_request(&self, endpoint: &str) -> Result<u64> {
+        Ok(self.players_request(endpoint).await?.player_count)
+    }
+
+    async fn players_request(&self, endpoint: &str) -> Result<PlayersResponse> {
         let base_url = std::env::var("HTTP_PROXY_COMMAND_SERVICE_BASE_URL")
             .context("HTTP_PROXY_COMMAND_SERVICE_BASE_URL is required")?;
         let token = std::env::var("HTTP_PROXY_COMMAND_SERVICE_ACCESS_TOKEN")
@@ -113,7 +139,7 @@ impl ServerService {
         if !response.success {
             bail!("players service returned an unsuccessful response");
         }
-        Ok(response.player_count)
+        Ok(response)
     }
 
     /// Current online player count, used as the denominator for the anarchy mod
@@ -359,6 +385,8 @@ struct PlayersResponse {
     success: bool,
     #[serde(rename = "player-count")]
     player_count: u64,
+    #[serde(default, rename = "bot-count")]
+    bot_count: Option<u64>,
 }
 #[derive(Deserialize)]
 struct UptimeResponse {
@@ -483,9 +511,48 @@ fn hytale_metrics_url(endpoint: &str) -> Result<reqwest::Url> {
 #[cfg(test)]
 mod tests {
     use super::{
-        format_duration, highest_rank, hytale_metrics_url, metric_average, metric_sum,
-        year_from_epoch_millis,
+        PlayerCounts, PlayersResponse, format_duration, highest_rank, hytale_metrics_url,
+        metric_average, metric_sum, year_from_epoch_millis,
     };
+    #[test]
+    fn network_players_split_out_player_made_bots() {
+        let response: PlayersResponse = serde_json::from_str(
+            r#"{"success":true,"player-count":559,"human-count":173,"bot-count":386}"#,
+        )
+        .expect("valid response");
+        assert_eq!(
+            PlayerCounts::from_response(response.player_count, response.bot_count),
+            PlayerCounts {
+                total: 559,
+                humans: 173,
+                bots: 386,
+            }
+        );
+    }
+    #[test]
+    fn network_players_without_bot_count_are_all_players() {
+        let response: PlayersResponse =
+            serde_json::from_str(r#"{"success":true,"player-count":559}"#).expect("valid response");
+        assert_eq!(
+            PlayerCounts::from_response(response.player_count, response.bot_count),
+            PlayerCounts {
+                total: 559,
+                humans: 559,
+                bots: 0,
+            }
+        );
+    }
+    #[test]
+    fn bots_never_exceed_the_total() {
+        assert_eq!(
+            PlayerCounts::from_response(5, Some(9)),
+            PlayerCounts {
+                total: 5,
+                humans: 0,
+                bots: 5,
+            }
+        );
+    }
     #[test]
     fn duration_formats_nonzero_units() {
         assert_eq!(format_duration(90_061), "1d 1h 1m 1s");
