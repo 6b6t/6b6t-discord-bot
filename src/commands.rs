@@ -7,7 +7,7 @@ use crate::{
     command_moderation, config,
     database::{Databases, normalize_uuid},
     moderation,
-    server::format_duration,
+    server::{PlayerCounts, format_duration},
     state::{AppState, Context, Error},
 };
 
@@ -70,10 +70,7 @@ async fn playercount(ctx: Context<'_>) -> Result<(), Error> {
                 i64::try_from(std::time::Duration::from_secs_f64(hours * 3_600.0).as_secs()).ok()
             })
         });
-    let mut message = format!(
-        "There are currently {} players online on 6b6t.",
-        data.player_count
-    );
+    let mut message = player_count_sentence(data.players);
     if let Some(uptime) = uptime {
         let _ = write!(
             message,
@@ -84,6 +81,22 @@ async fn playercount(ctx: Context<'_>) -> Result<(), Error> {
     message.push_str(" To play, download [AnarchyMod](<https://6b6t.org/mod>).");
     finish_deferred(ctx, message, false).await?;
     Ok(())
+}
+
+/// Real players first; player-made bots and the total only when the proxy reports bots.
+fn player_count_sentence(players: PlayerCounts) -> String {
+    match players.bots {
+        0 => format!(
+            "There are currently {} players online on 6b6t.",
+            players.total
+        ),
+        bots => format!(
+            "There are currently {} players online on 6b6t, plus {bots} player-made {} ({} in total).",
+            players.humans,
+            if bots == 1 { "bot" } else { "bots" },
+            players.total
+        ),
+    }
 }
 
 /// See 6b6t's version.
@@ -539,7 +552,42 @@ async fn send_suppressed(ctx: Context<'_>, content: &str) -> Result<(), Error> {
 
 #[cfg(test)]
 mod tests {
-    use super::{PlayerUuidResolution, parse_discord_mention, select_linked_uuid, unique_uuids};
+    use super::{
+        PlayerCounts, PlayerUuidResolution, parse_discord_mention, player_count_sentence,
+        select_linked_uuid, unique_uuids,
+    };
+
+    #[test]
+    fn player_count_lists_players_bots_and_total() {
+        assert_eq!(
+            player_count_sentence(PlayerCounts {
+                total: 559,
+                humans: 173,
+                bots: 386,
+            }),
+            "There are currently 173 players online on 6b6t, plus 386 player-made bots (559 in total)."
+        );
+        assert_eq!(
+            player_count_sentence(PlayerCounts {
+                total: 174,
+                humans: 173,
+                bots: 1,
+            }),
+            "There are currently 173 players online on 6b6t, plus 1 player-made bot (174 in total)."
+        );
+    }
+
+    #[test]
+    fn player_count_without_bots_keeps_the_old_sentence() {
+        assert_eq!(
+            player_count_sentence(PlayerCounts {
+                total: 559,
+                humans: 559,
+                bots: 0,
+            }),
+            "There are currently 559 players online on 6b6t."
+        );
+    }
 
     #[test]
     fn user_mentions_parse_to_snowflakes() {
