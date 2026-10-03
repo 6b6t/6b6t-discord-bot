@@ -493,7 +493,7 @@ async fn finish_deferred(
         application
             .interaction
             .create_followup(
-                application.serenity_context,
+                application.serenity_context(),
                 serenity::CreateInteractionResponseFollowup::new()
                     .content(content)
                     .ephemeral(true)
@@ -502,7 +502,7 @@ async fn finish_deferred(
             .await?;
         if let Err(error) = application
             .interaction
-            .delete_response(application.serenity_context)
+            .delete_response(application.serenity_context())
             .await
         {
             tracing::warn!(%error, "failed to remove public deferred response");
@@ -511,7 +511,7 @@ async fn finish_deferred(
         application
             .interaction
             .edit_response(
-                application.serenity_context,
+                application.serenity_context(),
                 serenity::EditInteractionResponse::new()
                     .content(content)
                     .allowed_mentions(serenity::CreateAllowedMentions::new()),
@@ -535,7 +535,7 @@ async fn send_suppressed(ctx: Context<'_>, content: &str) -> Result<(), Error> {
     application
         .interaction
         .create_response(
-            application.serenity_context,
+            application.serenity_context(),
             serenity::CreateInteractionResponse::Message(
                 serenity::CreateInteractionResponseMessage::new()
                     .content(content)
