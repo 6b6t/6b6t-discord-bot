@@ -132,7 +132,8 @@ pub async fn terminatorban(
         deny(ctx, "You cannot ban yourself.").await?;
         return Ok(());
     }
-    if user.id == ctx.framework().bot_id() {
+    let bot_id = ctx.framework().bot_id();
+    if user.id == bot_id {
         deny(ctx, "I cannot ban myself.").await?;
         return Ok(());
     }
@@ -142,9 +143,7 @@ pub async fn terminatorban(
         deny(ctx, "The server owner cannot be banned.").await?;
         return Ok(());
     }
-    let bot_member = guild_id
-        .member(ctx.http(), ctx.framework().bot_id())
-        .await?;
+    let bot_member = guild_id.member(ctx.http(), bot_id).await?;
     if !guild.member_permissions(&bot_member).ban_members() {
         deny(
             ctx,
