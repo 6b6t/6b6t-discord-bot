@@ -204,7 +204,7 @@ mod tests {
             .filter(|id| !bypass.contains(id))
             .copied()
             .collect::<Vec<_>>();
-        assert!(add.is_empty());
-        assert!(remove.is_empty());
+        assert_eq!(add, Vec::<i32>::new());
+        assert_eq!(remove, Vec::<i32>::new());
     }
 }
