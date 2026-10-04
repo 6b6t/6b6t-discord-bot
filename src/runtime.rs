@@ -12,7 +12,13 @@ pub async fn start(state: AppState) -> Result<()> {
     let framework = poise::Framework::builder()
         .options(poise::FrameworkOptions {
             commands: commands::all(),
-            event_handler: |ctx, event, _framework, data| Box::pin(events::handle(ctx, event, data)),
+            event_handler: |framework, event| {
+                Box::pin(events::handle(
+                    framework.serenity_context,
+                    event,
+                    framework.user_data,
+                ))
+            },
             on_error: |error| Box::pin(handle_framework_error(error)),
             ..Default::default()
         })
