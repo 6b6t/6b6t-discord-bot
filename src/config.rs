@@ -13,6 +13,8 @@ pub const MERCH_ID: serenity::ChannelId = serenity::ChannelId::new(1_418_951_317
 pub const UPDATES_ID: serenity::ChannelId = serenity::ChannelId::new(982_190_978_142_195_712);
 pub const GENERAL_ID: serenity::ChannelId = serenity::ChannelId::new(982_192_297_645_056_040);
 pub const YOUTUBE_ID: serenity::ChannelId = serenity::ChannelId::new(1_353_453_116_007_252_050);
+pub const INSTAGRAM_ID: serenity::ChannelId = serenity::ChannelId::new(1_557_078_627_152_035_911);
+pub const TIKTOK_ID: serenity::ChannelId = serenity::ChannelId::new(1_557_078_855_288_881_272);
 pub const COMMAND_ADMIN_ROLE_ID: serenity::RoleId = serenity::RoleId::new(917_520_262_939_938_915);
 pub const MARKETER_ROLE_ID: serenity::RoleId = serenity::RoleId::new(1_357_730_279_644_594_399);
 /// Role granted and removed by `/assignyoutuber` and `/removeyoutuber`.
@@ -223,6 +225,7 @@ pub struct Environment {
     pub vote_channel_id: Option<serenity::ChannelId>,
     pub log_channel_id: Option<serenity::ChannelId>,
     pub youtube_api_key: Option<String>,
+    pub apify_api_token: Option<String>,
     pub rank_service_base_url: Option<String>,
     pub rank_service_access_token: Option<String>,
     pub hytale_endpoint_url: Option<String>,
@@ -265,6 +268,7 @@ impl Environment {
             vote_channel_id: optional_id("VOTE_CHANNEL_ID")?,
             log_channel_id: optional_id("LOG_CHANNEL_ID")?,
             youtube_api_key: optional_env("YOUTUBE_API_KEY"),
+            apify_api_token: optional_env("APIFY_API_TOKEN"),
             rank_service_base_url: optional_env("HTTP_SLAVE1_COMMAND_SERVICE_BASE_URL")
                 .or_else(|| optional_env("HTTP_PROXY_COMMAND_SERVICE_BASE_URL")),
             rank_service_access_token: optional_env("HTTP_SLAVE1_COMMAND_SERVICE_ACCESS_TOKEN")
