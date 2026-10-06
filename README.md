@@ -199,6 +199,110 @@ full remaining hour is crossed. Purchase links in that channel use
 `dupe_event_bot-event-extension`; hourly countdown links use
 `dupe_event_bot-event-countdown`.
 
+### Eligibility polls
+
+`/poll` runs button polls that only players meeting a hidden condition can vote
+in. It is off unless `POLLS_ENABLED=true`; MariaDB must be configured. The
+conditions use data recorded by the `PlayerActivity` plugin (6b6t-plugins) and
+the player statistics database. Every poll needs the plugin's bot-flag table
+(`activity_player`), because bot-marked accounts must never count: without it
+(or without `SELECT` on it) polls are refused. Crystal PvP and building polls
+also need their own tables and enough recorded days. A missing IP table only
+turns alt detection off and warns staff.
+
+| Command | Access | Purpose |
+| --- | --- | --- |
+| `/poll create` | Authorized roles or administrator | Post a poll: `question`, 2-5 options, `requires`, `duration` (`3d`, `12h`, `90m`, `1d12h`), optional `channel` |
+| `/poll close` | Authorized roles or administrator | Close a poll now and show the final counts |
+| `/poll results` | Authorized roles or administrator | Show the counts of a poll (eligible votes only) |
+
+`requires` combines classes with `AND`, `OR`, `NOT` and parentheses, for
+example `veteran AND active` or `crystal_pvper OR builder`. The classes are
+`veteran`, `overall_active`, `active`, `very_active`, `crystal_pvper` and
+`builder`. A class can be tuned for one poll, for example `veteran(days=365)`;
+the keys are `days`, `window` and `minutes` for the activity tiers, `days` for
+`veteran`, `fights`, `opponents`, `damage` and `window` for `crystal_pvper`, and
+`days`, `window`, `placed` and `materials` for `builder`. The expression is
+checked when the poll is created.
+
+**How the freeze works.** `/poll create` stores the start as the cut-off and
+evaluates the expression right then against data strictly before it: fights
+must end before the cut-off, and day rows count only on UTC days before the
+cut-off day. The eligible players are saved to `poll_eligible` (one Discord
+account per person, see below). Every vote and the final count use only that
+snapshot. Data recorded later, links made later and bot marks added later never
+change who can vote in that poll. At close nothing is re-evaluated; the count
+only drops votes from people who have left the server.
+
+Account links, IP evidence and bot flags have no usable timestamp, so they are
+read first and the cut-off is fixed only afterwards (links are also filtered by
+their creation time). Nothing written after the cut-off can enter, however long
+the class queries take. IP evidence is the one input that also counts on the
+cut-off day itself: it can only say that accounts are one person.
+
+**One vote per person.** One vote per Discord account (changeable until the poll
+closes) and one per person: accounts that shared a keyed IP hash in the
+configured window up to the cut-off day are one person (addresses used by many
+accounts, such as VPNs, link nobody), and only the Discord account linked first
+stays in the snapshot. Bot-marked accounts never count.
+
+**Hidden eligibility.** Nothing shows a player a threshold or a score. The poll
+text names the window dates and says in plain words who can vote, using the
+phrases under `texts` in the config. An ineligible click gets a private reply
+without numbers and is not counted; only per-poll refusal counters are kept, no
+ids. Staff results show vote counts only; `show_turnout` adds the eligible total
+and refusal counters.
+
+**Message updates and closing.** A vote marks the poll dirty; the 30-second
+worker redraws the message at most once every 25 seconds per poll, so Discord's
+edit limits are never close. The same worker closes polls at their end time,
+finishes closes that were interrupted by a restart, cancels a poll whose
+message was never posted or was deleted, and deletes the voter rows of polls
+closed longer than `snapshot_retention_days` ago.
+Redrawing, closing and finalizing one poll are serialized per poll, so a late
+redraw cannot overwrite the closed message and the worker and `/poll close`
+never both finalize.
+
+#### Configuration
+
+This repository is public, so **no threshold is built into the code**. Put the
+thresholds only in the deployment (for example the Dokploy environment). A class
+that is not configured cannot be used in a poll.
+
+| Variable | Required | Purpose |
+| --- | --- | --- |
+| `POLLS_ENABLED` | To enable | Must be `true`; defaults to disabled |
+| `POLLS_CONFIG` | One of the two | Inline JSON with the class settings |
+| `POLLS_CONFIG_FILE` | One of the two | Path to the same JSON (not together with `POLLS_CONFIG`) |
+| `POLLS_STATS_DB_USER`, `POLLS_STATS_DB_PASS` | No | Dedicated read-only credentials for the `MYSQL_DB_STATS` database (set together); otherwise the existing stats connection is used |
+| `POLLS_STATS_DB_HOST`, `POLLS_STATS_DB_PORT`, `POLLS_STATS_DB_NAME` | No | Override the host, port or database name of that connection |
+
+The JSON has these keys. Everything except `identity` and the classes is
+optional.
+
+| Key | Meaning |
+| --- | --- |
+| `veteran` | `days`: first join must be more than this long before the start |
+| `overall_active`, `active`, `very_active` | `window_days`, `min_days`, `min_minutes`: days with at least that much play in the window of whole UTC days before the start |
+| `crystal_pvper` | `window_days`, `min_fights`, `min_opponents`, `min_damage` (tenths of HP, both sides), `pair_day_cap`, `opponent_min_age_days` |
+| `builder` | `window_days`, `build_days`, `min_day_placed`, `placed`, `materials`, `min_material_placed`, `placed_per_mined_tenths`, `max_obsidian_percent` |
+| `identity` (required) | `window_days` and `hub_limit` of the IP-hash clustering |
+| `texts` | Plain-words phrase per class for the poll text and the private reply (no digits allowed) |
+| `show_turnout` | `false` by default |
+| `show_live_counts` | `true` by default; `false` shows counts only after the poll closes |
+| `drop_departed_voters` | `true` by default |
+| `allow_partial_data` | `false` by default: refuse crystal and builder polls until the plugin has recorded the whole window |
+| `min_duration_minutes`, `max_duration_days`, `snapshot_retention_days` | Limits; default 10, 30 and 365 |
+
+The queries behind the classes are in `src/polls/classes.rs` and follow the
+`PlayerActivity` data contract. The bot needs `SELECT` on the stats database
+tables `player_info`, `player_stats_per_day` and the six `activity_*` tables.
+
+Poll tables (`polls`, `poll_eligible`, `poll_votes`, `poll_denials`) are created
+in the link database at startup from `migrations/0001_eligibility_polls.sql`,
+tracked in `poll_migrations`. The migration is idempotent. Run a single bot
+instance: the poll worker is serialized within the process.
+
 ### Telegram crossposting
 
 Crossposting is enabled when both `TELEGRAM_CROSSPOST_BOT_TOKEN` and at least
@@ -261,6 +365,7 @@ HTML, including labeled links, emphasis, spoilers, and code.
 | `/purge` | Authorized roles | Bulk delete recent messages (optionally from one user) |
 | `/miniterminator` | Terminator | Add or remove the Mini-Terminator role with approval |
 | `/mediachannelsfreq` | Terminator | Change reminder frequency with approval |
+| `/poll` | Authorized roles or administrator | Create, close and read eligibility-gated polls (when enabled) |
 
 Non-administrator moderation changes require approval from a different member
 with the Terminator role. Pending approvals expire after one hour.

@@ -27,6 +27,12 @@ pub async fn handle(
             _ => {}
         }
     }
+    if let Some(service) = &data.polls
+        && let serenity::Interaction::Component(component) = interaction
+        && service.handle_component(ctx, component).await?
+    {
+        return Ok(());
+    }
     match interaction {
         serenity::Interaction::Component(component)
             if component.data.custom_id == "legend_role_menu" =>

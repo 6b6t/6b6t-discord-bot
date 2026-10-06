@@ -47,6 +47,7 @@ pub async fn handle(
             |ctx, data| Box::pin(event_submission_worker(ctx, data)),
         );
     }
+    spawn_polls(ctx, data);
     let role_menu_ctx = ctx.clone();
     spawn_startup_retry("role menu initialization", move || {
         let ctx = role_menu_ctx.clone();
@@ -104,6 +105,23 @@ pub async fn handle(
     }
     spawn_reminders(ctx.clone());
     Ok(())
+}
+
+fn spawn_polls(ctx: &serenity::Context, data: &AppState) {
+    let Some(service) = &data.polls else {
+        return;
+    };
+    let service = service.clone();
+    spawn_startup_retry("poll initialization", move || {
+        let service = service.clone();
+        async move { service.ready().await }
+    });
+    spawn_interval(
+        ctx.clone(),
+        data.clone(),
+        Duration::from_secs(30),
+        |ctx, data| Box::pin(poll_worker(ctx, data)),
+    );
 }
 
 fn spawn_video_notifications(ctx: &serenity::Context, data: &AppState) {
@@ -266,6 +284,12 @@ async fn community_event_announcements(ctx: &serenity::Context, data: &AppState)
     };
     if let Err(error) = service.poll(ctx).await {
         tracing::error!(%error, "community-event Discord announcement check failed");
+    }
+}
+
+async fn poll_worker(ctx: &serenity::Context, data: &AppState) {
+    if let Some(service) = &data.polls {
+        service.worker(ctx).await;
     }
 }
 

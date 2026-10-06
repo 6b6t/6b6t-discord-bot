@@ -4,7 +4,7 @@ use anyhow::Context as _;
 use poise::{CreateReply, serenity_prelude as serenity};
 
 use crate::{
-    command_moderation, config,
+    command_moderation, command_polls, config,
     database::{Databases, normalize_uuid},
     moderation,
     server::{PlayerCounts, format_duration},
@@ -33,6 +33,7 @@ pub fn all() -> Vec<poise::Command<AppState, Error>> {
         command_moderation::mediachannelsfreq(),
         command_moderation::purge(),
         command_moderation::reapplylanguages(),
+        command_polls::poll(),
     ]
 }
 

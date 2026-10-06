@@ -49,6 +49,9 @@ pub async fn handle(
                     .on_delete(ctx, *channel_id, *deleted_message_id)
                     .await;
             }
+            if let Some(service) = &data.polls {
+                service.on_delete(*channel_id, *deleted_message_id).await;
+            }
             Ok(())
         }
         serenity::FullEvent::MessageDeleteBulk {
