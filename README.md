@@ -204,9 +204,11 @@ full remaining hour is crossed. Purchase links in that channel use
 `/poll` runs button polls that only players meeting a hidden condition can vote
 in. It is off unless `POLLS_ENABLED=true`; MariaDB must be configured. The
 conditions use data recorded by the `PlayerActivity` plugin (6b6t-plugins) and
-the player statistics database, so polls that use crystal PvP or building need
-that plugin deployed and recording first. Veteran and the activity tiers work
-without it.
+the player statistics database. Every poll needs the plugin's bot-flag table
+(`activity_player`), because bot-marked accounts must never count: without it
+(or without `SELECT` on it) polls are refused. Crystal PvP and building polls
+also need their own tables and enough recorded days. A missing IP table only
+turns alt detection off and warns staff.
 
 | Command | Access | Purpose |
 | --- | --- | --- |
@@ -232,9 +234,15 @@ snapshot. Data recorded later, links made later and bot marks added later never
 change who can vote in that poll. At close nothing is re-evaluated; the count
 only drops votes from people who have left the server.
 
+Account links, IP evidence and bot flags have no usable timestamp, so they are
+read first and the cut-off is fixed only afterwards (links are also filtered by
+their creation time). Nothing written after the cut-off can enter, however long
+the class queries take. IP evidence is the one input that also counts on the
+cut-off day itself: it can only say that accounts are one person.
+
 **One vote per person.** One vote per Discord account (changeable until the poll
 closes) and one per person: accounts that shared a keyed IP hash in the
-configured window before the cut-off are one person (addresses used by many
+configured window up to the cut-off day are one person (addresses used by many
 accounts, such as VPNs, link nobody), and only the Discord account linked first
 stays in the snapshot. Bot-marked accounts never count.
 
@@ -251,6 +259,9 @@ edit limits are never close. The same worker closes polls at their end time,
 finishes closes that were interrupted by a restart, cancels a poll whose
 message was never posted or was deleted, and deletes the voter rows of polls
 closed longer than `snapshot_retention_days` ago.
+Redrawing, closing and finalizing one poll are serialized per poll, so a late
+redraw cannot overwrite the closed message and the worker and `/poll close`
+never both finalize.
 
 #### Configuration
 

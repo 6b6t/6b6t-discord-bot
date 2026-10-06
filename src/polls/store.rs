@@ -362,13 +362,15 @@ impl PollStore {
         .context("failed to load unfinalized polls")
     }
 
-    pub async fn finalize(&self, poll_id: u64, result_json: &str) -> Result<()> {
-        sqlx::query("UPDATE polls SET finalized = 1, dirty = 0, result_json = ? WHERE poll_id = ? AND status = 'closed'")
+    /// Stores the final result. Returns false when the poll was already
+    /// finalized (the first stored result stays).
+    pub async fn finalize(&self, poll_id: u64, result_json: &str) -> Result<bool> {
+        let result = sqlx::query("UPDATE polls SET finalized = 1, dirty = 0, result_json = ? WHERE poll_id = ? AND status = 'closed' AND finalized = 0")
             .bind(result_json)
             .bind(poll_id)
             .execute(&self.pool)
             .await?;
-        Ok(())
+        Ok(result.rows_affected() == 1)
     }
 
     /// Open polls with a changed tally that were not edited in the last

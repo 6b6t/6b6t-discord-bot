@@ -15,6 +15,7 @@ pub mod identity;
 pub mod render;
 pub mod service;
 pub mod store;
+pub mod transport;
 
 #[cfg(test)]
 mod integration_tests;

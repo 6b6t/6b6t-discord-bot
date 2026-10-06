@@ -7,6 +7,12 @@
 //! itself never counts. A class never looks at anything newer, which is what
 //! freezes eligibility at poll start. The cut-off is always computed in the bot
 //! and bound as a parameter, never taken from the database session clock.
+//!
+//! The one exception is identity evidence (`activity_ip`, contract sections 3
+//! and 5): it can only say that accounts are one person, never that anybody is
+//! active, so its window ends on the cut-off day itself, inclusive. The
+//! service reads it before the cut-off is fixed (see `PollService::seal_with`),
+//! which is what makes every cut-off-day row one that exists before the cut-off.
 
 use std::collections::{HashMap, HashSet};
 
@@ -25,6 +31,22 @@ use super::{
 use crate::database::normalize_uuid;
 
 const DAY_MS: i64 = 86_400_000;
+
+/// The six tables the `PlayerActivity` plugin creates in the stats database.
+pub const TABLE_FIGHT: &str = "activity_crystal_fight";
+pub const TABLE_PLAYER: &str = "activity_player";
+pub const TABLE_IP: &str = "activity_ip";
+pub const TABLE_BUILD_DAY: &str = "activity_build_day";
+pub const TABLE_BUILD_MATERIAL: &str = "activity_build_material";
+pub const TABLE_META: &str = "activity_meta";
+pub const PLUGIN_TABLES: [&str; 6] = [
+    TABLE_FIGHT,
+    TABLE_PLAYER,
+    TABLE_IP,
+    TABLE_BUILD_DAY,
+    TABLE_BUILD_MATERIAL,
+    TABLE_META,
+];
 
 /// A class with its thresholds fully resolved (config defaults plus the
 /// poll's own overrides). Stored in `polls.rule_json` for the audit trail and
@@ -128,6 +150,16 @@ impl Rule {
             Self::CrystalPvper(_) => Some("recording_since.crystal"),
             Self::Builder(_) => Some("recording_since.build"),
             _ => None,
+        }
+    }
+
+    /// The plugin tables this class cannot run without. Veteran and the
+    /// activity tiers read only the `PlayerStats` tables.
+    pub fn required_tables(&self) -> &'static [&'static str] {
+        match self {
+            Self::CrystalPvper(_) => &[TABLE_FIGHT, TABLE_META],
+            Self::Builder(_) => &[TABLE_BUILD_DAY, TABLE_BUILD_MATERIAL, TABLE_META],
+            _ => &[],
         }
     }
 }
@@ -429,17 +461,26 @@ async fn builders(
     Ok(normalized(&rows))
 }
 
-/// Whether a table exists in the stats database. The plugin creates the
+/// Which of the plugin's tables the stats user can see. The plugin creates the
 /// `activity_*` tables; until it has run, only veteran and the activity tiers
-/// can be evaluated.
-pub async fn table_exists(pool: &MySqlPool, table: &str) -> Result<bool> {
-    let count: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = ?",
-    )
-    .bind(table)
-    .fetch_one(pool)
-    .await?;
-    Ok(count > 0)
+/// can be evaluated. `information_schema` lists only tables the connected user
+/// holds a privilege on, so a table the bot may not `SELECT` counts as missing.
+/// Each table is judged on its own: one missing table must not hide the others.
+pub async fn available_plugin_tables(pool: &MySqlPool) -> Result<HashSet<String>> {
+    let mut builder = sqlx::QueryBuilder::<sqlx::MySql>::new(
+        "SELECT table_name FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name IN (",
+    );
+    let mut separated = builder.separated(", ");
+    for table in PLUGIN_TABLES {
+        separated.push_bind(table);
+    }
+    separated.push_unseparated(")");
+    let rows = builder
+        .build_query_scalar::<String>()
+        .fetch_all(pool)
+        .await
+        .context("failed to list the PlayerActivity tables")?;
+    Ok(rows.into_iter().collect())
 }
 
 /// Bot-marked accounts, as recorded by the plugin (`LuckPerms` `6b6t-bot` meta
@@ -453,20 +494,20 @@ pub async fn bot_accounts(pool: &MySqlPool) -> Result<HashSet<String>> {
     Ok(normalized(&rows))
 }
 
-/// Distinct `(uuid, ip_hash)` pairs on the UTC days in the `window_days`
-/// before the cut-off day. Hashes are keyed by the plugin; plain IPs are never
-/// stored anywhere.
+/// Distinct `(uuid, ip_hash)` pairs on the UTC days from `window_days` before
+/// the cut-off day up to and including the cut-off day (contract sections 3
+/// and 5: identity evidence, so the cut-off day counts). Hashes are keyed by
+/// the plugin; plain IPs are never stored anywhere.
 pub async fn ip_observations(
     pool: &MySqlPool,
-    cutoff_ms: i64,
+    cutoff_day: NaiveDate,
     window_days: i64,
 ) -> Result<Vec<(String, Vec<u8>)>> {
-    let cutoff = cutoff_date(cutoff_ms);
-    let first_day = cutoff - Duration::days(window_days);
+    let first_day = cutoff_day - Duration::days(window_days);
     let rows =
-        sqlx::query("SELECT DISTINCT uuid, ip_hash FROM activity_ip WHERE day >= ? AND day < ?")
+        sqlx::query("SELECT DISTINCT uuid, ip_hash FROM activity_ip WHERE day >= ? AND day <= ?")
             .bind(first_day)
-            .bind(cutoff)
+            .bind(cutoff_day)
             .fetch_all(pool)
             .await
             .context("failed to read IP hashes")?;

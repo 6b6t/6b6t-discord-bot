@@ -9,10 +9,10 @@ use std::{
 };
 
 use anyhow::{Context as _, Result};
-use chrono::{Duration, TimeZone as _, Utc};
+use chrono::{Duration, NaiveDate, TimeZone as _, Utc};
 use poise::serenity_prelude as serenity;
 use sqlx::{MySqlPool, Row as _};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, OwnedMutexGuard};
 
 use super::{
     classes::{self, EvalContext, Rule, cutoff_date},
@@ -21,8 +21,9 @@ use super::{
     identity::{self, Candidate, Identity, Voter},
     render::{self, PollView},
     store::{NewPoll, PollRow, PollStore, Status, VoteOutcome},
+    transport::{DiscordTransport, EditRequest, EditResult, PollTransport},
 };
-use crate::{config as bot_config, database::normalize_uuid};
+use crate::database::normalize_uuid;
 
 /// A worker tick runs every 30 seconds; a poll message is edited at most once
 /// per this many milliseconds (Discord allows about 5 edits per 5 seconds per
@@ -41,6 +42,8 @@ pub struct PollService {
     config: Arc<PollConfig>,
     initialized: Arc<AtomicBool>,
     worker_lock: Arc<Mutex<()>>,
+    /// One lock per poll that is being redrawn or closed. See [`Self::lock_poll`].
+    poll_locks: Arc<std::sync::Mutex<HashMap<u64, Arc<Mutex<()>>>>>,
     ticks: Arc<AtomicU64>,
 }
 
@@ -73,23 +76,56 @@ pub struct Prepared {
 }
 
 /// What the `PlayerActivity` plugin recorded, read once per poll creation.
+/// Every table is read on its own: one that is missing, or that the bot's stats
+/// user may not read, leaves the other tables' data intact.
 #[derive(Clone, Debug, Default)]
-struct PluginData {
-    /// All of the plugin's tables exist.
-    ready: bool,
+pub struct PluginData {
+    /// The plugin tables the stats user can see.
+    present: HashSet<String>,
     bots: HashSet<String>,
     observations: Vec<(String, Vec<u8>)>,
     meta: HashMap<String, i64>,
 }
 
-const PLUGIN_TABLES: [&str; 6] = [
-    "activity_crystal_fight",
-    "activity_player",
-    "activity_ip",
-    "activity_build_day",
-    "activity_build_material",
-    "activity_meta",
-];
+impl PluginData {
+    fn has(&self, table: &str) -> bool {
+        self.present.contains(table)
+    }
+}
+
+/// Marks a link whose `created_at` is NULL. Only used to order alts.
+const LINK_TIME_UNKNOWN: i64 = i64::MAX;
+/// Reading the snapshot is retried this many times when UTC midnight passes in
+/// the middle of it (see [`PollService::seal_with`]).
+const SEAL_ATTEMPTS: usize = 3;
+
+/// Milliseconds since the epoch. Injected so tests can fix the cut-off.
+pub type Clock = dyn Fn() -> i64 + Send + Sync;
+
+fn system_clock() -> i64 {
+    Utc::now().timestamp_millis()
+}
+
+/// A validated `/poll create` request: the parsed expression and its resolved
+/// rules. Nothing has been read from the database yet.
+#[derive(Debug)]
+pub struct Validated {
+    expression: Expr,
+    rules: Vec<(ClassCall, Rule)>,
+}
+
+/// The creation snapshot's boundary. Everything that has no usable timestamp
+/// (account links, the day-granular IP evidence, bot flags, the coverage
+/// table) is read first; only then is the cut-off fixed. So every row in here
+/// existed before the cut-off, and nothing written later can enter, however
+/// long the class queries that follow take. Rows that do carry a timestamp
+/// (fights, play time, build days) are read afterwards and filtered by it.
+#[derive(Clone, Debug)]
+pub struct Sealed {
+    cutoff_ms: i64,
+    links: Vec<LinkRow>,
+    plugin: PluginData,
+}
 
 fn resolve_rules(
     expression: &Expr,
@@ -130,6 +166,7 @@ impl PollService {
             config: Arc::new(config),
             initialized: Arc::default(),
             worker_lock: Arc::default(),
+            poll_locks: Arc::default(),
             ticks: Arc::default(),
         }
     }
@@ -149,43 +186,112 @@ impl PollService {
 
     // ---- create ------------------------------------------------------
 
-    /// Validates the request and computes the frozen snapshot. Nothing is
-    /// stored; a bad request comes back as `Err(message)` for staff.
+    /// Validates the request, fixes the cut-off and computes the frozen
+    /// snapshot. Nothing is stored; a bad request comes back as `Err(message)`
+    /// for staff.
     pub async fn prepare(
+        &self,
+        request: &CreateRequest,
+    ) -> Result<std::result::Result<Prepared, String>> {
+        self.prepare_with(request, &system_clock).await
+    }
+
+    /// [`Self::prepare`] with a fixed cut-off, for tests.
+    #[cfg(test)]
+    pub async fn prepare_at(
         &self,
         request: &CreateRequest,
         cutoff_ms: i64,
     ) -> Result<std::result::Result<Prepared, String>> {
-        if let Err(message) = render::validate_poll_text(&request.title, &request.options) {
-            return Ok(Err(message));
-        }
+        self.prepare_with(request, &move || cutoff_ms).await
+    }
+
+    pub async fn prepare_with(
+        &self,
+        request: &CreateRequest,
+        clock: &Clock,
+    ) -> Result<std::result::Result<Prepared, String>> {
+        let validated = match self.validate(request) {
+            Ok(validated) => validated,
+            Err(message) => return Ok(Err(message)),
+        };
+        let sealed = self.seal_with(clock).await?;
+        self.prepare_sealed(request, &validated, sealed).await
+    }
+
+    /// Everything that can be refused without touching the database.
+    pub fn validate(&self, request: &CreateRequest) -> std::result::Result<Validated, String> {
+        render::validate_poll_text(&request.title, &request.options)?;
         let min = self.config.min_duration_minutes * 60;
         let max = self.config.max_duration_days * 86_400;
         if request.duration_seconds < min || request.duration_seconds > max {
-            return Ok(Err(format!(
+            return Err(format!(
                 "The duration must be between {} minutes and {} days.",
                 self.config.min_duration_minutes, self.config.max_duration_days
-            )));
-        }
-        let parsed = match expr::parse(&request.requires) {
-            Ok(parsed) => parsed,
-            Err(error) => return Ok(Err(render::requires_error(&error))),
-        };
-        let rules = match resolve_rules(&parsed, &self.config) {
-            Ok(rules) => rules,
-            Err(message) => return Ok(Err(message)),
-        };
-        let data = self.plugin_data(cutoff_ms).await?;
-        let needs_plugin = rules.iter().any(|(_, rule)| rule.recording_key().is_some());
-        if needs_plugin && !data.ready {
-            return Ok(Err(
-                "The PlayerActivity tables do not exist yet, so crystal and builder polls cannot run."
-                    .into(),
             ));
         }
+        let expression =
+            expr::parse(&request.requires).map_err(|error| render::requires_error(&error))?;
+        let rules = resolve_rules(&expression, &self.config)?;
+        Ok(Validated { expression, rules })
+    }
+
+    /// Reads the sources that carry no usable timestamp, then fixes the
+    /// cut-off (see [`Sealed`]). The IP window ends on the cut-off day, so the
+    /// day is taken from the clock before the reads and checked again after:
+    /// if UTC midnight passed in between, the reads are repeated.
+    pub async fn seal_with(&self, clock: &Clock) -> Result<Sealed> {
+        for _ in 0..SEAL_ATTEMPTS {
+            let day = cutoff_date(clock());
+            let links = self.links().await?;
+            let plugin = self.plugin_data(day).await?;
+            let cutoff_ms = clock();
+            if cutoff_date(cutoff_ms) == day {
+                return Ok(Sealed {
+                    cutoff_ms,
+                    links,
+                    plugin,
+                });
+            }
+            tracing::info!("UTC midnight passed while the poll snapshot was read; reading again");
+        }
+        anyhow::bail!("could not read a consistent poll snapshot around UTC midnight")
+    }
+
+    /// Checks the data the poll needs and evaluates the frozen snapshot.
+    pub async fn prepare_sealed(
+        &self,
+        request: &CreateRequest,
+        validated: &Validated,
+        sealed: Sealed,
+    ) -> Result<std::result::Result<Prepared, String>> {
+        let cutoff_ms = sealed.cutoff_ms;
+        let data = &sealed.plugin;
+        // Bot-marked accounts must never count, and the only record of them is
+        // the plugin's table. Without it the poll is refused, not warned about.
+        if !data.has(classes::TABLE_PLAYER) {
+            return Ok(Err(format!(
+                "The bot flags cannot be read (`{}` is missing, or the bot's stats user may not read it), so no poll can run: bot-marked accounts must never count. Deploy the PlayerActivity plugin and check the grants.",
+                classes::TABLE_PLAYER
+            )));
+        }
+        for (call, rule) in &validated.rules {
+            let missing: Vec<&str> = rule
+                .required_tables()
+                .iter()
+                .copied()
+                .filter(|table| !data.has(table))
+                .collect();
+            if !missing.is_empty() {
+                return Ok(Err(format!(
+                    "`{call}` cannot run: the PlayerActivity table(s) {} are missing, or the bot's stats user may not read them.",
+                    missing.join(", ")
+                )));
+            }
+        }
         let mut warnings = Vec::new();
-        if data.ready {
-            let problems = classes::coverage_problems(&rules, &data.meta, cutoff_ms);
+        if data.has(classes::TABLE_META) {
+            let problems = classes::coverage_problems(&validated.rules, &data.meta, cutoff_ms);
             if !problems.is_empty() {
                 if self.config.allow_partial_data {
                     warnings.extend(problems);
@@ -196,21 +302,15 @@ impl PollService {
                     )));
                 }
             }
-            warnings.extend(classes::coverage_warnings(
-                &data.meta,
-                cutoff_ms,
-                Utc::now().timestamp_millis(),
-                self.config.identity.window_days,
-                data.observations.len(),
-            ));
-        } else {
-            warnings.push(
-                "The PlayerActivity tables do not exist yet: bot marks and alt detection are off."
-                    .to_owned(),
-            );
         }
+        warnings.extend(self.plugin_warnings(data, cutoff_ms));
         let snapshot = self
-            .evaluate_snapshot(&parsed, &request.requires, &rules, &data, cutoff_ms)
+            .evaluate_snapshot(
+                &validated.expression,
+                &request.requires,
+                &validated.rules,
+                &sealed,
+            )
             .await?;
         if snapshot.voters.is_empty() {
             return Ok(Err(
@@ -238,31 +338,63 @@ impl PollService {
         }))
     }
 
-    /// Reads what the `PlayerActivity` plugin recorded that every poll needs:
-    /// bot flags, IP hashes and the coverage table. Without the plugin's tables
-    /// the poll can still use veteran and the activity tiers.
-    async fn plugin_data(&self, cutoff_ms: i64) -> Result<PluginData> {
-        for table in PLUGIN_TABLES {
-            if !classes::table_exists(&self.stats, table).await? {
-                return Ok(PluginData::default());
-            }
+    /// Staff-only notes about plugin data that is missing or thin. None of
+    /// them stops a poll: a missing bot-flag table does, and is handled before.
+    fn plugin_warnings(&self, data: &PluginData, cutoff_ms: i64) -> Vec<String> {
+        let mut warnings = Vec::new();
+        if !data.has(classes::TABLE_IP) {
+            warnings.push(format!(
+                "`{}` is missing or not readable: alt detection is off, so one person may hold several votes.",
+                classes::TABLE_IP
+            ));
         }
-        Ok(PluginData {
-            ready: true,
-            bots: classes::bot_accounts(&self.stats).await?,
-            observations: classes::ip_observations(
-                &self.stats,
+        if !data.has(classes::TABLE_META) {
+            warnings.push(format!(
+                "`{}` is missing or not readable: the recording coverage and the workers' heartbeats could not be checked.",
+                classes::TABLE_META
+            ));
+        }
+        if data.has(classes::TABLE_IP) && data.has(classes::TABLE_META) {
+            warnings.extend(classes::coverage_warnings(
+                &data.meta,
                 cutoff_ms,
+                system_clock(),
                 self.config.identity.window_days,
-            )
-            .await?,
-            meta: classes::meta(&self.stats).await?,
-        })
+                data.observations.len(),
+            ));
+        } else if data.has(classes::TABLE_IP) && data.observations.is_empty() {
+            warnings.push(
+                "No IP data for the alt-detection window: one person may hold several votes."
+                    .to_owned(),
+            );
+        }
+        warnings
     }
 
-    /// Evaluates the expression against data strictly before `cutoff_ms`, then
-    /// keeps one linked Discord account per person. The result is the only
-    /// thing the poll ever uses to decide who may vote.
+    /// Reads what the `PlayerActivity` plugin recorded that every poll needs:
+    /// bot flags, IP hashes and the coverage table. Each table is read if it is
+    /// there, whatever the others do; [`Self::prepare_sealed`] decides what a
+    /// missing one means for the poll.
+    async fn plugin_data(&self, cutoff_day: NaiveDate) -> Result<PluginData> {
+        let present = classes::available_plugin_tables(&self.stats).await?;
+        let mut data = PluginData::default();
+        if present.contains(classes::TABLE_PLAYER) {
+            data.bots = classes::bot_accounts(&self.stats).await?;
+        }
+        if present.contains(classes::TABLE_IP) {
+            data.observations =
+                classes::ip_observations(&self.stats, cutoff_day, self.config.identity.window_days)
+                    .await?;
+        }
+        if present.contains(classes::TABLE_META) {
+            data.meta = classes::meta(&self.stats).await?;
+        }
+        data.present = present;
+        Ok(data)
+    }
+
+    /// Evaluates the expression against a sealed snapshot of the data, then
+    /// keeps one linked Discord account per person. Used by the class tests.
     #[cfg(test)]
     pub async fn build_snapshot(
         &self,
@@ -271,23 +403,33 @@ impl PollService {
         cutoff_ms: i64,
     ) -> Result<Snapshot> {
         let rules = resolve_rules(expression, &self.config).map_err(anyhow::Error::msg)?;
-        let data = self.plugin_data(cutoff_ms).await?;
-        self.evaluate_snapshot(expression, expression_text, &rules, &data, cutoff_ms)
+        let sealed = self.seal_with(&move || cutoff_ms).await?;
+        self.evaluate_snapshot(expression, expression_text, &rules, &sealed)
             .await
     }
 
+    /// The eligible set from data before the cut-off. The result is the only
+    /// thing the poll ever uses to decide who may vote.
     async fn evaluate_snapshot(
         &self,
         expression: &Expr,
         expression_text: &str,
         rules: &[(ClassCall, Rule)],
-        data: &PluginData,
-        cutoff_ms: i64,
+        sealed: &Sealed,
     ) -> Result<Snapshot> {
-        let links = self.links().await?;
-        let bots = &data.bots;
+        let cutoff_ms = sealed.cutoff_ms;
+        // A link made at or after the cut-off second cannot be shown to
+        // predate it. The read already happened before the cut-off was fixed;
+        // this keeps that true when the cut-off is injected or the clocks differ.
+        let cutoff_seconds = cutoff_ms.div_euclid(1000);
+        let links: Vec<&LinkRow> = sealed
+            .links
+            .iter()
+            .filter(|link| link.linked_at == LINK_TIME_UNKNOWN || link.linked_at < cutoff_seconds)
+            .collect();
+        let bots = &sealed.plugin.bots;
         let identity = Identity::build(
-            &data.observations,
+            &sealed.plugin.observations,
             usize::try_from(self.config.identity.hub_limit).unwrap_or(usize::MAX),
         );
 
@@ -325,8 +467,8 @@ impl PollService {
                 linked_humans.contains(&uuid) && members.contains(&uuid)
             })
             .map(|link| Candidate {
-                discord_id: link.discord_id,
-                uuid: link.uuid,
+                discord_id: link.discord_id.clone(),
+                uuid: link.uuid.clone(),
                 linked_at: link.linked_at,
             })
             .collect();
@@ -383,8 +525,7 @@ impl PollService {
                 "Polls are still starting. Try again in a moment.".into(),
             ));
         }
-        let cutoff_ms = Utc::now().timestamp_millis();
-        let prepared = match self.prepare(request, cutoff_ms).await? {
+        let prepared = match self.prepare(request).await? {
             Ok(prepared) => prepared,
             Err(message) => return Ok(CreateOutcome::Rejected(message)),
         };
@@ -560,7 +701,7 @@ impl PollService {
 
     async fn edit_message(
         &self,
-        ctx: &serenity::Context,
+        transport: &dyn PollTransport,
         row: &PollRow,
         counts: Option<&[u32]>,
         closed: bool,
@@ -578,24 +719,22 @@ impl PollService {
         } else {
             render::buttons(row.poll_id, &row.options()?)
         };
-        let edit = serenity::ChannelId::new(channel_id)
-            .edit_message(
-                ctx,
-                serenity::MessageId::new(message_id),
-                serenity::EditMessage::new()
-                    .embed(self.embed_for(row, counts, closed)?)
-                    .components(components),
-            )
-            .await;
-        match edit {
-            Ok(_) => Ok(EditResult::Done),
-            Err(error) if is_unknown_message(&error) => Ok(EditResult::Gone),
-            Err(error) => Err(error.into()),
-        }
+        let edit = serenity::EditMessage::new()
+            .embed(self.embed_for(row, counts, closed)?)
+            .components(components);
+        transport
+            .edit_message(EditRequest {
+                channel_id,
+                message_id,
+                closed,
+                counts: counts.map(<[u32]>::to_vec),
+                edit,
+            })
+            .await
     }
 
     /// Redraws an open poll with the current counts.
-    async fn refresh(&self, ctx: &serenity::Context, row: &PollRow) -> Result<()> {
+    async fn refresh(&self, transport: &dyn PollTransport, row: &PollRow) -> Result<()> {
         let options = row.options()?;
         let counts = if self.config.show_live_counts {
             Some(render::tally(
@@ -607,7 +746,7 @@ impl PollService {
             None
         };
         if self
-            .edit_message(ctx, row, counts.as_deref(), false)
+            .edit_message(transport, row, counts.as_deref(), false)
             .await?
             == EditResult::Gone
         {
@@ -620,12 +759,45 @@ impl PollService {
         Ok(())
     }
 
+    /// The lock that orders everything touching one poll's message: the open
+    /// redraw, the final edit and the stored result. Without it a redraw that
+    /// loaded the poll while it was open can land after `/poll close` has
+    /// edited the closed message, and the worker and `/poll close` can both
+    /// finalize. A lock is held only while a poll is being edited; idle ones
+    /// are dropped here. Polls are served by one bot process (the worker is
+    /// serialized in-process as well), so a process-local lock is enough, and
+    /// the stored result is still written only once (`PollStore::finalize`).
+    pub(super) async fn lock_poll(&self, poll_id: u64) -> OwnedMutexGuard<()> {
+        let lock = {
+            let mut locks = self
+                .poll_locks
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            locks.retain(|_, lock| Arc::strong_count(lock) > 1);
+            Arc::clone(locks.entry(poll_id).or_default())
+        };
+        lock.lock_owned().await
+    }
+
+    #[cfg(test)]
+    fn tracked_poll_locks(&self) -> usize {
+        self.poll_locks.lock().map_or(0, |locks| locks.len())
+    }
+
     // ---- closing -----------------------------------------------------
 
     /// Computes the final counts from the frozen snapshot, edits the message
     /// and stores the result. Eligibility is not re-evaluated: only integrity
-    /// facts (still in the server) are applied.
-    async fn finalize(&self, ctx: &serenity::Context, poll_id: u64) -> Result<Option<Vec<u32>>> {
+    /// facts (still in the server) are applied. Returns `None` when there is
+    /// nothing to do: the poll is not closed, or somebody finalized it first.
+    /// The poll is re-read under [`Self::lock_poll`], so two callers can never
+    /// both pass the "not finalized yet" check.
+    async fn finalize(
+        &self,
+        transport: &dyn PollTransport,
+        poll_id: u64,
+    ) -> Result<Option<Vec<u32>>> {
+        let _guard = self.lock_poll(poll_id).await;
         let Some(row) = self.store.poll(poll_id).await? else {
             return Ok(None);
         };
@@ -635,7 +807,7 @@ impl PollService {
         let options = row.options()?;
         let votes = self.store.votes(poll_id).await?;
         let excluded = if self.config.drop_departed_voters {
-            self.departed(ctx, &votes).await
+            Self::departed(transport, &votes).await
         } else {
             HashSet::new()
         };
@@ -646,29 +818,24 @@ impl PollService {
             "left_server": excluded.len(),
         })
         .to_string();
-        self.edit_message(ctx, &row, Some(&counts), true).await?;
-        self.store.finalize(poll_id, &result).await?;
+        self.edit_message(transport, &row, Some(&counts), true)
+            .await?;
+        if !self.store.finalize(poll_id, &result).await? {
+            tracing::warn!(poll_id, "another process finalized the poll first");
+            return Ok(None);
+        }
         tracing::info!(poll_id, "poll closed");
         Ok(Some(counts))
     }
 
-    async fn departed(&self, ctx: &serenity::Context, votes: &[(String, u8)]) -> HashSet<String> {
+    async fn departed(transport: &dyn PollTransport, votes: &[(String, u8)]) -> HashSet<String> {
         let mut gone = HashSet::new();
         for (voter, _) in votes {
             let Ok(user_id) = voter.parse::<u64>() else {
                 continue;
             };
-            match bot_config::GUILD_ID
-                .member(ctx, serenity::UserId::new(user_id))
-                .await
-            {
-                Ok(_) => {}
-                Err(error) if is_unknown_member(&error) => {
-                    gone.insert(voter.clone());
-                }
-                Err(error) => {
-                    tracing::warn!(%error, "could not check a voter's membership; keeping the vote");
-                }
+            if transport.member_gone(user_id).await {
+                gone.insert(voter.clone());
             }
         }
         gone
@@ -676,6 +843,14 @@ impl PollService {
 
     /// `/poll close`: closes now, whatever the end time says.
     pub async fn close(&self, ctx: &serenity::Context, poll_id: u64) -> Result<CloseOutcome> {
+        self.close_with(&DiscordTransport::new(ctx), poll_id).await
+    }
+
+    pub async fn close_with(
+        &self,
+        transport: &dyn PollTransport,
+        poll_id: u64,
+    ) -> Result<CloseOutcome> {
         let Some(row) = self.store.poll(poll_id).await? else {
             return Ok(CloseOutcome::NotOpen(render::MISSING_REPLY.into()));
         };
@@ -684,17 +859,21 @@ impl PollService {
                 "That poll is not open (it already closed or was cancelled).".into(),
             ));
         }
-        let counts = self.finalize(ctx, poll_id).await?;
-        let text = match counts {
-            Some(counts) => render::results_text(
+        let text = if let Some(counts) = self.finalize(transport, poll_id).await? {
+            render::results_text(
                 &row.title,
                 &row.options()?,
                 &counts,
                 self.config.show_turnout.then_some(row.eligible_count),
                 &self.denials_for_staff(poll_id).await?,
                 true,
-            ),
-            None => "The poll is closed; the final message update will retry shortly.".into(),
+            )
+        } else {
+            // The worker saw the claim and finalized first: its stored result
+            // is the final one.
+            self.results(poll_id).await?.unwrap_or_else(|| {
+                "The poll is closed; the final message update will retry shortly.".into()
+            })
         };
         Ok(CloseOutcome::Closed { text })
     }
@@ -774,6 +953,10 @@ impl PollService {
     /// Runs every 30 seconds: cancels orphans, closes due polls, finishes
     /// closes that were interrupted, refreshes changed counts, trims old rows.
     pub async fn worker(&self, ctx: &serenity::Context) {
+        self.worker_with(&DiscordTransport::new(ctx)).await;
+    }
+
+    pub async fn worker_with(&self, transport: &dyn PollTransport) {
         if !self.initialized.load(Ordering::Acquire) {
             return;
         }
@@ -804,7 +987,7 @@ impl PollService {
         match self.store.unfinalized().await {
             Ok(ids) => {
                 for id in ids {
-                    if let Err(error) = self.finalize(ctx, id).await {
+                    if let Err(error) = self.finalize(transport, id).await {
                         tracing::error!(%error, poll_id = id, "failed to finalize a poll; will retry");
                     }
                 }
@@ -814,7 +997,7 @@ impl PollService {
         match self.store.dirty(MIN_RENDER_GAP_MS).await {
             Ok(ids) => {
                 for id in ids {
-                    if let Err(error) = self.refresh_one(ctx, id).await {
+                    if let Err(error) = self.refresh_one(transport, id).await {
                         tracing::error!(%error, poll_id = id, "failed to refresh a poll message; will retry");
                         let _ = self.store.mark_dirty(id).await;
                     }
@@ -835,7 +1018,12 @@ impl PollService {
         }
     }
 
-    async fn refresh_one(&self, ctx: &serenity::Context, poll_id: u64) -> Result<()> {
+    /// Redraws one poll whose counts changed. Everything happens under the
+    /// poll's lock and the poll is read after taking it, so a redraw that
+    /// started before `/poll close` finishes first and one that starts after it
+    /// sees a closed poll and does nothing.
+    pub async fn refresh_one(&self, transport: &dyn PollTransport, poll_id: u64) -> Result<()> {
+        let _guard = self.lock_poll(poll_id).await;
         if !self.store.claim_render(poll_id).await? {
             return Ok(());
         }
@@ -845,37 +1033,15 @@ impl PollService {
         if row.status() != Status::Open {
             return Ok(());
         }
-        self.refresh(ctx, &row).await
+        self.refresh(transport, &row).await
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct LinkRow {
     uuid: String,
     discord_id: String,
     linked_at: i64,
-}
-
-#[derive(Debug, Eq, PartialEq)]
-enum EditResult {
-    Done,
-    Gone,
-}
-
-fn is_unknown_message(error: &serenity::Error) -> bool {
-    matches!(
-        error,
-        serenity::Error::Http(serenity::HttpError::UnsuccessfulRequest(response))
-            if response.error.code == 10_008
-    )
-}
-
-fn is_unknown_member(error: &serenity::Error) -> bool {
-    matches!(
-        error,
-        serenity::Error::Http(serenity::HttpError::UnsuccessfulRequest(response))
-            if response.error.code == 10_007 || response.error.code == 10_013
-    )
 }
 
 /// Parses durations such as `90m`, `12h`, `3d` or `1d12h`.
@@ -905,6 +1071,32 @@ pub fn parse_duration(input: &str) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::polls::config::test_config;
+
+    #[tokio::test]
+    async fn poll_locks_are_exclusive_per_poll_and_idle_ones_are_dropped() {
+        let pool = MySqlPool::connect_lazy("mysql://nobody:nothing@127.0.0.1:1/none").unwrap();
+        let service = PollService::new(pool.clone(), pool, test_config());
+        let first = service.lock_poll(1).await;
+        // Another poll is not blocked by the first one's lock.
+        let second = service.lock_poll(2).await;
+        assert_eq!(service.tracked_poll_locks(), 2);
+        // The same poll is: a second taker waits until the first is released.
+        let waiting = tokio::spawn({
+            let service = service.clone();
+            async move { service.lock_poll(1).await }
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        assert!(!waiting.is_finished());
+        drop(first);
+        let again = waiting.await.unwrap();
+        drop(again);
+        drop(second);
+        // Idle locks are forgotten the next time anybody asks for one.
+        let third = service.lock_poll(3).await;
+        assert_eq!(service.tracked_poll_locks(), 1);
+        drop(third);
+    }
 
     #[test]
     fn durations_parse() {
