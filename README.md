@@ -125,8 +125,8 @@ variables are not set.
 With `APIFY_API_TOKEN` configured, the bot checks `#6b6t` on startup and every
 six hours through `apify/instagram-hashtag-scraper` (reels) and
 `clockworks/tiktok-hashtag-scraper`. It posts at most one eligible video per
-platform per check into `instagram-vids` (`1557078627152035911`) and
-`tiktok-vids` (`1557078855288881272`). Like YouTube, it checks the last 100
+platform per check into `youtube-vids` (`1353453116007252050`), shared with
+YouTube. Each platform checks the last 100 channel messages for matching
 bot-authored announcements for duplicates. A separate Discord-only check runs
 every 20 minutes and publishes announcements after 12 hours, without starting
 an Apify run. YouTube keeps its existing 20-minute discovery schedule.

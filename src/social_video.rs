@@ -26,8 +26,7 @@ impl Platform {
 
     fn channel(self) -> serenity::ChannelId {
         match self {
-            Self::Instagram => config::INSTAGRAM_ID,
-            Self::Tiktok => config::TIKTOK_ID,
+            Self::Instagram | Self::Tiktok => config::YOUTUBE_ID,
         }
     }
 
@@ -312,12 +311,10 @@ mod tests {
     }
 
     #[test]
-    fn platform_channels_match_requested_announcement_channels() {
-        assert_eq!(
-            Platform::Instagram.channel().get(),
-            1_557_078_627_152_035_911
-        );
-        assert_eq!(Platform::Tiktok.channel().get(), 1_557_078_855_288_881_272);
+    fn all_platforms_share_the_youtube_announcement_channel() {
+        for platform in [Platform::Instagram, Platform::Tiktok] {
+            assert_eq!(platform.channel(), config::YOUTUBE_ID);
+        }
     }
 
     fn instagram(id: &str, caption: &str, date: &str) -> Value {
