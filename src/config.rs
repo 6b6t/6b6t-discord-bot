@@ -13,8 +13,6 @@ pub const MERCH_ID: serenity::ChannelId = serenity::ChannelId::new(1_418_951_317
 pub const UPDATES_ID: serenity::ChannelId = serenity::ChannelId::new(982_190_978_142_195_712);
 pub const GENERAL_ID: serenity::ChannelId = serenity::ChannelId::new(982_192_297_645_056_040);
 pub const YOUTUBE_ID: serenity::ChannelId = serenity::ChannelId::new(1_353_453_116_007_252_050);
-pub const INSTAGRAM_ID: serenity::ChannelId = serenity::ChannelId::new(1_557_078_627_152_035_911);
-pub const TIKTOK_ID: serenity::ChannelId = serenity::ChannelId::new(1_557_078_855_288_881_272);
 pub const COMMAND_ADMIN_ROLE_ID: serenity::RoleId = serenity::RoleId::new(917_520_262_939_938_915);
 pub const MARKETER_ROLE_ID: serenity::RoleId = serenity::RoleId::new(1_357_730_279_644_594_399);
 /// Role granted and removed by `/assignyoutuber` and `/removeyoutuber`.
