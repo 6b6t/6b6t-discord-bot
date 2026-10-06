@@ -15,7 +15,7 @@ const BLOCKED_CHANNELS: &[&str] = &[
     "UCgs1Uk7zf_NQ4lEzSWwZGBQ", // @ak_mini_vlog-q2b
     "UCaPS1QMix2OZU5Czu16zBpA",
 ];
-const IGNORE_WORDS: &[&str] = &[
+pub(crate) const IGNORE_WORDS: &[&str] = &[
     "2b2t",
     "5b5t",
     "7b7t",
@@ -101,7 +101,7 @@ impl YoutubeService {
             .messages(ctx, serenity::GetMessages::new().limit(100))
             .await
             .context("failed to load recent YouTube announcements")?;
-        let posted = publish_due(ctx, &messages).await;
+        let posted = publish_due(ctx, &messages, youtube_video_id).await;
         let response = self
             .http
             .get("https://www.googleapis.com/youtube/v3/search")
@@ -137,7 +137,11 @@ impl YoutubeService {
     }
 }
 
-async fn publish_due(ctx: &serenity::Context, messages: &[serenity::Message]) -> HashSet<String> {
+pub(crate) async fn publish_due(
+    ctx: &serenity::Context,
+    messages: &[serenity::Message],
+    video_id: fn(&str) -> Option<&str>,
+) -> HashSet<String> {
     let cutoff = chrono::Utc::now().timestamp() - 12 * 60 * 60;
     // ponytail: 100 messages is one Discord request; persist IDs if this channel ever exceeds it between polls.
     let mut posted = HashSet::new();
@@ -145,20 +149,22 @@ async fn publish_due(ctx: &serenity::Context, messages: &[serenity::Message]) ->
         .iter()
         .filter(|message| message.author.id == ctx.cache.current_user().id)
     {
-        let Some(id) = youtube_video_id(&message.content) else {
+        let Some(id) = video_id(&message.content) else {
             continue;
         };
         posted.insert(id.to_owned());
-        if message.timestamp.unix_timestamp() <= cutoff
-            && !message
-                .flags
-                .is_some_and(|flags| flags.contains(serenity::MessageFlags::CROSSPOSTED))
+        if publication_due(message.timestamp.unix_timestamp(), message.flags, cutoff)
             && let Err(error) = message.crosspost(ctx).await
         {
-            tracing::error!(%error, message_id = %message.id, "failed to publish YouTube announcement");
+            tracing::error!(%error, message_id = %message.id, "failed to publish video announcement");
         }
     }
     posted
+}
+
+fn publication_due(timestamp: i64, flags: Option<serenity::MessageFlags>, cutoff: i64) -> bool {
+    timestamp <= cutoff
+        && !flags.is_some_and(|flags| flags.contains(serenity::MessageFlags::CROSSPOSTED))
 }
 
 fn youtube_video_id(content: &str) -> Option<&str> {
@@ -203,6 +209,20 @@ fn find_video(items: Vec<SearchResult>, posted: &HashSet<String>) -> Option<Yout
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn publishing_waits_twelve_hours_and_skips_published_messages() {
+        let now = 100_000;
+        let cutoff = now - 12 * 60 * 60;
+        assert!(!publication_due(cutoff + 1, None, cutoff));
+        assert!(publication_due(cutoff, None, cutoff));
+        assert!(publication_due(cutoff - 1, None, cutoff));
+        assert!(!publication_due(
+            cutoff,
+            Some(serenity::MessageFlags::CROSSPOSTED),
+            cutoff
+        ));
+    }
 
     #[test]
     fn selection_skips_posted_and_ignored_results() {

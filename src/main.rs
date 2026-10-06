@@ -10,6 +10,7 @@ mod media;
 mod moderation;
 mod runtime;
 mod server;
+mod social_video;
 mod state;
 mod telegram;
 mod youtube;

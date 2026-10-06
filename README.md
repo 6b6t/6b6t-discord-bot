@@ -115,9 +115,38 @@ variables are not set.
 | Variable | Required | Purpose |
 | --- | --- | --- |
 | `YOUTUBE_API_KEY` | For notifications | YouTube Data API key |
+| `APIFY_API_TOKEN` | For Instagram/TikTok notifications | Apify bearer token; store only in deployment secrets |
 | `MOTD_REVIEW_BOT_SECRET` | For MOTD review | Shared website API secret |
 | `MOTD_REVIEW_API_URL` | No | Explicit MOTD review endpoint |
 | `WEBSITE_BASE_URL` | No | Website base URL used to derive the review endpoint |
+
+### Instagram and TikTok videos
+
+With `APIFY_API_TOKEN` configured, the bot checks `#6b6t` on startup and every
+six hours through `apify/instagram-hashtag-scraper` (reels) and
+`clockworks/tiktok-hashtag-scraper`. It posts at most one eligible video per
+platform per check into `instagram-vids` (`1557078627152035911`) and
+`tiktok-vids` (`1557078855288881272`). Like YouTube, it checks the last 100
+bot-authored announcements for duplicates. A separate Discord-only check runs
+every 20 minutes and publishes announcements after 12 hours, without starting
+an Apify run. YouTube keeps its existing 20-minute discovery schedule.
+Deleting an announcement before then prevents its publication.
+
+Captions must mention 6b6t and use YouTube's ignored-word filter. YouTube
+channel-ID allow/block lists do not apply to Instagram/TikTok accounts.
+Non-video Instagram results, malformed results, future dates, and videos older
+than 30 days are skipped. The newest eligible returned result is selected;
+hashtag discovery is not exhaustive or reliably newest-first.
+
+Each Actor request asks for five results, caps cost at $0.05, disables automatic
+run restarts, and times out the Actor after 180 seconds. TikTok media downloads
+and transcription are disabled. Requests are not retried within a check.
+Repeated/duplicate results still consume Apify credit. At the observed trial
+rates ($0.013 Instagram + $0.015 TikTok per check), six-hour polling would use
+about $3.36 per 30 days, plus startup runs. Actual usage can vary. Set account
+billing limits before enabling; per-run caps are not monthly budget caps.
+Missing credentials disable both feeds. Discovery errors do not prevent
+already-posted announcements from being published on their next check.
 
 ### Anarchy mod analytics
 

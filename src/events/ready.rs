@@ -73,12 +73,7 @@ pub async fn handle(
         Duration::from_mins(5),
         |ctx, data| Box::pin(clean_role_menu_roles(ctx, data)),
     );
-    spawn_interval(
-        ctx.clone(),
-        data.clone(),
-        Duration::from_mins(20),
-        |ctx, data| Box::pin(youtube_notification(ctx, data)),
-    );
+    spawn_video_notifications(ctx, data);
     spawn_interval(
         ctx.clone(),
         data.clone(),
@@ -109,6 +104,32 @@ pub async fn handle(
     }
     spawn_reminders(ctx.clone());
     Ok(())
+}
+
+fn spawn_video_notifications(ctx: &serenity::Context, data: &AppState) {
+    spawn_interval(
+        ctx.clone(),
+        data.clone(),
+        Duration::from_mins(20),
+        |ctx, data| Box::pin(youtube_notification(ctx, data)),
+    );
+    for platform in [
+        crate::social_video::Platform::Instagram,
+        crate::social_video::Platform::Tiktok,
+    ] {
+        spawn_interval(
+            ctx.clone(),
+            data.clone(),
+            crate::social_video::DISCOVERY_INTERVAL,
+            move |ctx, data| Box::pin(social_video_notification(ctx, data, platform)),
+        );
+        spawn_interval(
+            ctx.clone(),
+            data.clone(),
+            crate::social_video::PUBLICATION_INTERVAL,
+            move |ctx, data| Box::pin(social_video_publication(ctx, data, platform)),
+        );
+    }
 }
 
 fn spawn_startup_retry<F, Fut>(label: &'static str, task: F)
@@ -182,6 +203,26 @@ async fn update_status(ctx: &serenity::Context, data: &AppState) {
 async fn youtube_notification(ctx: &serenity::Context, data: &AppState) {
     if let Err(error) = data.youtube.notify(ctx, config::YOUTUBE_ID).await {
         tracing::error!(%error, "YouTube notification check failed");
+    }
+}
+
+async fn social_video_notification(
+    ctx: &serenity::Context,
+    data: &AppState,
+    platform: crate::social_video::Platform,
+) {
+    if let Err(error) = data.social_video.notify(ctx, platform).await {
+        tracing::error!(%error, ?platform, "social video notification check failed");
+    }
+}
+
+async fn social_video_publication(
+    ctx: &serenity::Context,
+    data: &AppState,
+    platform: crate::social_video::Platform,
+) {
+    if let Err(error) = data.social_video.publish_pending(ctx, platform).await {
+        tracing::error!(%error, ?platform, "social video publication check failed");
     }
 }
 

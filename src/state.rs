@@ -6,8 +6,8 @@ use tokio::sync::{Mutex, RwLock};
 use crate::{
     anarchy::AnarchyService, community_event::CommunityEventService, config::Environment,
     database::Databases, event_submissions::EventSubmissionService, media::MediaState,
-    moderation::PendingApprovals, server::ServerService, telegram::TelegramService,
-    youtube::YoutubeService,
+    moderation::PendingApprovals, server::ServerService, social_video::SocialVideoService,
+    telegram::TelegramService, youtube::YoutubeService,
 };
 
 #[derive(Clone)]
@@ -20,6 +20,7 @@ pub struct AppState {
     pub server: ServerService,
     pub telegram: Option<TelegramService>,
     pub youtube: YoutubeService,
+    pub social_video: SocialVideoService,
     pub anarchy: Option<AnarchyService>,
     pub community_event: Option<CommunityEventService>,
     pub event_submissions: Option<EventSubmissionService>,
@@ -79,6 +80,10 @@ impl AppState {
         Ok(Self {
             server: ServerService::new(http.clone(), Arc::clone(&environment), databases.clone()),
             youtube: YoutubeService::new(http.clone(), environment.youtube_api_key.clone()),
+            social_video: SocialVideoService::new(
+                http.clone(),
+                environment.apify_api_token.clone(),
+            ),
             environment,
             http,
             databases,
