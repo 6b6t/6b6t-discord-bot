@@ -4,10 +4,18 @@ use anyhow::{Context as _, Result};
 use tokio::sync::{Mutex, RwLock};
 
 use crate::{
-    anarchy::AnarchyService, community_event::CommunityEventService, config::Environment,
-    database::Databases, event_submissions::EventSubmissionService, media::MediaState,
-    moderation::PendingApprovals, server::ServerService, social_video::SocialVideoService,
-    telegram::TelegramService, youtube::YoutubeService,
+    anarchy::AnarchyService,
+    community_event::CommunityEventService,
+    config::Environment,
+    database::{Databases, connect_database},
+    event_submissions::EventSubmissionService,
+    media::MediaState,
+    moderation::PendingApprovals,
+    polls::PollService,
+    server::ServerService,
+    social_video::SocialVideoService,
+    telegram::TelegramService,
+    youtube::YoutubeService,
 };
 
 #[derive(Clone)]
@@ -24,6 +32,7 @@ pub struct AppState {
     pub anarchy: Option<AnarchyService>,
     pub community_event: Option<CommunityEventService>,
     pub event_submissions: Option<EventSubmissionService>,
+    pub polls: Option<PollService>,
     pub role_sync_cache: Arc<RwLock<HashMap<String, CachedUserInfo>>>,
     pub ready_started: Arc<Mutex<bool>>,
 }
@@ -75,6 +84,7 @@ impl AppState {
             }
             (None, _) => None,
         };
+        let polls = load_polls(&environment, databases.as_ref()).await;
         let media = Arc::new(MediaState::load(databases.clone()).await?);
 
         Ok(Self {
@@ -93,6 +103,7 @@ impl AppState {
             anarchy,
             community_event,
             event_submissions,
+            polls,
             role_sync_cache: Arc::new(RwLock::new(HashMap::new())),
             ready_started: Arc::new(Mutex::new(false)),
         })
@@ -160,5 +171,31 @@ fn load_anarchy(environment: &Arc<Environment>, http: &reqwest::Client) -> Optio
         environment.website_data_url.clone(),
         secret,
         channel_id,
+    ))
+}
+
+async fn load_polls(
+    environment: &Environment,
+    databases: Option<&Databases>,
+) -> Option<PollService> {
+    let settings = environment.polls.as_ref()?;
+    let Some(databases) = databases else {
+        tracing::error!("eligibility polls require MySQL; polls are disabled");
+        return None;
+    };
+    let stats = match &settings.stats_database {
+        Some(config) => match connect_database(config, &config.stats_database).await {
+            Ok(pool) => pool,
+            Err(error) => {
+                tracing::error!(%error, "could not connect to the polls stats database; polls are disabled");
+                return None;
+            }
+        },
+        None => databases.stats.clone(),
+    };
+    Some(PollService::new(
+        databases.link.clone(),
+        stats,
+        settings.config.clone(),
     ))
 }

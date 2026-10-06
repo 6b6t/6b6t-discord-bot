@@ -132,7 +132,7 @@ pub(crate) fn normalize_uuid(uuid: &str) -> String {
         .collect()
 }
 
-async fn connect_database(config: &DatabaseConfig, database: &str) -> Result<MySqlPool> {
+pub(crate) async fn connect_database(config: &DatabaseConfig, database: &str) -> Result<MySqlPool> {
     let url = format!(
         "mysql://{}:{}@{}:{}/{}",
         encode_url_component(&config.user),

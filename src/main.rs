@@ -1,5 +1,6 @@
 mod anarchy;
 mod command_moderation;
+mod command_polls;
 mod commands;
 mod community_event;
 mod config;
@@ -8,6 +9,7 @@ mod event_submissions;
 mod events;
 mod media;
 mod moderation;
+mod polls;
 mod runtime;
 mod server;
 mod social_video;

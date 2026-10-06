@@ -244,6 +244,7 @@ pub struct Environment {
     pub telegram: Option<TelegramConfig>,
     pub event_channels: Option<EventChannels>,
     pub events_test_user_id: Option<serenity::UserId>,
+    pub polls: Option<crate::polls::PollSettings>,
 }
 
 impl Environment {
@@ -256,6 +257,10 @@ impl Environment {
         });
         let database = parse_database_config().unwrap_or_else(|error| {
             tracing::error!(%error, "MySQL configuration is invalid; database features are disabled");
+            None
+        });
+        let polls = crate::polls::PollSettings::load(database.as_ref()).unwrap_or_else(|error| {
+            tracing::error!(%error, "poll configuration is invalid; eligibility polls are disabled");
             None
         });
         let website =
@@ -310,6 +315,7 @@ impl Environment {
                 None
             }),
             events_test_user_id: optional_id("EVENTS_TEST_USER_ID")?,
+            polls,
         })
     }
 }
@@ -331,7 +337,7 @@ fn parse_event_channels() -> Result<Option<EventChannels>> {
     }
 }
 
-fn optional_env(name: &str) -> Option<String> {
+pub(crate) fn optional_env(name: &str) -> Option<String> {
     env::var(name)
         .ok()
         .map(|value| value.trim().to_owned())
@@ -525,7 +531,7 @@ fn parse_telegram_config() -> Result<Option<TelegramConfig>> {
     }))
 }
 
-fn env_bool(name: &str, fallback: bool) -> bool {
+pub(crate) fn env_bool(name: &str, fallback: bool) -> bool {
     optional_env(name).map_or(fallback, |value| value.eq_ignore_ascii_case("true"))
 }
 
