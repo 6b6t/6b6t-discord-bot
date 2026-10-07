@@ -32,11 +32,26 @@ async fn staff(ctx: Context<'_>) -> Result<bool, Error> {
         .unwrap_or_default();
     Ok(permissions.administrator())
 }
+fn selftest_roles(guild: Option<serenity::GuildId>, roles: &[serenity::RoleId]) -> bool {
+    guild == Some(config::GUILD_ID)
+        && roles
+            .iter()
+            .any(|r| [config::COMMAND_ADMIN_ROLE_ID, config::DEVELOPER_ROLE_ID].contains(r))
+}
+async fn selftest_staff(ctx: Context<'_>) -> Result<bool, Error> {
+    if ctx.guild_id() != Some(config::GUILD_ID) {
+        return Ok(false);
+    }
+    let member = config::GUILD_ID
+        .member(ctx.serenity_context(), ctx.author().id)
+        .await?;
+    Ok(selftest_roles(ctx.guild_id(), &member.roles))
+}
+fn enabled_service(service: Option<&BannerService>) -> Result<&BannerService> {
+    service.context("Banner contest disabled at startup; see logs.")
+}
 fn service(ctx: Context<'_>) -> Result<&BannerService> {
-    ctx.data()
-        .banner_contest
-        .as_ref()
-        .context("Banner contests require MySQL.")
+    enabled_service(ctx.data().banner_contest.as_ref())
 }
 async fn reply(ctx: Context<'_>, text: String) -> Result<()> {
     ctx.send(
@@ -118,12 +133,18 @@ async fn theme_list(ctx: Context<'_>) -> Result<(), Error> {
     slash_command,
     guild_only,
     check = "staff",
-    subcommands("contest_status", "contest_skip", "contest_start", "contest_test")
+    subcommands(
+        "contest_status",
+        "contest_skip",
+        "contest_start",
+        "contest_test",
+        "contest_selftest"
+    )
 )]
 pub async fn bannercontest(ctx: Context<'_>) -> Result<(), Error> {
     reply(
         ctx,
-        "Use /bannercontest status, skip, start or test.".into(),
+        "Use /bannercontest status, skip, start, test or selftest.".into(),
     )
     .await
 }
@@ -132,7 +153,7 @@ pub async fn bannercontest(ctx: Context<'_>) -> Result<(), Error> {
 async fn contest_status(ctx: Context<'_>) -> Result<(), Error> {
     let service = service(ctx)?;
     let contests: Vec<Contest> =
-        sqlx::query_as("SELECT * FROM banner_contests ORDER BY id DESC LIMIT 8")
+        sqlx::query_as("SELECT * FROM banner_contests WHERE contest_key<>'gateway-stop' AND contest_key NOT LIKE 'selftest-%' ORDER BY id DESC LIMIT 8")
             .fetch_all(&service.pool)
             .await?;
     let mut lines = Vec::new();
@@ -285,4 +306,110 @@ pub(super) async fn save_theme(
     }
     sqlx::query("INSERT INTO banner_themes(year,month,theme) VALUES(?,?,?) ON DUPLICATE KEY UPDATE theme=VALUES(theme)").bind(year).bind(month).bind(theme.unwrap_or("")).execute(pool).await?;
     Ok(())
+}
+
+#[derive(Clone, Copy, poise::ChoiceParameter)]
+enum SelftestGroup {
+    #[name = "primeultra"]
+    PrimeUltra,
+    #[name = "eliteultra"]
+    EliteUltra,
+}
+impl SelftestGroup {
+    fn name(self) -> &'static str {
+        match self {
+            Self::PrimeUltra => "primeultra",
+            Self::EliteUltra => "eliteultra",
+        }
+    }
+}
+
+/// Exercise current guild images, a one-minute prize and a real staff notification.
+#[poise::command(slash_command, rename = "selftest", check = "selftest_staff")]
+async fn contest_selftest(
+    ctx: Context<'_>,
+    username: Option<String>,
+    group: Option<SelftestGroup>,
+) -> Result<(), Error> {
+    ctx.defer_ephemeral().await?;
+    let username = username.unwrap_or_else(|| super::selftest::TEST_PLAYER.into());
+    let result = service(ctx)?
+        .selftest(
+            &ctx.data().server,
+            ctx.author().id.get(),
+            &username,
+            group.unwrap_or(SelftestGroup::PrimeUltra).name(),
+        )
+        .await;
+    reply(
+        ctx,
+        if result.is_ok() {
+            "Selftest completed; see #banner-reviews.".into()
+        } else {
+            format!(
+                "Selftest failed: {}. See #banner-reviews.",
+                result.err().context("missing selftest failure")?
+            )
+        },
+    )
+    .await
+}
+
+#[cfg(test)]
+mod selftest_tests {
+    use super::*;
+
+    #[test]
+    fn selftest_requires_designated_role_in_configured_guild() {
+        assert!(!selftest_roles(Some(config::GUILD_ID), &[]));
+        for role in [config::COMMAND_ADMIN_ROLE_ID, config::DEVELOPER_ROLE_ID] {
+            assert!(selftest_roles(Some(config::GUILD_ID), &[role]));
+            assert!(!selftest_roles(Some(serenity::GuildId::new(1)), &[role]));
+        }
+        assert_eq!(contest_selftest().checks.len(), 1);
+    }
+    #[test]
+    fn operator_docs_describe_safe_selftest() {
+        let docs = include_str!("../../docs/banner-contest.md");
+        for requirement in [
+            "dedicated `BannerSelftest`",
+            "removetemp <group> 1m`",
+            "No guild image PATCH",
+            "malformed list refuses the test",
+            "30-second elapsed deadline",
+            "Administrator permission alone",
+            "READY/RESUMED",
+            "UUID identity proof",
+        ] {
+            assert!(
+                docs.contains(requirement),
+                "missing operator instruction: {requirement}"
+            );
+        }
+        assert!(!docs.contains("removetemp <group>`"));
+        assert!(!docs.contains("invoking staff member's linked"));
+    }
+    #[test]
+    fn startup_disabled_service_points_staff_to_logs() {
+        let error = enabled_service(None).err().unwrap();
+        assert_eq!(
+            error.to_string(),
+            "Banner contest disabled at startup; see logs."
+        );
+    }
+
+    #[test]
+    fn slash_group_choices_are_bounded_and_optional() {
+        let command = contest_selftest();
+        let group = command
+            .parameters
+            .iter()
+            .find(|p| p.name == "group")
+            .unwrap();
+        assert!(!group.required);
+        let names: Vec<_> = group.choices.iter().map(|c| c.name.as_ref()).collect();
+        assert_eq!(names, ["primeultra", "eliteultra"]);
+        assert_eq!(SelftestGroup::PrimeUltra.name(), "primeultra");
+        assert_eq!(SelftestGroup::EliteUltra.name(), "eliteultra");
+    }
 }

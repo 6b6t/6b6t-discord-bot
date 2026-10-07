@@ -44,10 +44,6 @@ impl Databases {
         let link = connect_database(config, &config.link_database).await?;
         let stats = connect_database(config, &config.stats_database).await?;
         ensure_link_schema(&link).await?;
-        // A banner contest schema problem must not disable linking, role sync and events.
-        if let Err(error) = crate::banner_contest::ensure_schema(&link).await {
-            tracing::error!(%error, "banner contest schema setup failed; banner contest is disabled");
-        }
         Ok(Self { link, stats })
     }
 

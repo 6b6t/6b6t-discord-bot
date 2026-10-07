@@ -28,14 +28,23 @@ impl BannerService {
         let mut delay = 1;
         loop {
             let result = self.gateway_session(&server, &mut session).await;
-            if let Some(reason) = &session.stopped {
-                // Stop identifying; retain the report until Discord accepts it.
-                loop {
-                    if self.report(reason).await.is_ok() {
-                        return;
-                    }
+            if session.healthy {
+                // Retry idempotent local persistence; never retry Discord POSTs here.
+                while self.rearm_gateway_report().await.is_err() {
+                    tracing::error!(
+                        "could not re-arm banner gateway stop journal; retrying in 60s"
+                    );
                     tokio::time::sleep(Duration::from_secs(60)).await;
                 }
+            }
+            if let Some(reason) = &session.stopped {
+                while self.report(reason).await.is_err() {
+                    tracing::error!(
+                        "could not persist banner gateway stop report; retrying in 60s"
+                    );
+                    tokio::time::sleep(Duration::from_secs(60)).await;
+                }
+                return;
             }
             delay = reconnect_delay(delay, session.healthy, result.is_ok());
             session.healthy = false;
@@ -46,6 +55,16 @@ impl BannerService {
             tokio::time::sleep(Duration::from_secs(delay)).await;
         }
     }
+    async fn confirm_gateway_health(&self) -> Result<()> {
+        // WebSocket-only unit fixtures have no database; loopback integration
+        // fixtures exercise the same journal as production.
+        #[cfg(test)]
+        if !self.discord_api.starts_with("http://127.0.0.1:") {
+            return Ok(());
+        }
+        self.rearm_gateway_report().await
+    }
+
     async fn reserve_identify(&self) -> Result<bool> {
         let _guard = self.lock.lock().await;
         let Some(connection) = self.acquire().await? else {
@@ -168,7 +187,12 @@ impl BannerService {
                             bail!("invalid gateway session");
                         }
                         Some(0)=>{
-                            if event["t"]=="READY" || event["t"]=="RESUMED" { session.healthy = true; }
+                            if event["t"]=="READY" || event["t"]=="RESUMED" {
+                                session.healthy = true;
+                                // Persist health before reading another event, so a restart
+                                // after READY cannot retain the previous stop as the active event.
+                                self.confirm_gateway_health().await?;
+                            }
                             if event["t"]=="READY" {
                                 tracing::info!("banner raw gateway ready");
                                 session.id=event["d"]["session_id"].as_str().map(str::to_owned);
@@ -207,6 +231,118 @@ fn reconnect_delay(previous: u64, healthy: bool, clean: bool) -> u64 {
 mod tests {
     use super::*;
     use std::sync::Arc;
+
+    #[tokio::test]
+    #[ignore = "local MariaDB"]
+    async fn stop_persistence_survives_more_than_five_attempts() -> Result<()> {
+        let (service, server, _mock) =
+            super::super::tests::local_integration::fixture("stop_retry").await?;
+        let mut blocker = service.pool.acquire().await?;
+        let acquired: i64 = sqlx::query_scalar("SELECT GET_LOCK('6b6t_banner_contest',0)")
+            .fetch_one(&mut *blocker)
+            .await?;
+        assert_eq!(acquired, 1);
+        let task = tokio::spawn({
+            let service = service.clone();
+            async move {
+                service.gateway_loop(server).await;
+            }
+        });
+        tokio::time::sleep(Duration::from_secs(23)).await;
+        assert!(
+            !task.is_finished(),
+            "persistence must not give up after the old five attempts"
+        );
+        sqlx::query("DO RELEASE_LOCK('6b6t_banner_contest')")
+            .execute(&mut *blocker)
+            .await?;
+        tokio::time::timeout(Duration::from_secs(65), task).await??;
+        let id = service.operational_journal("gateway-stop").await?;
+        assert_eq!(
+            service.effects(id).await?["report_gateway_stop"]["state"],
+            "pending"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[ignore = "local MariaDB"]
+    async fn healthy_gateway_then_new_fatal_stop_reports_again() -> Result<()> {
+        use std::sync::atomic::Ordering;
+        let (service, server, mock) =
+            super::super::tests::local_integration::fixture("stop_again").await?;
+        service.report("previous fatal stop").await?;
+        service.flush_reports().await?;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let url = format!("ws://{}", listener.local_addr()?);
+        mock.gateway_remaining.store(1000, Ordering::SeqCst);
+        *mock.gateway_url.lock().await = url.clone();
+        let runner = tokio::spawn({
+            let service = service.clone();
+            async move {
+                service.gateway_loop(server).await;
+            }
+        });
+        let (socket, _) =
+            tokio::time::timeout(Duration::from_secs(10), listener.accept()).await??;
+        let mut socket = tokio_tungstenite::accept_async(socket).await?;
+        socket
+            .send(Message::Text(
+                json!({"op":10,"d":{"heartbeat_interval":1000}})
+                    .to_string()
+                    .into(),
+            ))
+            .await?;
+        let _ = socket.next().await;
+        socket
+            .send(Message::Text(
+                json!({"op":0,"s":1,"t":"READY","d":{"session_id":"new","resume_gateway_url":url}})
+                    .to_string()
+                    .into(),
+            ))
+            .await?;
+        let id = service.operational_journal("gateway-stop").await?;
+        tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                if service
+                    .effects(id)
+                    .await?
+                    .get("report_gateway_stop")
+                    .is_none()
+                {
+                    break Ok::<_, anyhow::Error>(());
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await??;
+        socket
+            .send(Message::Close(Some(
+                tokio_tungstenite::tungstenite::protocol::CloseFrame {
+                    code: 4014.into(),
+                    reason: "".into(),
+                },
+            )))
+            .await?;
+        tokio::time::timeout(Duration::from_secs(5), runner).await??;
+        service.flush_reports().await?;
+        let id = service.operational_journal("gateway-stop").await?;
+        let effects = service.effects(id).await?;
+        assert!(
+            effects["report_gateway_stop"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("4014")
+        );
+        assert!(
+            effects
+                .as_object()
+                .unwrap()
+                .keys()
+                .any(|k| k.starts_with("report_gateway_stop_history_"))
+        );
+        Ok(())
+    }
 
     #[tokio::test]
     #[ignore = "local MariaDB"]

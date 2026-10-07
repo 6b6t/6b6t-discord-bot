@@ -215,6 +215,23 @@ impl ServerService {
 
     /// Grant a contest prize once. Callers journal the attempt before invoking this.
     pub async fn grant_banner_prize(&self, uuid: &str, group: &str) -> Result<()> {
+        self.banner_prize_command(uuid, group, "addtemp", "1mo")
+            .await
+    }
+
+    pub(crate) async fn banner_prize_command(
+        &self,
+        uuid: &str,
+        group: &str,
+        action: &str,
+        duration: &str,
+    ) -> Result<()> {
+        if !matches!(
+            (action, duration),
+            ("addtemp", "1mo" | "1m") | ("removetemp", "1m")
+        ) {
+            bail!("invalid prize operation");
+        }
         let uuid = uuid::Uuid::parse_str(uuid).context("invalid player UUID")?;
         if !matches!(group, "primeultra" | "eliteultra" | "legend") {
             bail!("invalid banner prize group");
@@ -229,7 +246,9 @@ impl ServerService {
             .proxy_command_access_token
             .as_deref()
             .context("proxy command service token missing")?;
-        let command = format!("lpv user {uuid} parent addtemp {group} 1mo");
+        let command = format!("lpv user {uuid} parent {action} {group} {duration}")
+            .trim_end()
+            .to_owned();
         let response: RunCommandResponse = self
             .http
             .post(format!("{}/run-command", base.trim_end_matches('/')))
@@ -248,14 +267,36 @@ impl ServerService {
 
     /// `LuckPerms` persists asynchronously. Never dispatch the grant again during verification.
     pub async fn verify_banner_prize(&self, username: &str, group: &str) -> bool {
+        self.verify_banner_prize_presence(username, group, true)
+            .await
+    }
+
+    pub(crate) async fn verify_banner_prize_presence(
+        &self,
+        username: &str,
+        group: &str,
+        present: bool,
+    ) -> bool {
+        self.verify_banner_prize_presence_checked(username, group, present, None)
+            .await
+    }
+
+    pub(crate) async fn verify_banner_prize_presence_checked(
+        &self,
+        username: &str,
+        group: &str,
+        present: bool,
+        expected_uuid: Option<&str>,
+    ) -> bool {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
         loop {
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
             if remaining.is_zero() {
                 return false;
             }
-            if let Ok(Ok(Some(ranks))) = tokio::time::timeout(remaining, self.ranks(username)).await
-                && ranks.iter().any(|r| r.eq_ignore_ascii_case(group))
+            if let Ok(Ok(Some(ranks))) =
+                tokio::time::timeout(remaining, self.ranks_checked(username, expected_uuid)).await
+                && ranks.iter().any(|r| r.eq_ignore_ascii_case(group)) == present
             {
                 return true;
             }
@@ -267,6 +308,54 @@ impl ServerService {
                     .min(deadline.saturating_duration_since(tokio::time::Instant::now())),
             )
             .await;
+        }
+    }
+
+    pub(crate) async fn selftest_account_safety(&self, username: &str, uuid: &str) -> Result<()> {
+        let databases = self
+            .databases
+            .as_ref()
+            .context("link database missing; selftest refused")?;
+        if databases.mapping_for_uuid(uuid).await?.is_some() {
+            bail!("BannerSelftest is linked to Discord; selftest refused");
+        }
+        let check = async {
+            let base = self
+                .environment
+                .proxy_command_base_url
+                .as_deref()
+                .context("proxy URL missing")?;
+            let token = self
+                .environment
+                .proxy_command_access_token
+                .as_deref()
+                .context("proxy token missing")?;
+            let response: OnlinePlayersResponse = self
+                .http
+                .get(format!("{}/players", base.trim_end_matches('/')))
+                .header(reqwest::header::AUTHORIZATION, token)
+                .send()
+                .await?
+                .error_for_status()?
+                .json()
+                .await?;
+            if !response.success || response.player_count != response.players.len() {
+                bail!("unsuccessful or incomplete player list");
+            }
+            let expected = uuid::Uuid::parse_str(uuid)?;
+            for player in response.players {
+                if uuid::Uuid::parse_str(&player.uuid)? == expected
+                    || player.username.eq_ignore_ascii_case(username)
+                {
+                    return Ok::<_, anyhow::Error>(false);
+                }
+            }
+            Ok::<_, anyhow::Error>(true)
+        };
+        match tokio::time::timeout(Duration::from_secs(10), check).await {
+            Ok(Ok(true)) => Ok(()),
+            Ok(Ok(false)) => bail!("BannerSelftest is online; selftest refused"),
+            _ => bail!("Offline player check unavailable; selftest refused"),
         }
     }
 
@@ -321,6 +410,22 @@ impl ServerService {
 
     /// Full group list, including plus and Ultra groups, for contest eligibility.
     pub async fn ranks(&self, username: &str) -> Result<Option<Vec<String>>> {
+        self.ranks_checked(username, None).await
+    }
+
+    pub(crate) async fn selftest_ranks(
+        &self,
+        username: &str,
+        uuid: &str,
+    ) -> Result<Option<Vec<String>>> {
+        self.ranks_checked(username, Some(uuid)).await
+    }
+
+    async fn ranks_checked(
+        &self,
+        username: &str,
+        expected_uuid: Option<&str>,
+    ) -> Result<Option<Vec<String>>> {
         {
             let circuit = self.rank_circuit.lock().await;
             if circuit
@@ -365,6 +470,14 @@ impl ServerService {
                     }
                     if response.user_not_found {
                         return Ok(None);
+                    }
+                    if let Some(expected) = expected_uuid {
+                        let actual = response.uuid.as_deref().context(
+                            "Rank service provides no UUID identity proof; selftest refused",
+                        )?;
+                        if uuid::Uuid::parse_str(actual)? != uuid::Uuid::parse_str(expected)? {
+                            bail!("Rank service UUID differs from command UUID; selftest refused");
+                        }
                     }
                     return Ok(Some(response.ranks));
                 }
@@ -456,6 +569,18 @@ impl ServerService {
 }
 
 #[derive(Deserialize)]
+struct OnlinePlayersResponse {
+    success: bool,
+    #[serde(rename = "player-count")]
+    player_count: usize,
+    players: Vec<OnlinePlayer>,
+}
+#[derive(Deserialize)]
+struct OnlinePlayer {
+    uuid: String,
+    username: String,
+}
+#[derive(Deserialize)]
 struct PlayersResponse {
     success: bool,
     #[serde(rename = "player-count")]
@@ -489,6 +614,8 @@ struct RunCommandResponse {
 }
 #[derive(Deserialize)]
 struct RankResponse {
+    #[serde(default)]
+    uuid: Option<String>,
     success: bool,
     #[serde(default, rename = "user-not-found")]
     user_not_found: bool,

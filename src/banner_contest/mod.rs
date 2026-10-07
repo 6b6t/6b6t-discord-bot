@@ -4,6 +4,7 @@ mod commands;
 mod gateway;
 mod image;
 mod model;
+mod selftest;
 #[cfg(test)]
 mod tests;
 
@@ -50,6 +51,15 @@ pub async fn ensure_schema(pool: &MySqlPool) -> Result<()> {
 }
 
 impl BannerService {
+    pub(crate) async fn initialize(
+        pool: MySqlPool,
+        http: reqwest::Client,
+        environment: &Environment,
+    ) -> Result<Self> {
+        ensure_schema(&pool).await?;
+        Ok(Self::new(pool, http, environment))
+    }
+
     pub fn new(pool: MySqlPool, http: reqwest::Client, environment: &Environment) -> Self {
         Self {
             pool,
@@ -426,10 +436,69 @@ impl BannerService {
         self.queue_report(id, "failure", message).await?;
         self.set_state(id, "paused").await
     }
+    // Operational reports share the contest journal, but never participate in a contest.
     async fn report(&self, message: &str) -> Result<()> {
-        self.message(REVIEWS, json!({"content": message}), None)
-            .await?;
-        Ok(())
+        let _guard = self.lock.lock().await;
+        let connection = self.acquire().await?.context("report journal busy")?;
+        let result = async {
+            let id = self.operational_journal("gateway-stop").await?;
+            self.queue_report(id, "gateway_stop", message).await
+        }
+        .await;
+        Self::release(connection).await;
+        result
+    }
+
+    // A confirmed healthy session starts a new stop event. Preserve every prior
+    // receipt and nonce; archived uncertain dispatches remain held across restart.
+    async fn rearm_gateway_report(&self) -> Result<()> {
+        let _guard = self.lock.lock().await;
+        let connection = self.acquire().await?.context("report journal busy")?;
+        let result = async {
+            let id = self.operational_journal("gateway-stop").await?;
+            let mut effects = self.effects(id).await?;
+            if effects.get("report_gateway_stop").is_some() {
+                let previous = effects
+                    .as_object_mut()
+                    .context("invalid effects")?
+                    .remove("report_gateway_stop")
+                    .context("missing report")?;
+                effects[format!(
+                    "report_gateway_stop_history_{}",
+                    uuid::Uuid::new_v4().simple()
+                )] = previous;
+                sqlx::query("UPDATE banner_contests SET effects=? WHERE id=?")
+                    .bind(effects.to_string())
+                    .bind(id)
+                    .execute(&self.pool)
+                    .await?;
+            }
+            Ok(())
+        }
+        .await;
+        Self::release(connection).await;
+        result
+    }
+
+    async fn operational_journal(&self, key: &str) -> Result<u64> {
+        sqlx::query("INSERT IGNORE INTO banner_contests(contest_key,year,month,call_at,close_at,voting_at,end_at,dry_run,state) VALUES (?,2026,10,0,0,0,0,TRUE,'skipped')")
+            .bind(key).execute(&self.pool).await?;
+        Ok(
+            sqlx::query_scalar("SELECT id FROM banner_contests WHERE contest_key=?")
+                .bind(key)
+                .fetch_one(&self.pool)
+                .await?,
+        )
+    }
+
+    async fn modify_guild_images(&self, images: Value, reason: &str) -> Result<(u16, Value)> {
+        self.request_with_reason(
+            reqwest::Method::PATCH,
+            &format!("/guilds/{}", config::GUILD_ID),
+            Some(images),
+            Some(reason),
+        )
+        .await
     }
 
     async fn effects(&self, id: u64) -> Result<Value> {
@@ -493,11 +562,31 @@ impl BannerService {
         path: &str,
         payload: Option<Value>,
     ) -> Result<Value> {
+        Ok(self.request_with_status(method, path, payload).await?.1)
+    }
+    async fn request_with_status(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        payload: Option<Value>,
+    ) -> Result<(u16, Value)> {
+        self.request_with_reason(method, path, payload, None).await
+    }
+    async fn request_with_reason(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        payload: Option<Value>,
+        reason: Option<&str>,
+    ) -> Result<(u16, Value)> {
         for attempt in 0..4 {
             let mut request = self
                 .http
                 .request(method.clone(), format!("{}{path}", self.discord_api))
                 .header("Authorization", format!("Bot {}", self.token));
+            if let Some(reason) = reason {
+                request = request.header("X-Audit-Log-Reason", reason);
+            }
             if let Some(payload) = &payload {
                 request = request.json(payload);
             }
@@ -510,7 +599,8 @@ impl BannerService {
                 Self::rate_limit_wait(response).await?;
                 continue;
             }
-            return Self::response(response).await;
+            let status = response.status().as_u16();
+            return Ok((status, Self::response(response).await?));
         }
         bail!("Discord rate limit exceeded")
     }
@@ -950,7 +1040,7 @@ impl BannerService {
         } else {
             if self.begin(contest.id,"guild_images","Set banner, splash and discovery_splash to the winner's banner.jpg using one PATCH /guilds/917520262797344779.").await?.is_none() {
                 let uri=format!("data:image/jpeg;base64,{}",STANDARD.encode(&image));
-                if self.request(reqwest::Method::PATCH,&format!("/guilds/{}",config::GUILD_ID),Some(json!({"banner":uri,"splash":uri,"discovery_splash":uri}))).await.is_err() {
+                if self.modify_guild_images(json!({"banner":uri,"splash":uri,"discovery_splash":uri}), "banner contest winner").await.is_err() {
                     self.queue_report(contest.id, "guild_failure", "Set the winning banner.jpg manually in all three guild image slots: banner, splash and discovery_splash. The Modify Guild step failed and will not be retried.").await?;
                 }
                 self.done(contest.id,"guild_images",json!("attempt finished; check guild slots if reported")).await?;
@@ -1359,46 +1449,59 @@ impl BannerService {
             )
             .await?;
         } else {
-            let dm = self
-                .request(
-                    reqwest::Method::POST,
-                    "/users/@me/channels",
-                    Some(json!({"recipient_id":entry.discord_id})),
-                )
-                .await;
-            let delivered = if let Ok(dm) = dm {
-                if let Some(channel) = dm["id"].as_str().and_then(|id| id.parse::<u64>().ok()) {
-                    match self
-                        .journal_message(contest.id, &key, channel, json!({"content":text}), None)
-                        .await
-                    {
-                        Ok(_) => true,
-                        Err(e)
-                            if e.downcast_ref::<DiscordHttpError>()
-                                .is_some_and(|e| e.0 == 403) =>
-                        {
-                            false
-                        }
-                        Err(e) => return Err(e),
-                    }
-                } else {
-                    bail!("missing DM channel");
-                }
-            } else if dm
-                .as_ref()
-                .err()
-                .and_then(|e| e.downcast_ref::<DiscordHttpError>())
-                .is_some_and(|e| e.0 == 403)
-            {
-                false
-            } else {
-                return Err(dm.err().context("DM request failed")?);
-            };
-            if !delivered {
-                self.journal_message(contest.id,&key,GENERAL,json!({"content":format!("<@{}> {text}",entry.discord_id),"allowed_mentions":{"parse":[],"users":[entry.discord_id]}}),None).await?;
-            }
+            self.deliver_notification(contest.id, &key, &entry.discord_id, &text, GENERAL)
+                .await?;
         }
+
         self.done(contest.id, &key, json!(true)).await
+    }
+    async fn deliver_notification(
+        &self,
+        id: u64,
+        key: &str,
+        user: &str,
+        text: &str,
+        fallback: u64,
+    ) -> Result<&'static str> {
+        let dm = self
+            .request(
+                reqwest::Method::POST,
+                "/users/@me/channels",
+                Some(json!({"recipient_id":user})),
+            )
+            .await;
+        let delivered = if let Ok(dm) = dm {
+            if let Some(channel) = dm["id"].as_str().and_then(|id| id.parse::<u64>().ok()) {
+                match self
+                    .journal_message(id, key, channel, json!({"content":text}), None)
+                    .await
+                {
+                    Ok(_) => true,
+                    Err(e)
+                        if e.downcast_ref::<DiscordHttpError>()
+                            .is_some_and(|e| e.0 == 403) =>
+                    {
+                        false
+                    }
+                    Err(e) => return Err(e),
+                }
+            } else {
+                bail!("missing DM channel");
+            }
+        } else if dm
+            .as_ref()
+            .err()
+            .and_then(|e| e.downcast_ref::<DiscordHttpError>())
+            .is_some_and(|e| e.0 == 403)
+        {
+            false
+        } else {
+            return Err(dm.err().context("DM request failed")?);
+        };
+        if !delivered {
+            self.journal_message(id,key,fallback,json!({"content":format!("<@{}> {text}",user),"allowed_mentions":{"parse":[],"users":[user]}}),None).await?;
+        }
+        Ok(if delivered { "DM" } else { "fallback" })
     }
 }
 fn role_mentions() -> Value {
