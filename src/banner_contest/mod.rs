@@ -1120,11 +1120,9 @@ impl BannerService {
         }
         let id: u64 = parts[2].parse()?;
         let kind = interaction["type"].as_u64().unwrap_or(0);
+        // A modal must be the first response, inside Discord's 3-second window, so these
+        // paths open it before any database read; `submit` and `decide` re-check the state.
         if kind == 3 && parts[1] == "apply" {
-            let contest = self.contest(id).await?;
-            if contest.state != "open" || Utc::now().timestamp() >= contest.close_at {
-                return self.reply(&interaction, CLOSED).await;
-            }
             return self.callback(&interaction, model::apply_modal(id)).await;
         }
         if kind == 3 && parts[1] == "deny" {
@@ -1133,16 +1131,12 @@ impl BannerService {
                     .reply(&interaction, "Only banner reviewers can decide.")
                     .await;
             }
-            let entry = self.entry(id).await?;
-            let contest = self.contest(entry.contest_id).await?;
-            if !model::can_review(&contest, Utc::now().timestamp()) {
-                return self.reply(&interaction, "Moderation is closed.").await;
-            }
             let reason = interaction["data"]["values"][0]
                 .as_str()
                 .context("missing deny reason")?;
             if reason == "Other" {
                 self.callback(&interaction,json!({"type":9,"data":{"custom_id":format!("banner:other:{id}"),"title":"Deny screenshot","components":[{"type":1,"components":[{"type":4,"custom_id":"reason","style":2,"label":"Reason","required":true,"min_length":1,"max_length":500}]}]}})).await?;
+                let entry = self.entry(id).await?;
                 // Persist the menu reset so a transient PATCH failure does not trap Other.
                 let key = format!(
                     "reset_{}_{}",
