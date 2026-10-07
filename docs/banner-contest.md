@@ -79,11 +79,11 @@ The normal Serenity session owns other commands and events.
 An advisory MariaDB lock serializes contest work across instances. External
 non-idempotent actions have an `effects` JSON journal in their contest row. The
 attempt is persisted before network I/O. Successful posts store their message
-ID. Known 429 responses retry up to three times. Public messages use a journaled
+ID. Known 429 responses retry up to three times. Contest messages, including review cards, decision notices and staff reports, use a journaled
 25-character nonce with `enforce_nonce`: transient 5xx/transport errors retry
 with 1, 2, 4, 8 second backoff, at most five attempts within 45 seconds.
 [Discord deduplicates messages with the same nonce](https://docs.discord.com/developers/resources/message#create-message).
-A restart does not repeat an uncertain public attempt, since nonce deduplication
+A restart does not repeat an uncertain message attempt, since nonce deduplication
 is only guaranteed for a few minutes. Rank commands and guild image changes
 are never resent. Restart resumes successful journal entries.
 Safe catch-up never posts a call
@@ -93,11 +93,17 @@ Otherwise the contest is skipped with a durable staff report and no public
 catch-up post or prize. Test mode keeps its minute-long phases.
 
 An uncertain public effect holds the phase as `paused` for manual reconciliation;
-it never resends the public post or prize. Retryable review cards, edits,
-reaction PUTs/GETs, reminders and notifications retry up to five times with
-persisted exponential backoff (30, 60, 120, 240 seconds). Exhaustion reports only
-that entry/effect and keeps other entries working. Reports are stored in the
-journal before delivery and retried on later ticks, even for terminal contests.
+it never resends the public post or prize. Repeatable edits and reaction
+PUTs/GETs retry up to five times with persisted exponential backoff
+(30, 60, 120, 240 seconds). Message POSTs retry transient failures only within
+the live 45-second nonce window. Definite client rejections can retry on later
+ticks; transport/server failures or a restart after dispatch leave
+`dispatch_started: true` and require manual reconciliation. This also prevents
+duplicate general-channel pings, review cards and staff reports. An uncertain
+private message affects only that effect and keeps other entries working.
+Reports are stored before pausing and before delivery, including on eligibility
+or identity refusal. They are flushed even for terminal contests. An uncertain
+report is retained in the journal without recursive reports or blind resends.
 Saved submissions get the waiting-for-review reply immediately; the worker
 uploads their cards. Changed decisions and their notification snapshots are
 saved together in a transaction, so rapid changes each get their own notice.
@@ -125,7 +131,12 @@ UPDATE banner_contests SET state = 'scheduled' WHERE id = <contest_id>;
 ```
 
 Use the corresponding journal key and restore `open`, `review`, or `voting` for
-other phases. If an effect definitely did not happen, remove *only* that key
+other phases. For a delivered notification or staff report, mark its key done
+with result `true`; for a review upload use the real message ID. Leave pending
+`notice_` snapshots intact so the worker can acknowledge their completed
+notification. The Other-menu reset holds both locks, including while another
+instance finishes its worker transaction.
+If an effect definitely did not happen, remove *only* that key
 with `JSON_REMOVE` before restoring its phase. Never remove an uncertain prize
 effect until checking the rank service: `addtemp` must never run twice.
 For image failures, set the winner's `banner.jpg` in banner, splash and Discovery

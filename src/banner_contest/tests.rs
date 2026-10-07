@@ -1053,13 +1053,13 @@ pub(crate) mod local_integration {
             .push(("POST".into(), review_path(), 1, 500));
         service.poll(&server).await?;
         assert_eq!(service.contest(id).await?.state, "open");
-        assert!(service.entry(entry).await?.review_message_id.is_none());
+        assert!(service.entry(entry).await?.review_message_id.is_some());
         let posts = mock.requests.lock().await.len();
         service.poll(&server).await?;
         assert_eq!(
             mock.requests.lock().await.len(),
             posts,
-            "backoff must defer immediate retry"
+            "successful live retry must not upload again"
         );
         retry_now(&service, id).await?;
         service.poll(&server).await?;
@@ -1080,7 +1080,7 @@ pub(crate) mod local_integration {
         mock.failures
             .lock()
             .await
-            .push(("POST".into(), review_path(), 5, 500));
+            .push(("POST".into(), review_path(), 5, 403));
         for _ in 0..6 {
             retry_now(&service, id).await?;
             service.poll(&server).await?;
@@ -1361,6 +1361,175 @@ pub(crate) mod local_integration {
         );
         Ok(())
     }
+    #[tokio::test]
+    #[ignore = "local MariaDB"]
+    async fn final_review_other_reset_waits_for_worker_and_decision_locks() -> Result<()> {
+        let (service, server, _mock) = fixture("reset_lock").await?;
+        let (id, entry) = opened(&service, true).await?;
+        service
+            .reconcile_entries(&service.contest(id).await?)
+            .await?;
+        for worker in [false, true] {
+            let guard = service.lock.lock().await;
+            let connection = service.acquire().await?.unwrap();
+            let mut other = interaction(&format!("banner:deny:{entry}"), 3);
+            other["id"] = json!(if worker { "778" } else { "777" });
+            other["data"]["values"] = json!(["Other"]);
+            let clone = service.clone();
+            let server = server.clone();
+            let task = tokio::spawn(async move { clone.receive(other, server).await });
+            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+            assert!(!task.is_finished(), "Other reset bypassed serialization");
+            if worker {
+                service.done(id, "worker_receipt", json!(true)).await?;
+            } else {
+                service
+                    .decide(
+                        entry,
+                        "approve",
+                        &interaction(&format!("banner:approve:{entry}"), 3),
+                    )
+                    .await?;
+            }
+            super::super::BannerService::release(connection).await;
+            drop(guard);
+            task.await??;
+            let effects = service.effects(id).await?;
+            assert!(if worker {
+                effects["worker_receipt"]["state"] == "done"
+            } else {
+                effects[format!("notice_{entry}_1")]["state"] == "pending"
+            });
+        }
+        // A separate process has its own mutex but shares MariaDB's advisory lock.
+        let connection = service.acquire().await?.unwrap();
+        let mut other = interaction(&format!("banner:deny:{entry}"), 3);
+        other["id"] = json!("779");
+        other["data"]["values"] = json!(["Other"]);
+        let mut independent = service.clone();
+        independent.lock = std::sync::Arc::default();
+        let task = tokio::spawn(async move { independent.receive(other, server).await });
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        assert!(!task.is_finished(), "Other reset bypassed advisory lock");
+        service
+            .done(id, "other_process_receipt", json!(true))
+            .await?;
+        super::super::BannerService::release(connection).await;
+        task.await??;
+        assert_eq!(
+            service.effects(id).await?["other_process_receipt"]["state"],
+            "done"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[ignore = "local MariaDB"]
+    async fn final_review_private_posts_deduplicate_live_and_hold_uncertain_restart() -> Result<()>
+    {
+        let (service, _, mock) = fixture("private_nonce").await?;
+        let (id, entry) = opened(&service, false).await?;
+        for kind in ["review", "notify", "report"] {
+            let key = format!("{kind}_regression");
+            service.begin(id, &key, "Inspect message").await?;
+            let before = mock.created_posts.load(Ordering::SeqCst);
+            mock.failures
+                .lock()
+                .await
+                .push(("POST".into(), review_path(), 1, 599));
+            service
+                .journal_message(
+                    id,
+                    &key,
+                    super::super::REVIEWS,
+                    json!({"content":kind}),
+                    None,
+                )
+                .await?;
+            assert_eq!(mock.created_posts.load(Ordering::SeqCst), before + 1);
+            retry_now(&service, id).await?;
+            assert!(
+                service
+                    .clone()
+                    .begin(id, &key, "Inspect message")
+                    .await
+                    .is_err(),
+                "accepted but unrecorded message must not redispatch after restart"
+            );
+        }
+        service
+            .decide(entry, "deny", &{
+                let mut i = interaction(&format!("banner:deny:{entry}"), 3);
+                i["data"]["values"] = json!(["Low quality"]);
+                i
+            })
+            .await?;
+        mock.failures.lock().await.push((
+            "POST".into(),
+            format!("/channels/{}/messages", super::super::GENERAL),
+            1,
+            599,
+        ));
+        let before = mock.created_posts.load(Ordering::SeqCst);
+        service
+            .notify(&service.contest(id).await?, &service.entry(entry).await?)
+            .await?;
+        assert_eq!(mock.created_posts.load(Ordering::SeqCst), before + 1);
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[ignore = "local MariaDB"]
+    async fn final_review_refusal_reports_are_durable_before_pause() -> Result<()> {
+        for identity in [false, true] {
+            let (service, server, mock) = fixture(if identity {
+                "pause_identity"
+            } else {
+                "pause_rank"
+            })
+            .await?;
+            let (id, entry) = opened(&service, false).await?;
+            sqlx::query("UPDATE banner_submissions SET status='approved' WHERE id=?")
+                .bind(entry)
+                .execute(&service.pool)
+                .await?;
+            service.voting(&service.contest(id).await?).await?;
+            // Simulate a stop/failure at the state write: a durable report must already exist.
+            sqlx::query("CREATE TRIGGER interrupt_pause BEFORE UPDATE ON banner_contests FOR EACH ROW BEGIN IF NEW.state='paused' THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='simulated stop'; END IF; END").execute(&service.pool).await?;
+            if identity {
+                sqlx::query("DELETE FROM player_info")
+                    .execute(&service.pool)
+                    .await?;
+            } else {
+                mock.ranks
+                    .lock()
+                    .await
+                    .insert("Steve".into(), vec!["legend".into()]);
+            }
+            assert!(
+                service
+                    .finish(&service.contest(id).await?, &server)
+                    .await
+                    .is_err()
+            );
+            let key = if identity {
+                "report_identity"
+            } else {
+                "report_eligibility"
+            };
+            assert_eq!(service.effects(id).await?[key]["state"], "pending");
+            sqlx::query("DROP TRIGGER interrupt_pause")
+                .execute(&service.pool)
+                .await?;
+            service.clone().flush_reports().await?;
+            assert_eq!(service.effects(id).await?[key]["state"], "done");
+            let before = mock.created_posts.load(Ordering::SeqCst);
+            service.flush_reports().await?;
+            assert_eq!(mock.created_posts.load(Ordering::SeqCst), before);
+        }
+        Ok(())
+    }
+
     #[tokio::test]
     #[ignore = "local MariaDB"]
     async fn other_cancel_resets_original_menu() -> Result<()> {

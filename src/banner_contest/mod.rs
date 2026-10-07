@@ -286,7 +286,7 @@ impl BannerService {
                     .to_owned()
             } else {
                 let image = self.entry_image(entry.id).await?;
-                let message = self.message(REVIEWS,json!({"components":model::review_components(entry.id,!model::can_review(contest,Utc::now().timestamp()))}),Some(&image)).await?;
+                let message = self.journal_message(contest.id,&key,REVIEWS,json!({"components":model::review_components(entry.id,!model::can_review(contest,Utc::now().timestamp()))}),Some(&image)).await?;
                 let id = message["id"]
                     .as_str()
                     .context("missing review message ID")?
@@ -360,15 +360,25 @@ impl BannerService {
             if effect["state"] == "done" {
                 return Ok(Some(effect["result"].clone()));
             }
+            if effect["dispatch_started"] == true {
+                if !key.starts_with("report_") {
+                    self.queue_report(contest, key, &format!("Contest {contest}: uncertain message `{key}`. Inspect Discord and reconcile its journal before retrying. {manual}")).await?;
+                }
+                bail!("message requires manual reconciliation");
+            }
             if retryable(key) {
                 let attempts = effect["attempts"].as_u64().unwrap_or(1);
                 if attempts >= 5 {
-                    self.queue_report(
-                        contest,
-                        key,
-                        &format!("Contest {contest}: `{key}` failed after 5 attempts. {manual}"),
-                    )
-                    .await?;
+                    if !key.starts_with("report_") {
+                        self.queue_report(
+                            contest,
+                            key,
+                            &format!(
+                                "Contest {contest}: `{key}` failed after 5 attempts. {manual}"
+                            ),
+                        )
+                        .await?;
+                    }
                     bail!("retry limit reached");
                 }
                 if Utc::now().timestamp() < effect["retry_at"].as_i64().unwrap_or(0) {
@@ -384,8 +394,12 @@ impl BannerService {
                 bail!("effect requires manual reconciliation");
             }
         }
+        let message = effects[key]["message"].clone();
         let attempts = effects[key]["attempts"].as_u64().unwrap_or(0) + 1;
         effects[key] = json!({"state":"attempted", "manual":manual, "attempts":attempts, "retry_at":Utc::now().timestamp() + 15 * (1_i64 << attempts.min(5)), "nonce":uuid::Uuid::new_v4().simple().to_string()[..25]});
+        if !message.is_null() {
+            effects[key]["message"] = message;
+        }
         sqlx::query("UPDATE banner_contests SET effects = ? WHERE id = ?")
             .bind(effects.to_string())
             .bind(contest)
@@ -447,9 +461,16 @@ impl BannerService {
             let effects: Value = serde_json::from_str(&text)?;
             for (key, effect) in effects.as_object().context("invalid effects")? {
                 if key.starts_with("report_")
-                    && effect["state"] == "pending"
+                    && effect["state"] != "done"
                     && let Some(message) = effect["message"].as_str()
-                    && self.report(message).await.is_ok()
+                    && self
+                        .begin(id, key, "Inspect the staff report before resending.")
+                        .await
+                        .is_ok_and(|v| v.is_none())
+                    && self
+                        .journal_message(id, key, REVIEWS, json!({"content":message}), None)
+                        .await
+                        .is_ok()
                 {
                     self.done(id, key, json!(true)).await?;
                 }
@@ -564,6 +585,45 @@ impl BannerService {
         self.request(reqwest::Method::POST, &path, Some(payload))
             .await
     }
+    // Lock-held helper: save uncertainty before POST, retry only inside the live nonce window.
+    async fn journal_message(
+        &self,
+        contest: u64,
+        key: &str,
+        channel: u64,
+        mut payload: Value,
+        image: Option<&[u8]>,
+    ) -> Result<Value> {
+        let mut effects = self.effects(contest).await?;
+        effects[key]["dispatch_started"] = json!(true);
+        if effects[key]["nonce"].is_null() {
+            effects[key]["nonce"] = json!(uuid::Uuid::new_v4().simple().to_string()[..25]);
+        }
+        sqlx::query("UPDATE banner_contests SET effects=? WHERE id=?")
+            .bind(effects.to_string())
+            .bind(contest)
+            .execute(&self.pool)
+            .await?;
+        payload["nonce"] = effects[key]["nonce"].clone();
+        payload["enforce_nonce"] = json!(true);
+        let result = self.public_message(channel, payload, image).await;
+        // An explicit client rejection has no message effect. Transport and server errors
+        // remain uncertain even if the process restarts after this call.
+        if result
+            .as_ref()
+            .err()
+            .and_then(|e| e.downcast_ref::<DiscordHttpError>())
+            .is_some_and(|e| (400..500).contains(&e.0))
+        {
+            effects[key]["dispatch_started"] = json!(false);
+            sqlx::query("UPDATE banner_contests SET effects=? WHERE id=?")
+                .bind(effects.to_string())
+                .bind(contest)
+                .execute(&self.pool)
+                .await?;
+        }
+        result
+    }
     // Discord deduplicates this nonce for a few minutes. Restrict retries to one
     // short live attempt; a process restart still requires manual reconciliation.
     async fn public_message(
@@ -623,7 +683,8 @@ impl BannerService {
             payload["allowed_mentions"] = json!({"parse":[]});
         }
         let result = if retryable(key) {
-            self.message(contest.channel(), payload, image).await
+            self.journal_message(contest.id, key, contest.channel(), payload, image)
+                .await
         } else {
             payload["nonce"] = self.effects(contest.id).await?[key]["nonce"].clone();
             payload["enforce_nonce"] = json!(true);
@@ -862,18 +923,18 @@ impl BannerService {
         } else {
             current
         }) else {
-            self.set_state(contest.id, "paused").await?;
             self.queue_report(contest.id, "eligibility", "Winner is no longer eligible. No winner announcement or prize; check ranks before resuming.").await?;
+            self.set_state(contest.id, "paused").await?;
             return Ok(());
         };
         if !winner_posted && identity.as_deref() != Some(&winner.uuid) {
-            self.set_state(contest.id, "paused").await?;
             self.queue_report(
                 contest.id,
                 "identity",
                 "Winner UUID no longer resolves uniquely. No winner announcement or prize.",
             )
             .await?;
+            self.set_state(contest.id, "paused").await?;
             return Ok(());
         }
         self.done(contest.id, "preflight", json!(true)).await?;
@@ -1000,8 +1061,16 @@ impl BannerService {
                         .as_str()
                         .context("missing interaction ID")?
                 );
-                let _ = self.reset_menu(&entry, &key).await;
-                return Ok(());
+                let _guard = self.lock.lock().await;
+                let connection = loop {
+                    if let Some(connection) = self.acquire().await? {
+                        break connection;
+                    }
+                    tokio::time::sleep(Duration::from_millis(250)).await;
+                };
+                let result = self.reset_menu(&entry, &key).await;
+                Self::release(connection).await;
+                return result;
             }
         }
         self.callback(
@@ -1281,7 +1350,9 @@ impl BannerService {
         if self.begin(contest.id,&key,"Check whether the player received the decision; send the missing notification once by hand.").await?.is_some(){return Ok(());}
         if contest.dry_run {
             // Test mode confines ALL bot posts, including decision notifications, to reviews.
-            self.message(
+            self.journal_message(
+                contest.id,
+                &key,
                 REVIEWS,
                 json!({"content":format!("TEST decision notification: {text}")}),
                 None,
@@ -1297,7 +1368,10 @@ impl BannerService {
                 .await;
             let delivered = if let Ok(dm) = dm {
                 if let Some(channel) = dm["id"].as_str().and_then(|id| id.parse::<u64>().ok()) {
-                    match self.message(channel, json!({"content":text}), None).await {
+                    match self
+                        .journal_message(contest.id, &key, channel, json!({"content":text}), None)
+                        .await
+                    {
                         Ok(_) => true,
                         Err(e)
                             if e.downcast_ref::<DiscordHttpError>()
@@ -1321,7 +1395,7 @@ impl BannerService {
                 return Err(dm.err().context("DM request failed")?);
             };
             if !delivered {
-                self.message(GENERAL,json!({"content":format!("<@{}> {text}",entry.discord_id),"allowed_mentions":{"parse":[],"users":[entry.discord_id]}}),None).await?;
+                self.journal_message(contest.id,&key,GENERAL,json!({"content":format!("<@{}> {text}",entry.discord_id),"allowed_mentions":{"parse":[],"users":[entry.discord_id]}}),None).await?;
             }
         }
         self.done(contest.id, &key, json!(true)).await
@@ -1332,9 +1406,11 @@ fn role_mentions() -> Value {
 }
 
 fn retryable(key: &str) -> bool {
-    ["review_", "patch_", "notify_", "fire_", "count_", "reset_"]
-        .iter()
-        .any(|prefix| key.starts_with(prefix))
+    [
+        "review_", "patch_", "notify_", "fire_", "count_", "reset_", "report_",
+    ]
+    .iter()
+    .any(|prefix| key.starts_with(prefix))
         || key == "theme_reminder"
         || key == "disable_apply"
         || key == "preflight"
