@@ -277,13 +277,25 @@ impl ServerService {
         group: &str,
         present: bool,
     ) -> bool {
+        self.verify_banner_prize_presence_checked(username, group, present, None)
+            .await
+    }
+
+    pub(crate) async fn verify_banner_prize_presence_checked(
+        &self,
+        username: &str,
+        group: &str,
+        present: bool,
+        expected_uuid: Option<&str>,
+    ) -> bool {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
         loop {
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
             if remaining.is_zero() {
                 return false;
             }
-            if let Ok(Ok(Some(ranks))) = tokio::time::timeout(remaining, self.ranks(username)).await
+            if let Ok(Ok(Some(ranks))) =
+                tokio::time::timeout(remaining, self.ranks_checked(username, expected_uuid)).await
                 && ranks.iter().any(|r| r.eq_ignore_ascii_case(group)) == present
             {
                 return true;
@@ -296,6 +308,54 @@ impl ServerService {
                     .min(deadline.saturating_duration_since(tokio::time::Instant::now())),
             )
             .await;
+        }
+    }
+
+    pub(crate) async fn selftest_account_safety(&self, username: &str, uuid: &str) -> Result<()> {
+        let databases = self
+            .databases
+            .as_ref()
+            .context("link database missing; selftest refused")?;
+        if databases.mapping_for_uuid(uuid).await?.is_some() {
+            bail!("BannerSelftest is linked to Discord; selftest refused");
+        }
+        let check = async {
+            let base = self
+                .environment
+                .proxy_command_base_url
+                .as_deref()
+                .context("proxy URL missing")?;
+            let token = self
+                .environment
+                .proxy_command_access_token
+                .as_deref()
+                .context("proxy token missing")?;
+            let response: OnlinePlayersResponse = self
+                .http
+                .get(format!("{}/players", base.trim_end_matches('/')))
+                .header(reqwest::header::AUTHORIZATION, token)
+                .send()
+                .await?
+                .error_for_status()?
+                .json()
+                .await?;
+            if !response.success || response.player_count != response.players.len() {
+                bail!("unsuccessful or incomplete player list");
+            }
+            let expected = uuid::Uuid::parse_str(uuid)?;
+            for player in response.players {
+                if uuid::Uuid::parse_str(&player.uuid)? == expected
+                    || player.username.eq_ignore_ascii_case(username)
+                {
+                    return Ok::<_, anyhow::Error>(false);
+                }
+            }
+            Ok::<_, anyhow::Error>(true)
+        };
+        match tokio::time::timeout(Duration::from_secs(10), check).await {
+            Ok(Ok(true)) => Ok(()),
+            Ok(Ok(false)) => bail!("BannerSelftest is online; selftest refused"),
+            _ => bail!("Offline player check unavailable; selftest refused"),
         }
     }
 
@@ -508,6 +568,18 @@ impl ServerService {
     }
 }
 
+#[derive(Deserialize)]
+struct OnlinePlayersResponse {
+    success: bool,
+    #[serde(rename = "player-count")]
+    player_count: usize,
+    players: Vec<OnlinePlayer>,
+}
+#[derive(Deserialize)]
+struct OnlinePlayer {
+    uuid: String,
+    username: String,
+}
 #[derive(Deserialize)]
 struct PlayersResponse {
     success: bool,

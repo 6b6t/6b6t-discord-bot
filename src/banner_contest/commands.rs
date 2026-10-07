@@ -369,12 +369,14 @@ mod selftest_tests {
         assert_eq!(contest_selftest().checks.len(), 1);
     }
     #[test]
-    fn operator_docs_describe_safe_selftest_and_recovery() {
+    fn operator_docs_describe_safe_selftest() {
         let docs = include_str!("../../docs/banner-contest.md");
         for requirement in [
             "dedicated `BannerSelftest`",
             "removetemp <group> 1m`",
-            "durable restoration",
+            "No guild image PATCH",
+            "malformed list refuses the test",
+            "30-second elapsed deadline",
             "Administrator permission alone",
             "READY/RESUMED",
             "UUID identity proof",

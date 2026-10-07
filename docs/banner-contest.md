@@ -189,8 +189,14 @@ retains the exact staff reason, per qbasty's decision.
 Only members with the configured Admin or Developer role in the configured guild
 may run `/bannercontest selftest`. Administrator permission alone is insufficient.
 Username defaults to the dedicated `BannerSelftest` constant; every other name is
-refused. Keep this account offline and unlinked. Groups are primeultra (default)
-or eliteultra; legend is refused. Existing and inherited groups refuse the test.
+refused. The link table is checked before testing and again immediately before
+grant; linked accounts refuse. The authenticated proxy `/players` list must
+prove the account offline by UUID and name at both checks. An unavailable or
+malformed list refuses the test. `/get-ranks` currently supplies no
+online-presence field; rank presence alone cannot prove offline status. Keep
+this account offline and unlinked throughout the test. Groups are primeultra
+(default) or eliteultra; legend is refused. Existing and inherited groups refuse
+the test.
 The stats UUID must match the UUID returned by `/get-ranks` on every check. A
 service response without UUID identity proof refuses the rank test; the bot does
 not change the service API or assume username uniqueness in LuckPerms.
@@ -203,20 +209,23 @@ Proxy routing uses HTTP_PROXY_COMMAND_SERVICE_BASE_URL; rank lookup uses
 HTTP_SLAVE1_COMMAND_SERVICE_BASE_URL with the configured fallback. Acceptance
 means dispatched, not completed execution.
 
-Reports and original-image backup attachments go to banner-reviews. The bot
-fetches original CDN bytes without a size query, journals the backup link and a
-durable restoration obligation before the shared winner encoder/PATCH, then
-restores the original bytes in a second PATCH and verifies hashes, dimensions
-and bytes. Animated, small, unsuitable or oversized images skip only images;
-image errors still allow rank and DM steps. The staff decision-notice DM uses
-banner-reviews fallback, never general or announcements.
+Reports go to banner-reviews. The image step only GETs the current guild and
+CDN PNG representations, then runs each available slot through the shared winner
+encoder offline. It reports JPEG byte size, dimensions, the documented PNG/JPEG
+and 16:9 requirements, the banner minimum of 960x540, and the encoder's
+conservative <3 MiB bound. Missing images skip; download or encoder failures
+report failure while rank and DM tests continue. No guild image PATCH, backup upload, restoration or recovery obligation
+is created. Animated banners are checked using their static PNG representation.
+Discord CDN bytes cannot prove original upload bytes. Feature eligibility and
+Discord HTTP acceptance are not tested by this offline check.
+See [Discord Modify Guild](https://github.com/discord/discord-api-docs/blob/main/developers/resources/guild.mdx#modify-guild).
+See [Discord Server Banners](https://support.discord.com/hc/en-us/articles/360028716472-Server-Banners)
+for the banner dimensions. The <3 MiB bound is a local safety limit, not a
+documented Discord byte-size guarantee.
+The staff decision-notice DM uses banner-reviews fallback, never general or announcements.
 
-On interruption or restoration failure the worker retries the durable obligation,
-including after restart. It refuses to overwrite a later guild image change;
-ambiguous image identity requires manual reconciliation. URGENT reports include
-the backup message link. Use those attachments for manual restoration if needed.
-Discord outages or interruption before a receipt can require operator recovery;
-local tests cannot promise automatic restoration under every external failure.
+Rank presence and absence use the same verifier as real winners, with UUID
+validation for selftest and a 30-second elapsed deadline including slow requests.
 Inspect the independent results and final summary. Run outside active contests
 and first-of-month Warsaw 09:00–10:59; the test holds contest locks.
 

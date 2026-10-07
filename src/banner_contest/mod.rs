@@ -203,7 +203,6 @@ impl BannerService {
         result
     }
     async fn poll_locked(&self, server: &ServerService) -> Result<()> {
-        self.recover_image_restores().await?;
         self.flush_reports().await?;
         self.generate().await?;
         // Finished public phases must not discard a retrying private notice/card edit.

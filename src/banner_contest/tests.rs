@@ -276,7 +276,6 @@ fn expiry_matches_luckperms_duration_parser() {
 pub(crate) mod local_integration {
     use super::*;
     use anyhow::{Context as _, Result};
-    use base64::Engine as _;
     use serde_json::{Value, json};
     use std::sync::{
         Arc,
@@ -304,6 +303,8 @@ pub(crate) mod local_integration {
         uploads: Arc<Mutex<Vec<Vec<u8>>>>,
         audit_reasons: Arc<Mutex<Vec<String>>>,
         dm_open: Arc<AtomicBool>,
+        online: Arc<AtomicBool>,
+        rank_response_delay: Arc<AtomicU64>,
         pub(crate) gateway_remaining: Arc<AtomicU64>,
         pub(crate) gateway_url: Arc<Mutex<String>>,
         task: tokio::task::JoinHandle<()>,
@@ -335,9 +336,12 @@ pub(crate) mod local_integration {
             let denied = deny_command.clone();
             let dm_open = Arc::new(AtomicBool::new(false));
             let open_dm = dm_open.clone();
+            let online = Arc::new(AtomicBool::new(false));
+            let online_state = online.clone();
+            let rank_response_delay = Arc::new(AtomicU64::new(0));
+            let rank_wait = rank_response_delay.clone();
             let guild = Arc::new(Mutex::new(json!({})));
             let guild_state = guild.clone();
-            let initial_guild = Arc::new(Mutex::new(None::<Value>));
             let uploads = Arc::new(Mutex::new(Vec::new()));
             let upload_log = uploads.clone();
             let audit_reasons = Arc::new(Mutex::new(Vec::new()));
@@ -368,7 +372,6 @@ pub(crate) mod local_integration {
                     let failure = failure.clone();
                     let messages = messages.clone();
                     let attachment = download_bytes.clone();
-                    let initial_guild = initial_guild.clone();
                     let upload_log = upload_log.clone();
                     let audit_log = audit_log.clone();
                     let failing = failing.clone();
@@ -379,6 +382,8 @@ pub(crate) mod local_integration {
                     let gateway_address = gateway_address.clone();
                     let guild_state = guild_state.clone();
                     let open_dm = open_dm.clone();
+                    let online_state = online_state.clone();
+                    let rank_wait = rank_wait.clone();
                     let created = created.clone();
                     let nonces = nonces.clone();
                     tokio::spawn(async move {
@@ -477,7 +482,13 @@ pub(crate) mod local_integration {
                             (200,json!({"url":*gateway_address.lock().await, "session_start_limit":{"remaining":remaining.load(Ordering::SeqCst)}}).to_string().into_bytes())
                         } else if path == "/attachment" {
                             (200, attachment.lock().await.clone())
+                        } else if path == "/proxy/players" {
+                            (200, json!({"success":true,"player-count":usize::from(online_state.load(Ordering::SeqCst)),"players":if online_state.load(Ordering::SeqCst) { vec![json!({"uuid":"00000000-0000-0000-0000-000000000002","username":"BannerSelftest"})] } else { vec![] }}).to_string().into_bytes())
                         } else if path == "/get-ranks" {
+                            tokio::time::sleep(std::time::Duration::from_millis(
+                                rank_wait.load(Ordering::SeqCst),
+                            ))
+                            .await;
                             let username = payload["username"]
                                 .as_str()
                                 .or_else(|| payload["player"].as_str())
@@ -522,18 +533,9 @@ pub(crate) mod local_integration {
                         } else if path.starts_with("/guilds/") {
                             let mut guild = guild_state.lock().await;
                             if method == "PATCH" {
-                                let mut initial = initial_guild.lock().await;
-                                let initial = initial.get_or_insert_with(|| guild.clone());
                                 for field in ["banner", "splash", "discovery_splash"] {
                                     if !payload[field].is_null() {
-                                        guild[field] = if payload[field]
-                                            .as_str()
-                                            .is_some_and(|s| s.starts_with("data:image/png;"))
-                                        {
-                                            initial[field].clone()
-                                        } else {
-                                            json!(format!("changed_{field}"))
-                                        };
+                                        guild[field] = json!(format!("changed_{field}"));
                                     }
                                 }
                             }
@@ -602,6 +604,8 @@ pub(crate) mod local_integration {
                 uploads,
                 audit_reasons,
                 dm_open,
+                online,
+                rank_response_delay,
                 gateway_remaining,
                 gateway_url,
                 task,
@@ -722,85 +726,66 @@ pub(crate) mod local_integration {
 
     #[tokio::test]
     #[ignore = "local MariaDB"]
-    async fn selftest_restart_restore_retries_and_preserves_later_images() -> Result<()> {
-        let (service, server, mock) = selftest_fixture("restart_restore").await?;
-        let id = service.operational_journal("selftest-interrupted").await?;
-        let before = json!({"banner":"original"});
-        *mock.guild.lock().await = before.clone();
-        let bytes = mock.attachment.lock().await.clone();
-        let restore = json!({"banner":format!("data:image/png;base64,{}",base64::engine::general_purpose::STANDARD.encode(bytes))});
-        let changed = service
-            .modify_guild_images(
-                json!({"banner":"data:image/jpeg;base64,test"}),
-                "banner contest selftest",
-            )
-            .await?
-            .1;
-        let mut effects = service.effects(id).await?;
-        effects["image_restore_obligation"] = json!({"state":"pending","before":before,"restore":restore,"expected":changed,"link":"https://discord.com/backup"});
-        sqlx::query("UPDATE banner_contests SET effects=? WHERE id=?")
-            .bind(effects.to_string())
-            .bind(id)
-            .execute(&service.pool)
-            .await?;
-        let mut restarted = super::super::BannerService::new(
-            service.pool.clone(),
-            service.http.clone(),
-            &crate::config::Environment {
-                discord_token: "fake".into(),
+    async fn selftest_and_winner_verifier_bound_slow_responses() -> Result<()> {
+        let (_, _, mock) = selftest_fixture("slow_verifier").await?;
+        let server = crate::server::ServerService::new(
+            reqwest::Client::new(),
+            Arc::new(crate::config::Environment {
+                rank_service_base_url: Some(mock.base.clone()),
+                rank_service_access_token: Some("fake".into()),
                 ..Default::default()
-            },
+            }),
+            None,
         );
-        restarted.discord_api = mock.base.clone();
-        mock.fail_image.store(true, Ordering::SeqCst);
-        restarted.recover_image_restores().await?;
-        assert_eq!(
-            restarted.effects(id).await?["image_restore_obligation"]["state"],
-            "pending"
-        );
-        mock.fail_image.store(false, Ordering::SeqCst);
-        *mock.guild.lock().await = json!({"banner":"later_winner"});
-        restarted.recover_image_restores().await?;
-        assert_eq!(mock.guild.lock().await["banner"], "later_winner");
-        assert_eq!(
-            restarted.effects(id).await?["image_restore_obligation"]["state"],
-            "pending"
-        );
-        assert!(
-            restarted
-                .selftest(&server, 42, "BannerSelftest", "primeultra")
-                .await
-                .unwrap_err()
-                .to_string()
-                .contains("pending original image restoration")
-        );
-        // An absent receipt must never make a later deleted image look like ours.
-        let mut unresolved = restarted.effects(id).await?;
-        unresolved["image_restore_obligation"]
-            .as_object_mut()
-            .unwrap()
-            .remove("expected");
-        sqlx::query("UPDATE banner_contests SET effects=? WHERE id=?")
-            .bind(unresolved.to_string())
-            .bind(id)
-            .execute(&service.pool)
-            .await?;
-        *mock.guild.lock().await = json!({"banner":null});
-        restarted.recover_image_restores().await?;
-        assert!(mock.guild.lock().await["banner"].is_null());
-        unresolved["image_restore_obligation"]["expected"] = changed.clone();
-        sqlx::query("UPDATE banner_contests SET effects=? WHERE id=?")
-            .bind(unresolved.to_string())
-            .bind(id)
-            .execute(&service.pool)
-            .await?;
-        *mock.guild.lock().await = changed;
-        restarted.poll(&server).await?;
+        mock.rank_response_delay.store(9000, Ordering::SeqCst);
+        for expected in [None, Some("00000000-0000-0000-0000-000000000002")] {
+            let started = std::time::Instant::now();
+            assert!(
+                !server
+                    .verify_banner_prize_presence_checked(
+                        "BannerSelftest",
+                        "primeultra",
+                        true,
+                        expected
+                    )
+                    .await
+            );
+            assert!(started.elapsed() >= std::time::Duration::from_secs(29));
+            assert!(started.elapsed() < std::time::Duration::from_secs(32));
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[ignore = "local MariaDB"]
+    async fn selftest_offline_encoder_handles_cdn_formats_without_mutation() -> Result<()> {
+        let (service, _, mock) = selftest_fixture("offline_formats").await?;
+        let before =
+            json!({"banner":"a_animated","splash":"jpeg_source","discovery_splash":"webp_source"});
+        *mock.guild.lock().await = before.clone();
+        for format in [
+            image::ImageFormat::Png,
+            image::ImageFormat::Jpeg,
+            image::ImageFormat::WebP,
+        ] {
+            let mut bytes = Cursor::new(Vec::new());
+            image::DynamicImage::new_rgb8(1600, 900).write_to(&mut bytes, format)?;
+            *mock.attachment.lock().await = bytes.into_inner();
+            let id = service
+                .operational_journal(&format!("selftest-offline-{}", uuid::Uuid::new_v4()))
+                .await?;
+            service.selftest_guild_images(id).await?;
+        }
         assert_eq!(*mock.guild.lock().await, before);
-        assert_eq!(
-            restarted.effects(id).await?["image_restore_obligation"]["state"],
-            "done"
+        assert!(
+            !mock
+                .requests
+                .lock()
+                .await
+                .iter()
+                .any(|(m, p, _)| m == "PATCH" && p.starts_with("/guilds/"))
         );
+        assert!(mock.uploads.lock().await.is_empty());
         Ok(())
     }
 
@@ -860,6 +845,9 @@ pub(crate) mod local_integration {
         Mock,
     )> {
         let (service, server, mock) = fixture(name).await?;
+        sqlx::query("CREATE TABLE uuid_to_discord(uuid CHAR(36),discord_id VARCHAR(64))")
+            .execute(&service.pool)
+            .await?;
         sqlx::query("INSERT INTO player_info VALUES('00000000-0000-0000-0000-000000000002','BannerSelftest',0)").execute(&service.pool).await?;
         Ok((service, server, mock))
     }
@@ -879,70 +867,36 @@ pub(crate) mod local_integration {
             .iter()
             .filter(|(m, p, _)| m == "PATCH" && p.starts_with("/guilds/"))
             .collect();
-        assert_eq!(patches.len(), 2);
-        let original_bytes = mock.attachment.lock().await.clone();
-        for field in ["banner", "splash", "discovery_splash"] {
-            assert_eq!(
-                patches[1].2[field],
-                json!(format!(
-                    "data:image/png;base64,{}",
-                    base64::engine::general_purpose::STANDARD.encode(&original_bytes)
-                ))
-            );
-        }
-        let backup_index = requests
-            .iter()
-            .position(|(_, p, v)| {
-                p == &review_path()
-                    && v["content"]
-                        .as_str()
-                        .is_some_and(|s| s.contains("backup before selftest"))
-            })
-            .unwrap();
-        let patch_index = requests
-            .iter()
-            .position(|(m, p, _)| m == "PATCH" && p.starts_with("/guilds/"))
-            .unwrap();
-        assert!(backup_index < patch_index);
-        assert_eq!(
-            requests[backup_index].2["attachments"]
-                .as_array()
-                .unwrap()
-                .len(),
-            3
-        );
-        assert!(mock.uploads.lock().await.iter().any(|body| {
-            body.windows(original_bytes.len())
-                .filter(|window| *window == original_bytes)
-                .count()
-                == 3
-        }));
+        assert_eq!(patches.len(), 0);
+        assert!(mock.uploads.lock().await.is_empty());
+        assert!(mock.audit_reasons.lock().await.is_empty());
         assert_eq!(
             *mock.guild.lock().await,
             json!({"banner":"old_banner","splash":"old_splash","discovery_splash":"old_discovery"})
         );
-        assert_eq!(
-            *mock.audit_reasons.lock().await,
-            vec!["banner contest selftest", "banner contest selftest restore"]
-        );
+        for field in ["banner", "splash", "discovery_splash"] {
+            assert!(requests.iter().any(|(_, p, v)| {
+                p == &review_path()
+                    && v["content"].as_str().is_some_and(|text| {
+                        text.contains(field)
+                            && text.contains("1280x720")
+                            && text.contains("requirements satisfied=true")
+                    })
+            }));
+        }
         let row: String = sqlx::query_scalar(
             "SELECT effects FROM banner_contests WHERE contest_key LIKE 'selftest-%'",
         )
         .fetch_one(&service.pool)
         .await?;
-        assert!(
-            serde_json::from_str::<Value>(&row)?["image_backup"]["result"]["message_id"]
-                .is_string()
-        );
-
-        for field in ["banner", "splash", "discovery_splash"] {
-            use base64::Engine as _;
-            let uri = patches[0].2[field].as_str().unwrap();
-            let bytes = base64::engine::general_purpose::STANDARD
-                .decode(uri.strip_prefix("data:image/jpeg;base64,").unwrap())?;
-            let image = image::load_from_memory(&bytes)?;
-            assert_eq!(image.width() * 9, image.height() * 16);
-            assert!(bytes.len() < super::super::image::MAX_GUILD_IMAGE);
+        let effects: Value = serde_json::from_str(&row)?;
+        for key in [
+            "image_backup",
+            "guild_images",
+            "restore_images",
+            "image_restore_obligation",
+        ] {
+            assert!(effects.get(key).is_none());
         }
         let commands: Vec<_> = requests
             .iter()
@@ -1046,25 +1000,10 @@ pub(crate) mod local_integration {
 
     #[tokio::test]
     #[ignore = "local MariaDB"]
-    async fn selftest_guild_failure_continues_prize_dm_and_reports_status() -> Result<()> {
+    async fn selftest_image_failure_continues_prize_dm() -> Result<()> {
         let (service, server, mock) = selftest_fixture("selftest_guild_fail").await?;
-        *mock.guild.lock().await = json!({"banner":"a_animated"});
-        assert!(
-            service
-                .selftest(&server, 42, "BannerSelftest", "primeultra")
-                .await
-                .is_ok()
-        );
-        assert!(
-            !mock
-                .requests
-                .lock()
-                .await
-                .iter()
-                .any(|(m, p, _)| m == "PATCH" && p.starts_with("/guilds/"))
-        );
         *mock.guild.lock().await = json!({"banner":"static"});
-        mock.fail_image.store(true, Ordering::SeqCst);
+        *mock.attachment.lock().await = b"invalid image".to_vec();
         assert!(
             service
                 .selftest(&server, 42, "BannerSelftest", "primeultra")
@@ -1072,20 +1011,17 @@ pub(crate) mod local_integration {
                 .is_err()
         );
         let requests = mock.requests.lock().await;
-        assert!(requests.iter().any(|(_, p, _)| p.ends_with("run-command")));
-        assert_eq!(
-            requests
+        assert!(
+            !requests
                 .iter()
-                .filter(|(m, p, _)| m == "PATCH" && p.starts_with("/guilds/"))
-                .count(),
-            2
+                .any(|(m, p, _)| m == "PATCH" && p.starts_with("/guilds/"))
         );
+        assert!(requests.iter().any(|(_, p, _)| p.ends_with("run-command")));
         assert!(requests.iter().any(|(_, p, v)| {
             p == &review_path()
-                && v["content"].as_str().is_some_and(|t| {
-                    t.contains("RESTORE FAILED")
-                        && t.contains("https://discord.com/channels/917520262797344779/")
-                })
+                && v["content"]
+                    .as_str()
+                    .is_some_and(|t| t.contains("decision-notice"))
         }));
         Ok(())
     }
@@ -1140,57 +1076,12 @@ pub(crate) mod local_integration {
 
     #[tokio::test]
     #[ignore = "local MariaDB"]
-    async fn selftest_small_image_and_backup_failure_do_not_block_rank_dm() -> Result<()> {
+    async fn selftest_small_image_does_not_block_rank_dm() -> Result<()> {
         let (service, server, mock) = selftest_fixture("small_backup").await?;
         *mock.guild.lock().await = json!({"banner":"small"});
         let mut bytes = Cursor::new(Vec::new());
         image::DynamicImage::new_rgb8(640, 360).write_to(&mut bytes, image::ImageFormat::Png)?;
         *mock.attachment.lock().await = bytes.into_inner();
-        service
-            .selftest(&server, 42, "BannerSelftest", "primeultra")
-            .await?;
-        assert!(
-            !mock
-                .requests
-                .lock()
-                .await
-                .iter()
-                .any(|(m, p, _)| m == "PATCH" && p.starts_with("/guilds/"))
-        );
-        assert!(
-            mock.requests
-                .lock()
-                .await
-                .iter()
-                .any(|(_, p, _)| p.ends_with("run-command"))
-        );
-        mock.requests.lock().await.clear();
-        // A failed backup POST forbids every guild PATCH but the other parts still run.
-        mock.failures
-            .lock()
-            .await
-            .push(("POST".into(), review_path(), 4, 403));
-        // Call image step directly so the fixture's failure targets the backup itself.
-        let id = service
-            .operational_journal("selftest-backup-failure")
-            .await?;
-        assert!(service.selftest_guild_images(id).await.is_err());
-        assert!(
-            !mock
-                .requests
-                .lock()
-                .await
-                .iter()
-                .any(|(m, p, _)| m == "PATCH" && p.starts_with("/guilds/"))
-        );
-        Ok(())
-    }
-
-    #[tokio::test]
-    #[ignore = "local MariaDB"]
-    async fn selftest_verification_failure_still_restores_originals() -> Result<()> {
-        let (service, server, mock) = selftest_fixture("restore_verify").await?;
-        *mock.guild.lock().await = json!({"banner":"changed_banner"});
         assert!(
             service
                 .selftest(&server, 42, "BannerSelftest", "primeultra")
@@ -1198,20 +1089,72 @@ pub(crate) mod local_integration {
                 .is_err()
         );
         let requests = mock.requests.lock().await;
-        assert_eq!(
-            requests
+        assert!(
+            !requests
                 .iter()
-                .filter(|(m, p, _)| m == "PATCH" && p.starts_with("/guilds/"))
-                .count(),
-            2
+                .any(|(m, p, _)| m == "PATCH" && p.starts_with("/guilds/"))
         );
-        assert!(requests.iter().any(|(_, p, v)| {
-            p == &review_path()
-                && v["content"]
-                    .as_str()
-                    .is_some_and(|s| s.contains("restored and verified"))
-        }));
         assert!(requests.iter().any(|(_, p, _)| p.ends_with("run-command")));
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[ignore = "local MariaDB"]
+    async fn selftest_refuses_linked_online_and_unavailable_presence() -> Result<()> {
+        let (service, server, mock) = selftest_fixture("account_safety").await?;
+        sqlx::query("INSERT INTO uuid_to_discord VALUES('00000000000000000000000000000002','42')")
+            .execute(&service.pool)
+            .await?;
+        let error = service
+            .selftest(&server, 42, "BannerSelftest", "primeultra")
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("linked to Discord"));
+        sqlx::query("DELETE FROM uuid_to_discord")
+            .execute(&service.pool)
+            .await?;
+        mock.online.store(true, Ordering::SeqCst);
+        assert!(
+            service
+                .selftest(&server, 42, "BannerSelftest", "primeultra")
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("is online")
+        );
+        mock.online.store(false, Ordering::SeqCst);
+        mock.failures
+            .lock()
+            .await
+            .push(("GET".into(), "/proxy/players".into(), 1, 403));
+        assert!(
+            service
+                .selftest(&server, 42, "BannerSelftest", "primeultra")
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("check unavailable")
+        );
+        mock.failures
+            .lock()
+            .await
+            .push(("GET".into(), "/proxy/players".into(), 1, 200));
+        assert!(
+            service
+                .selftest(&server, 42, "BannerSelftest", "primeultra")
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("check unavailable")
+        );
+        assert!(
+            !mock
+                .requests
+                .lock()
+                .await
+                .iter()
+                .any(|(_, p, _)| p.ends_with("run-command"))
+        );
         Ok(())
     }
 
