@@ -497,7 +497,7 @@ pub(crate) mod local_integration {
                             });
                             (
                                 200,
-                                json!({"success":true,"ranks":groups})
+                                json!({"success":true,"ranks":groups,"uuid":if username == "BannerSelftest" {Some("00000000-0000-0000-0000-000000000002")} else {None::<&str>}})
                                     .to_string()
                                     .into_bytes(),
                             )
@@ -683,6 +683,127 @@ pub(crate) mod local_integration {
         );
         Ok((service, server, mock))
     }
+    #[tokio::test]
+    #[ignore = "local MariaDB"]
+    async fn selftest_rank_identity_mismatch_refuses_commands() -> Result<()> {
+        let (service, server, mock) = selftest_fixture("identity_mismatch").await?;
+        assert!(
+            server
+                .selftest_ranks("BannerSelftest", "00000000-0000-0000-0000-000000000001")
+                .await
+                .is_err()
+        );
+        assert!(
+            server
+                .selftest_ranks("Steve", "00000000-0000-0000-0000-000000000001")
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("no UUID identity proof")
+        );
+        // Stats uniquely names account 3, but the rank service names account 2.
+        sqlx::query("UPDATE player_info SET uuid='00000000-0000-0000-0000-000000000003' WHERE name='BannerSelftest'").execute(&service.pool).await?;
+        assert!(
+            service
+                .selftest(&server, 42, "BannerSelftest", "primeultra")
+                .await
+                .is_err()
+        );
+        assert!(
+            !mock
+                .requests
+                .lock()
+                .await
+                .iter()
+                .any(|(m, p, _)| m == "PATCH" || p.ends_with("run-command"))
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[ignore = "local MariaDB"]
+    async fn selftest_restart_restore_retries_and_preserves_later_images() -> Result<()> {
+        let (service, server, mock) = selftest_fixture("restart_restore").await?;
+        let id = service.operational_journal("selftest-interrupted").await?;
+        let before = json!({"banner":"original"});
+        *mock.guild.lock().await = before.clone();
+        let bytes = mock.attachment.lock().await.clone();
+        let restore = json!({"banner":format!("data:image/png;base64,{}",base64::engine::general_purpose::STANDARD.encode(bytes))});
+        let changed = service
+            .modify_guild_images(
+                json!({"banner":"data:image/jpeg;base64,test"}),
+                "banner contest selftest",
+            )
+            .await?
+            .1;
+        let mut effects = service.effects(id).await?;
+        effects["image_restore_obligation"] = json!({"state":"pending","before":before,"restore":restore,"expected":changed,"link":"https://discord.com/backup"});
+        sqlx::query("UPDATE banner_contests SET effects=? WHERE id=?")
+            .bind(effects.to_string())
+            .bind(id)
+            .execute(&service.pool)
+            .await?;
+        let mut restarted = super::super::BannerService::new(
+            service.pool.clone(),
+            service.http.clone(),
+            &crate::config::Environment {
+                discord_token: "fake".into(),
+                ..Default::default()
+            },
+        );
+        restarted.discord_api = mock.base.clone();
+        mock.fail_image.store(true, Ordering::SeqCst);
+        restarted.recover_image_restores().await?;
+        assert_eq!(
+            restarted.effects(id).await?["image_restore_obligation"]["state"],
+            "pending"
+        );
+        mock.fail_image.store(false, Ordering::SeqCst);
+        *mock.guild.lock().await = json!({"banner":"later_winner"});
+        restarted.recover_image_restores().await?;
+        assert_eq!(mock.guild.lock().await["banner"], "later_winner");
+        assert_eq!(
+            restarted.effects(id).await?["image_restore_obligation"]["state"],
+            "pending"
+        );
+        assert!(
+            restarted
+                .selftest(&server, 42, "BannerSelftest", "primeultra")
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("pending original image restoration")
+        );
+        // An absent receipt must never make a later deleted image look like ours.
+        let mut unresolved = restarted.effects(id).await?;
+        unresolved["image_restore_obligation"]
+            .as_object_mut()
+            .unwrap()
+            .remove("expected");
+        sqlx::query("UPDATE banner_contests SET effects=? WHERE id=?")
+            .bind(unresolved.to_string())
+            .bind(id)
+            .execute(&service.pool)
+            .await?;
+        *mock.guild.lock().await = json!({"banner":null});
+        restarted.recover_image_restores().await?;
+        assert!(mock.guild.lock().await["banner"].is_null());
+        unresolved["image_restore_obligation"]["expected"] = changed.clone();
+        sqlx::query("UPDATE banner_contests SET effects=? WHERE id=?")
+            .bind(unresolved.to_string())
+            .bind(id)
+            .execute(&service.pool)
+            .await?;
+        *mock.guild.lock().await = changed;
+        restarted.poll(&server).await?;
+        assert_eq!(*mock.guild.lock().await, before);
+        assert_eq!(
+            restarted.effects(id).await?["image_restore_obligation"]["state"],
+            "done"
+        );
+        Ok(())
+    }
+
     async fn opened(service: &super::super::BannerService, dry: bool) -> Result<(u64, u64)> {
         let now = Utc::now().timestamp();
         let id = service

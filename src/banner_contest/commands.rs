@@ -32,6 +32,21 @@ async fn staff(ctx: Context<'_>) -> Result<bool, Error> {
         .unwrap_or_default();
     Ok(permissions.administrator())
 }
+fn selftest_roles(guild: Option<serenity::GuildId>, roles: &[serenity::RoleId]) -> bool {
+    guild == Some(config::GUILD_ID)
+        && roles
+            .iter()
+            .any(|r| [config::COMMAND_ADMIN_ROLE_ID, config::DEVELOPER_ROLE_ID].contains(r))
+}
+async fn selftest_staff(ctx: Context<'_>) -> Result<bool, Error> {
+    if ctx.guild_id() != Some(config::GUILD_ID) {
+        return Ok(false);
+    }
+    let member = config::GUILD_ID
+        .member(ctx.serenity_context(), ctx.author().id)
+        .await?;
+    Ok(selftest_roles(ctx.guild_id(), &member.roles))
+}
 fn enabled_service(service: Option<&BannerService>) -> Result<&BannerService> {
     service.context("Banner contest disabled at startup; see logs.")
 }
@@ -310,7 +325,7 @@ impl SelftestGroup {
 }
 
 /// Exercise current guild images, a one-minute prize and a real staff notification.
-#[poise::command(slash_command, rename = "selftest")]
+#[poise::command(slash_command, rename = "selftest", check = "selftest_staff")]
 async fn contest_selftest(
     ctx: Context<'_>,
     username: Option<String>,
@@ -344,6 +359,34 @@ async fn contest_selftest(
 mod selftest_tests {
     use super::*;
 
+    #[test]
+    fn selftest_requires_designated_role_in_configured_guild() {
+        assert!(!selftest_roles(Some(config::GUILD_ID), &[]));
+        for role in [config::COMMAND_ADMIN_ROLE_ID, config::DEVELOPER_ROLE_ID] {
+            assert!(selftest_roles(Some(config::GUILD_ID), &[role]));
+            assert!(!selftest_roles(Some(serenity::GuildId::new(1)), &[role]));
+        }
+        assert_eq!(contest_selftest().checks.len(), 1);
+    }
+    #[test]
+    fn operator_docs_describe_safe_selftest_and_recovery() {
+        let docs = include_str!("../../docs/banner-contest.md");
+        for requirement in [
+            "dedicated `BannerSelftest`",
+            "removetemp <group> 1m`",
+            "durable restoration",
+            "Administrator permission alone",
+            "READY/RESUMED",
+            "UUID identity proof",
+        ] {
+            assert!(
+                docs.contains(requirement),
+                "missing operator instruction: {requirement}"
+            );
+        }
+        assert!(!docs.contains("removetemp <group>`"));
+        assert!(!docs.contains("invoking staff member's linked"));
+    }
     #[test]
     fn startup_disabled_service_points_staff_to_logs() {
         let error = enabled_service(None).err().unwrap();

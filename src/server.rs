@@ -350,6 +350,22 @@ impl ServerService {
 
     /// Full group list, including plus and Ultra groups, for contest eligibility.
     pub async fn ranks(&self, username: &str) -> Result<Option<Vec<String>>> {
+        self.ranks_checked(username, None).await
+    }
+
+    pub(crate) async fn selftest_ranks(
+        &self,
+        username: &str,
+        uuid: &str,
+    ) -> Result<Option<Vec<String>>> {
+        self.ranks_checked(username, Some(uuid)).await
+    }
+
+    async fn ranks_checked(
+        &self,
+        username: &str,
+        expected_uuid: Option<&str>,
+    ) -> Result<Option<Vec<String>>> {
         {
             let circuit = self.rank_circuit.lock().await;
             if circuit
@@ -394,6 +410,14 @@ impl ServerService {
                     }
                     if response.user_not_found {
                         return Ok(None);
+                    }
+                    if let Some(expected) = expected_uuid {
+                        let actual = response.uuid.as_deref().context(
+                            "Rank service provides no UUID identity proof; selftest refused",
+                        )?;
+                        if uuid::Uuid::parse_str(actual)? != uuid::Uuid::parse_str(expected)? {
+                            bail!("Rank service UUID differs from command UUID; selftest refused");
+                        }
                     }
                     return Ok(Some(response.ranks));
                 }
@@ -518,6 +542,8 @@ struct RunCommandResponse {
 }
 #[derive(Deserialize)]
 struct RankResponse {
+    #[serde(default)]
+    uuid: Option<String>,
     success: bool,
     #[serde(default, rename = "user-not-found")]
     user_not_found: bool,

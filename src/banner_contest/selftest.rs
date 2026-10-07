@@ -48,6 +48,9 @@ impl BannerService {
             .await?
             .context("Contest worker busy; try again.")?;
         let result = async {
+            self.recover_image_restores().await?;
+            let pending: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM banner_contests WHERE JSON_UNQUOTE(JSON_EXTRACT(effects,'$.image_restore_obligation.state'))='pending'").fetch_one(&self.pool).await?;
+            if pending > 0 { bail!("Selftest refused until pending original image restoration is reconciled"); }
             let active: i64 = sqlx::query_scalar(
                 "SELECT COUNT(*) FROM banner_contests WHERE state IN ('open','review','voting')",
             )
@@ -112,7 +115,7 @@ impl BannerService {
             .await?
             .context("Username must resolve uniquely")?;
         let ranks = server
-            .ranks(username)
+            .selftest_ranks(username, &uuid)
             .await?
             .context("Username not found")?;
         if ranks.iter().any(|r| r.eq_ignore_ascii_case(group)) {
@@ -259,6 +262,10 @@ impl BannerService {
             self.selftest_step(id, "images_skip", &format!("Current image cannot safely exercise winner encoder; image step skipped without PATCH. Backup: {link}")).await?;
             return Ok(());
         };
+        // Durable obligation precedes mutation; original bytes survive cancellation/restart.
+        let mut effects = self.effects(id).await?;
+        effects["image_restore_obligation"] = json!({"state":"pending", "before":before, "restore":restore, "encoded":encoded, "link":link});
+        self.save_restore_effects(id, &effects).await?;
         self.begin(
             id,
             "guild_images",
@@ -268,7 +275,7 @@ impl BannerService {
         // Every error after the first PATCH (including journal/report/verification errors)
         // reaches restoration. A transport error may have applied the request remotely.
         let exercise = async {
-            let (status, _) = self
+            let (status, changed) = self
                 .modify_guild_images(encoded.clone(), "banner contest selftest")
                 .await
                 .map_err(|error| {
@@ -277,6 +284,9 @@ impl BannerService {
                         .map_or_else(|| "unknown".to_owned(), |e| e.0.to_string());
                     anyhow::anyhow!("Modify Guild failed: HTTP {status}")
                 })?;
+            let mut effects = self.effects(id).await?;
+            effects["image_restore_obligation"]["expected"] = changed;
+            self.save_restore_effects(id, &effects).await?;
             self.selftest_step(
                 id,
                 "guild_http",
@@ -310,6 +320,9 @@ impl BannerService {
             let _ = self.selftest_step(id, "restore_failed", &warning).await;
             bail!("{warning}");
         }
+        let mut effects = self.effects(id).await?;
+        effects["image_restore_obligation"]["state"] = json!("done");
+        self.save_restore_effects(id, &effects).await?;
         restore_journal?;
         self.done(id, "restore_images", json!(true)).await?;
         self.selftest_step(
@@ -323,6 +336,101 @@ impl BannerService {
                 .await?;
         }
         exercise
+    }
+
+    async fn save_restore_effects(&self, id: u64, effects: &Value) -> Result<()> {
+        sqlx::query("UPDATE banner_contests SET effects=? WHERE id=?")
+            .bind(effects.to_string())
+            .bind(id)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    pub(super) async fn recover_image_restores(&self) -> Result<()> {
+        let ids: Vec<u64> = sqlx::query_scalar("SELECT id FROM banner_contests WHERE JSON_UNQUOTE(JSON_EXTRACT(effects,'$.image_restore_obligation.state'))='pending'").fetch_all(&self.pool).await?;
+        for id in ids {
+            if self.recover_image_restore(id).await.is_err() {
+                let effects = self.effects(id).await?;
+                let warning = format!(
+                    "URGENT: original guild image restoration pending; automatic retry retained. Inspect backup {}. Later guild changes are never overwritten.",
+                    effects["image_restore_obligation"]["link"]
+                        .as_str()
+                        .unwrap_or("missing")
+                );
+                tracing::error!("{warning}");
+                self.queue_report(id, "restore_recovery_failed", &warning)
+                    .await?;
+            }
+        }
+        Ok(())
+    }
+
+    async fn recover_image_restore(&self, id: u64) -> Result<()> {
+        let mut effects = self.effects(id).await?;
+        let obligation = &effects["image_restore_obligation"];
+        let before = &obligation["before"];
+        let current = self
+            .request(
+                reqwest::Method::GET,
+                &format!("/guilds/{}", config::GUILD_ID),
+                None,
+            )
+            .await?;
+        let mut originals = Vec::new();
+        let mut changed = false;
+        for field in ["banner", "splash", "discovery_splash"] {
+            let Some(uri) = obligation["restore"][field].as_str() else {
+                continue;
+            };
+            let bytes = STANDARD.decode(uri.split_once(',').context("invalid restore URI")?.1)?;
+            originals.push(OriginalImage {
+                field,
+                dimensions: dimensions(&bytes)?,
+                bytes,
+            });
+            if current[field] == before[field] {
+                continue;
+            }
+            changed = true;
+            if obligation["expected"][field].as_str().is_none()
+                || current[field] != obligation["expected"][field]
+            {
+                // Crash before PATCH receipt: accept only our exact encoded bytes.
+                let hash = current[field].as_str().context("current image missing")?;
+                let live = self
+                    .download(&format!(
+                        "https://cdn.discordapp.com/{}/{}/{hash}.png",
+                        guild_cdn_field(field),
+                        config::GUILD_ID
+                    ))
+                    .await?;
+                let encoded = obligation["encoded"][field]
+                    .as_str()
+                    .context("encoded image missing")?;
+                if live
+                    != STANDARD.decode(encoded.split_once(',').context("invalid encoded URI")?.1)?
+                {
+                    bail!("Guild image changed after selftest; manual reconciliation required");
+                }
+            }
+        }
+        if changed {
+            self.modify_guild_images(
+                obligation["restore"].clone(),
+                "banner contest selftest restore",
+            )
+            .await?;
+        }
+        self.verify_images(before, &originals, true).await?;
+        effects["image_restore_obligation"]["state"] = json!("done");
+        self.save_restore_effects(id, &effects).await?;
+        self.selftest_step(
+            id,
+            "restore_recovered",
+            "Original guild images restored and verified by recovery worker.",
+        )
+        .await
     }
 
     async fn verify_images(
@@ -396,6 +504,27 @@ impl BannerService {
         bail!("Backup upload rate limit exceeded")
     }
 
+    async fn selftest_rank_presence(
+        &self,
+        server: &ServerService,
+        username: &str,
+        uuid: &str,
+        group: &str,
+        present: bool,
+    ) -> bool {
+        for _ in 0..15 {
+            match server.selftest_ranks(username, uuid).await {
+                Ok(Some(ranks))
+                    if ranks.iter().any(|r| r.eq_ignore_ascii_case(group)) == present =>
+                {
+                    return true;
+                }
+                Err(_) => return false,
+                _ => tokio::time::sleep(Duration::from_secs(2)).await,
+            }
+        }
+        false
+    }
     async fn selftest_prize(
         &self,
         id: u64,
@@ -409,7 +538,7 @@ impl BannerService {
             bail!("Username UUID changed before grant; no prize dispatched")
         }
         if server
-            .ranks(username)
+            .selftest_ranks(username, uuid)
             .await?
             .context("Username not found before grant")?
             .iter()
@@ -438,7 +567,10 @@ impl BannerService {
                 ),
             )
             .await;
-        let verified = granted.is_ok() && server.verify_banner_prize(username, group).await;
+        let verified = granted.is_ok()
+            && self
+                .selftest_rank_presence(server, username, uuid, group, true)
+                .await;
         let verify_report = self
             .selftest_step(
                 id,
@@ -465,8 +597,8 @@ impl BannerService {
                 ),
             )
             .await;
-        let gone = server
-            .verify_banner_prize_presence(username, group, false)
+        let gone = self
+            .selftest_rank_presence(server, username, uuid, group, false)
             .await;
         self.selftest_step(id, "prize_result", &format!("Winner-path addtemp 1m dispatched={}, verified within 30s={verified}; removetemp dispatched={}, absence verified within 30s={gone}.", granted.is_ok(), verified && removed.is_ok())).await?;
         self.done(id, "prize", json!({"verified":verified,"gone":gone}))
