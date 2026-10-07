@@ -1136,7 +1136,19 @@ impl BannerService {
                 .context("missing deny reason")?;
             if reason == "Other" {
                 self.callback(&interaction,json!({"type":9,"data":{"custom_id":format!("banner:other:{id}"),"title":"Deny screenshot","components":[{"type":1,"components":[{"type":4,"custom_id":"reason","style":2,"label":"Reason","required":true,"min_length":1,"max_length":500}]}]}})).await?;
-                let entry = self.entry(id).await?;
+                // The form is already open: retry a transient lookup failure so the menu
+                // reset below is still recorded and Other cannot stay selected.
+                let mut attempt = 0;
+                let entry = loop {
+                    match self.entry(id).await {
+                        Ok(entry) => break entry,
+                        Err(_) if attempt < 20 => {
+                            attempt += 1;
+                            tokio::time::sleep(Duration::from_millis(500)).await;
+                        }
+                        Err(error) => return Err(error),
+                    }
+                };
                 // Persist the menu reset so a transient PATCH failure does not trap Other.
                 let key = format!(
                     "reset_{}_{}",
