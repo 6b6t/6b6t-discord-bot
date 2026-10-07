@@ -1,4 +1,5 @@
 mod anarchy;
+mod banner_contest;
 mod command_moderation;
 mod commands;
 mod community_event;
@@ -26,7 +27,11 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new("sixbsixt_discord_bot=info,warn")),
+                .unwrap_or_else(|_| EnvFilter::new("sixbsixt_discord_bot=info,warn"))
+                // Serenity logs rejected modal JSON at warn, including private email.
+                // Banner modals are handled separately before typed deserialization.
+                .add_directive("serenity::gateway::ws=off".parse()?)
+                .add_directive("tungstenite=off".parse()?),
         )
         .try_init()
         .map_err(|error| anyhow!("failed to initialize tracing: {error}"))?;
@@ -43,7 +48,15 @@ fn install_crypto_provider() -> Result<()> {
     }
     rustls::crypto::ring::default_provider()
         .install_default()
-        .map_err(|_| anyhow!("failed to install the Rustls Ring crypto provider"))
+        .or_else(|_| {
+            // Parallel local gateway/HTTP tests may install it between the check
+            // above and install_default. An installed provider is sufficient.
+            if rustls::crypto::CryptoProvider::get_default().is_some() {
+                Ok(())
+            } else {
+                Err(anyhow!("failed to install the Rustls Ring crypto provider"))
+            }
+        })
 }
 
 #[cfg(test)]

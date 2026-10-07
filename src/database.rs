@@ -44,6 +44,7 @@ impl Databases {
         let link = connect_database(config, &config.link_database).await?;
         let stats = connect_database(config, &config.stats_database).await?;
         ensure_link_schema(&link).await?;
+        crate::banner_contest::ensure_schema(&link).await?;
         Ok(Self { link, stats })
     }
 

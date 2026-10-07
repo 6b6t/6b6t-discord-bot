@@ -218,6 +218,7 @@ fn normalize_redis_uri(uri: &str) -> String {
 }
 
 #[derive(Clone, Debug)]
+#[cfg_attr(test, derive(Default))]
 pub struct Environment {
     pub discord_token: String,
     pub vote_channel_id: Option<serenity::ChannelId>,
