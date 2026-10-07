@@ -228,7 +228,7 @@ impl ServerService {
     ) -> Result<()> {
         if !matches!(
             (action, duration),
-            ("addtemp", "1mo" | "1m") | ("removetemp", "")
+            ("addtemp", "1mo" | "1m") | ("removetemp", "1m")
         ) {
             bail!("invalid prize operation");
         }

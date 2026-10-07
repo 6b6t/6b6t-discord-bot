@@ -32,11 +32,11 @@ async fn staff(ctx: Context<'_>) -> Result<bool, Error> {
         .unwrap_or_default();
     Ok(permissions.administrator())
 }
+fn enabled_service(service: Option<&BannerService>) -> Result<&BannerService> {
+    service.context("Banner contest disabled at startup; see logs.")
+}
 fn service(ctx: Context<'_>) -> Result<&BannerService> {
-    ctx.data()
-        .banner_contest
-        .as_ref()
-        .context("Banner contests require MySQL.")
+    enabled_service(ctx.data().banner_contest.as_ref())
 }
 async fn reply(ctx: Context<'_>, text: String) -> Result<()> {
     ctx.send(
@@ -293,38 +293,37 @@ pub(super) async fn save_theme(
     Ok(())
 }
 
+#[derive(Clone, Copy, poise::ChoiceParameter)]
+enum SelftestGroup {
+    #[name = "primeultra"]
+    PrimeUltra,
+    #[name = "eliteultra"]
+    EliteUltra,
+}
+impl SelftestGroup {
+    fn name(self) -> &'static str {
+        match self {
+            Self::PrimeUltra => "primeultra",
+            Self::EliteUltra => "eliteultra",
+        }
+    }
+}
+
 /// Exercise current guild images, a one-minute prize and a real staff notification.
 #[poise::command(slash_command, rename = "selftest")]
 async fn contest_selftest(
     ctx: Context<'_>,
     username: Option<String>,
-    group: Option<String>,
+    group: Option<SelftestGroup>,
 ) -> Result<(), Error> {
     ctx.defer_ephemeral().await?;
-    let username = if let Some(name) = username {
-        name
-    } else {
-        let databases = ctx
-            .data()
-            .databases
-            .as_ref()
-            .context("Database unavailable")?;
-        let mapping = databases
-            .mapping_for_discord(&ctx.author().id.to_string())
-            .await?
-            .context("Supply username or link your Minecraft account")?;
-        databases
-            .player_info(&mapping.uuid)
-            .await?
-            .context("Linked player not found")?
-            .name
-    };
+    let username = username.unwrap_or_else(|| super::selftest::TEST_PLAYER.into());
     let result = service(ctx)?
         .selftest(
             &ctx.data().server,
             ctx.author().id.get(),
             &username,
-            group.as_deref().unwrap_or("primeultra"),
+            group.unwrap_or(SelftestGroup::PrimeUltra).name(),
         )
         .await;
     reply(
@@ -339,4 +338,33 @@ async fn contest_selftest(
         },
     )
     .await
+}
+
+#[cfg(test)]
+mod selftest_tests {
+    use super::*;
+
+    #[test]
+    fn startup_disabled_service_points_staff_to_logs() {
+        let error = enabled_service(None).err().unwrap();
+        assert_eq!(
+            error.to_string(),
+            "Banner contest disabled at startup; see logs."
+        );
+    }
+
+    #[test]
+    fn slash_group_choices_are_bounded_and_optional() {
+        let command = contest_selftest();
+        let group = command
+            .parameters
+            .iter()
+            .find(|p| p.name == "group")
+            .unwrap();
+        assert!(!group.required);
+        let names: Vec<_> = group.choices.iter().map(|c| c.name.as_ref()).collect();
+        assert_eq!(names, ["primeultra", "eliteultra"]);
+        assert_eq!(SelftestGroup::PrimeUltra.name(), "primeultra");
+        assert_eq!(SelftestGroup::EliteUltra.name(), "eliteultra");
+    }
 }
