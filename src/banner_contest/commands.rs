@@ -216,15 +216,18 @@ async fn contest_start(
     schedule.call = now;
     start(ctx, year, month, schedule, false).await
 }
-/// Run the real form, reviews and voting in banner-reviews, with one-minute phases.
+/// Run the real form, reviews and voting in banner-reviews, with short phases.
 #[poise::command(slash_command, rename = "test")]
-async fn contest_test(ctx: Context<'_>) -> Result<(), Error> {
+async fn contest_test(
+    ctx: Context<'_>,
+    #[description = "Minutes per phase (1-30, default 1)"] minutes: Option<u32>,
+) -> Result<(), Error> {
     let now = Utc::now().with_timezone(&chrono_tz::Europe::Warsaw);
     start(
         ctx,
         now.year(),
         now.month(),
-        Schedule::test(now.timestamp()),
+        Schedule::test_with(now.timestamp(), minutes.unwrap_or(1)),
         true,
     )
     .await
