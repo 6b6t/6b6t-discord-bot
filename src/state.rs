@@ -78,6 +78,24 @@ impl AppState {
         };
         let media = Arc::new(MediaState::load(databases.clone()).await?);
 
+        let banner_contest = if let Some(db) = &databases {
+            match crate::banner_contest::BannerService::initialize(
+                db.link.clone(),
+                http.clone(),
+                &environment,
+            )
+            .await
+            {
+                Ok(service) => Some(service),
+                Err(error) => {
+                    tracing::error!(%error, "banner contest schema setup failed; banner contest is disabled");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
         Ok(Self {
             server: ServerService::new(http.clone(), Arc::clone(&environment), databases.clone()),
             youtube: YoutubeService::new(http.clone(), environment.youtube_api_key.clone()),
@@ -85,13 +103,7 @@ impl AppState {
                 http.clone(),
                 environment.apify_api_token.clone(),
             ),
-            banner_contest: databases.as_ref().map(|db| {
-                crate::banner_contest::BannerService::new(
-                    db.link.clone(),
-                    http.clone(),
-                    &environment,
-                )
-            }),
+            banner_contest,
             environment,
             http,
             databases,

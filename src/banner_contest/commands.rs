@@ -118,12 +118,18 @@ async fn theme_list(ctx: Context<'_>) -> Result<(), Error> {
     slash_command,
     guild_only,
     check = "staff",
-    subcommands("contest_status", "contest_skip", "contest_start", "contest_test")
+    subcommands(
+        "contest_status",
+        "contest_skip",
+        "contest_start",
+        "contest_test",
+        "contest_selftest"
+    )
 )]
 pub async fn bannercontest(ctx: Context<'_>) -> Result<(), Error> {
     reply(
         ctx,
-        "Use /bannercontest status, skip, start or test.".into(),
+        "Use /bannercontest status, skip, start, test or selftest.".into(),
     )
     .await
 }
@@ -132,7 +138,7 @@ pub async fn bannercontest(ctx: Context<'_>) -> Result<(), Error> {
 async fn contest_status(ctx: Context<'_>) -> Result<(), Error> {
     let service = service(ctx)?;
     let contests: Vec<Contest> =
-        sqlx::query_as("SELECT * FROM banner_contests ORDER BY id DESC LIMIT 8")
+        sqlx::query_as("SELECT * FROM banner_contests WHERE contest_key<>'gateway-stop' AND contest_key NOT LIKE 'selftest-%' ORDER BY id DESC LIMIT 8")
             .fetch_all(&service.pool)
             .await?;
     let mut lines = Vec::new();
@@ -285,4 +291,52 @@ pub(super) async fn save_theme(
     }
     sqlx::query("INSERT INTO banner_themes(year,month,theme) VALUES(?,?,?) ON DUPLICATE KEY UPDATE theme=VALUES(theme)").bind(year).bind(month).bind(theme.unwrap_or("")).execute(pool).await?;
     Ok(())
+}
+
+/// Exercise current guild images, a one-minute prize and a real staff notification.
+#[poise::command(slash_command, rename = "selftest")]
+async fn contest_selftest(
+    ctx: Context<'_>,
+    username: Option<String>,
+    group: Option<String>,
+) -> Result<(), Error> {
+    ctx.defer_ephemeral().await?;
+    let username = if let Some(name) = username {
+        name
+    } else {
+        let databases = ctx
+            .data()
+            .databases
+            .as_ref()
+            .context("Database unavailable")?;
+        let mapping = databases
+            .mapping_for_discord(&ctx.author().id.to_string())
+            .await?
+            .context("Supply username or link your Minecraft account")?;
+        databases
+            .player_info(&mapping.uuid)
+            .await?
+            .context("Linked player not found")?
+            .name
+    };
+    let result = service(ctx)?
+        .selftest(
+            &ctx.data().server,
+            ctx.author().id.get(),
+            &username,
+            group.as_deref().unwrap_or("primeultra"),
+        )
+        .await;
+    reply(
+        ctx,
+        if result.is_ok() {
+            "Selftest completed; see #banner-reviews.".into()
+        } else {
+            format!(
+                "Selftest failed: {}. See #banner-reviews.",
+                result.err().context("missing selftest failure")?
+            )
+        },
+    )
+    .await
 }

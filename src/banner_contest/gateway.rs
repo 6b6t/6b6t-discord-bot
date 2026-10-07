@@ -29,13 +29,17 @@ impl BannerService {
         loop {
             let result = self.gateway_session(&server, &mut session).await;
             if let Some(reason) = &session.stopped {
-                // Stop identifying; retain the report until Discord accepts it.
-                loop {
+                // Persist once; the worker uses bounded journal delivery and uncertainty holds.
+                for attempt in 0..5 {
                     if self.report(reason).await.is_ok() {
                         return;
                     }
-                    tokio::time::sleep(Duration::from_secs(60)).await;
+                    if attempt < 4 {
+                        tokio::time::sleep(Duration::from_secs(1 << attempt)).await;
+                    }
                 }
+                tracing::error!("could not persist banner gateway stop report after five attempts");
+                return;
             }
             delay = reconnect_delay(delay, session.healthy, result.is_ok());
             session.healthy = false;

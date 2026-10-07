@@ -298,6 +298,8 @@ pub(crate) mod local_integration {
         verify_delay: Arc<AtomicU64>,
         deny_command: Arc<AtomicBool>,
         created_posts: Arc<AtomicU64>,
+        guild: Arc<Mutex<Value>>,
+        dm_open: Arc<AtomicBool>,
         pub(crate) gateway_remaining: Arc<AtomicU64>,
         pub(crate) gateway_url: Arc<Mutex<String>>,
         task: tokio::task::JoinHandle<()>,
@@ -327,6 +329,10 @@ pub(crate) mod local_integration {
             let delay = verify_delay.clone();
             let deny_command = Arc::new(AtomicBool::new(false));
             let denied = deny_command.clone();
+            let dm_open = Arc::new(AtomicBool::new(false));
+            let open_dm = dm_open.clone();
+            let guild = Arc::new(Mutex::new(json!({})));
+            let guild_state = guild.clone();
             let gateway_remaining = Arc::new(AtomicU64::new(99));
             let remaining = gateway_remaining.clone();
             let gateway_url = Arc::new(Mutex::new("ws://127.0.0.1:9".to_owned()));
@@ -358,6 +364,8 @@ pub(crate) mod local_integration {
                     let denied = denied.clone();
                     let remaining = remaining.clone();
                     let gateway_address = gateway_address.clone();
+                    let guild_state = guild_state.clone();
+                    let open_dm = open_dm.clone();
                     let created = created.clone();
                     let nonces = nonces.clone();
                     tokio::spawn(async move {
@@ -469,7 +477,13 @@ pub(crate) mod local_integration {
                             if denied.load(Ordering::SeqCst) {
                                 (403, b"{}".to_vec())
                             } else {
-                                grant.store(true, Ordering::SeqCst);
+                                grant.store(
+                                    !payload["command"]
+                                        .as_str()
+                                        .unwrap_or_default()
+                                        .contains("removetemp"),
+                                    Ordering::SeqCst,
+                                );
                                 (200, json!({"success":true}).to_string().into_bytes())
                             }
                         } else if path.starts_with("/guilds/")
@@ -477,6 +491,16 @@ pub(crate) mod local_integration {
                             && failure.load(Ordering::SeqCst)
                         {
                             (403, b"{}".to_vec())
+                        } else if path.starts_with("/guilds/") {
+                            let mut guild = guild_state.lock().await;
+                            if method == "PATCH" {
+                                for field in ["banner", "splash", "discovery_splash"] {
+                                    if !payload[field].is_null() {
+                                        guild[field] = json!(format!("changed_{field}"));
+                                    }
+                                }
+                            }
+                            (200, guild.to_string().into_bytes())
                         } else if path.contains("/reactions/") && method == "GET" {
                             let users = if path.contains("type=1") {
                                 vec![]
@@ -492,7 +516,11 @@ pub(crate) mod local_integration {
                             };
                             (200, serde_json::to_vec(&users).unwrap())
                         } else if path == "/users/@me/channels" {
-                            (403, b"{}".to_vec())
+                            if open_dm.load(Ordering::SeqCst) {
+                                (200, br#"{"id":"9000"}"#.to_vec())
+                            } else {
+                                (403, b"{}".to_vec())
+                            }
                         } else if path.contains("/messages") && method == "POST" {
                             let nonce = if payload["enforce_nonce"] == true {
                                 payload["nonce"].as_str()
@@ -532,6 +560,8 @@ pub(crate) mod local_integration {
                 verify_delay,
                 deny_command,
                 created_posts,
+                guild,
+                dm_open,
                 gateway_remaining,
                 gateway_url,
                 task,
@@ -659,6 +689,245 @@ pub(crate) mod local_integration {
     }
     fn review_path() -> String {
         format!("/channels/{}/messages", super::super::REVIEWS)
+    }
+
+    #[tokio::test]
+    #[ignore = "local MariaDB"]
+    async fn selftest_real_paths_cleanup_and_private_fallback() -> Result<()> {
+        let (service, server, mock) = fixture("selftest").await?;
+        *mock.guild.lock().await =
+            json!({"banner":"old_banner","splash":"old_splash","discovery_splash":"old_discovery"});
+        service.selftest(&server, 42, "Steve", "primeultra").await?;
+        assert!(!mock.awarded.load(Ordering::SeqCst));
+        let requests = mock.requests.lock().await;
+        let patches: Vec<_> = requests
+            .iter()
+            .filter(|(m, p, _)| m == "PATCH" && p.starts_with("/guilds/"))
+            .collect();
+        assert_eq!(patches.len(), 1);
+        for field in ["banner", "splash", "discovery_splash"] {
+            use base64::Engine as _;
+            let uri = patches[0].2[field].as_str().unwrap();
+            let bytes = base64::engine::general_purpose::STANDARD
+                .decode(uri.strip_prefix("data:image/jpeg;base64,").unwrap())?;
+            let image = image::load_from_memory(&bytes)?;
+            assert_eq!(image.width() * 9, image.height() * 16);
+            assert!(bytes.len() < super::super::image::MAX_GUILD_IMAGE);
+        }
+        let commands: Vec<_> = requests
+            .iter()
+            .filter(|(_, p, _)| p.ends_with("run-command"))
+            .map(|(_, _, v)| v["command"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            commands,
+            vec![
+                "lpv user 00000000-0000-0000-0000-000000000001 parent addtemp primeultra 1m",
+                "lpv user 00000000-0000-0000-0000-000000000001 parent removetemp primeultra"
+            ]
+        );
+        assert!(requests.iter().any(|(_, p, v)| p == &review_path()
+            && v["content"].as_str().is_some_and(|t| t.contains("<@42>"))));
+        assert!(
+            !requests
+                .iter()
+                .any(|(_, p, _)| p.contains(&super::super::GENERAL.to_string())
+                    || p.contains(&super::super::ANNOUNCEMENTS.to_string()))
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[ignore = "local MariaDB"]
+    async fn selftest_skips_missing_images_and_refuses_existing_prize() -> Result<()> {
+        let (service, server, mock) = fixture("selftest_safe").await?;
+        mock.ranks
+            .lock()
+            .await
+            .insert("Steve".into(), vec!["primeultra".into()]);
+        assert!(
+            service
+                .selftest(&server, 42, "Steve", "primeultra")
+                .await
+                .is_err()
+        );
+        assert!(
+            !mock
+                .requests
+                .lock()
+                .await
+                .iter()
+                .any(|(_, p, _)| p.ends_with("run-command"))
+        );
+        mock.ranks.lock().await.clear();
+        service.selftest(&server, 42, "Steve", "primeultra").await?;
+        assert!(
+            !mock
+                .requests
+                .lock()
+                .await
+                .iter()
+                .any(|(m, p, _)| m == "PATCH" && p.starts_with("/guilds/"))
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[ignore = "local MariaDB"]
+    async fn selftest_real_dm_and_failed_grant_cleanup() -> Result<()> {
+        let (service, server, mock) = fixture("selftest_dm").await?;
+        mock.dm_open.store(true, Ordering::SeqCst);
+        service.selftest(&server, 42, "Steve", "primeultra").await?;
+        assert!(
+            mock.requests
+                .lock()
+                .await
+                .iter()
+                .any(|(_, p, _)| p == "/channels/9000/messages")
+        );
+        mock.requests.lock().await.clear();
+        mock.deny_command.store(true, Ordering::SeqCst);
+        assert!(
+            service
+                .selftest(&server, 42, "Steve", "primeultra")
+                .await
+                .is_err()
+        );
+        let requests = mock.requests.lock().await;
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|(_, p, _)| p == "/proxy/run-command")
+                .count(),
+            2
+        );
+        assert!(
+            !requests
+                .iter()
+                .any(|(_, p, _)| p == "/channels/9000/messages")
+        );
+        assert!(requests.iter().any(|(_, p, v)| p == &review_path()
+            && v["content"].as_str().is_some_and(|t| t.contains("FAILED"))));
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[ignore = "local MariaDB"]
+    async fn selftest_guild_failure_stops_before_prize_and_reports_status() -> Result<()> {
+        let (service, server, mock) = fixture("selftest_guild_fail").await?;
+        *mock.guild.lock().await = json!({"banner":"a_animated"});
+        assert!(
+            service
+                .selftest(&server, 42, "Steve", "primeultra")
+                .await
+                .is_err()
+        );
+        assert!(
+            !mock
+                .requests
+                .lock()
+                .await
+                .iter()
+                .any(|(m, p, _)| m == "PATCH" && p.starts_with("/guilds/"))
+        );
+        *mock.guild.lock().await = json!({"banner":"static"});
+        mock.fail_image.store(true, Ordering::SeqCst);
+        assert!(
+            service
+                .selftest(&server, 42, "Steve", "primeultra")
+                .await
+                .is_err()
+        );
+        let requests = mock.requests.lock().await;
+        assert!(!requests.iter().any(|(_, p, _)| p.ends_with("run-command")));
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|(m, p, _)| m == "PATCH" && p.starts_with("/guilds/"))
+                .count(),
+            1
+        );
+        assert!(requests.iter().any(|(_, p, v)| {
+            p == &review_path()
+                && v["content"]
+                    .as_str()
+                    .is_some_and(|t| t.contains("HTTP 403"))
+        }));
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[ignore = "local MariaDB"]
+    async fn gateway_loop_stop_alert_deduplicates_and_holds_on_restart() -> Result<()> {
+        let (service, server, mock) = fixture("gateway_report").await?;
+        mock.failures
+            .lock()
+            .await
+            .push(("POST".into(), review_path(), 1, 599));
+        tokio::time::timeout(
+            std::time::Duration::from_secs(15),
+            service.gateway_loop(server.clone()),
+        )
+        .await?;
+        // Interrupt the actual receipt write after Discord accepted the nonced message.
+        sqlx::query("CREATE TRIGGER lose_gateway_receipt BEFORE UPDATE ON banner_contests FOR EACH ROW BEGIN IF NEW.contest_key='gateway-stop' AND JSON_UNQUOTE(JSON_EXTRACT(NEW.effects,'$.report_gateway_stop.state'))='done' THEN SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='injected receipt loss'; END IF; END").execute(&service.pool).await?;
+        assert!(service.poll(&server).await.is_err());
+        assert_eq!(mock.created_posts.load(Ordering::SeqCst), 1);
+        sqlx::query("DROP TRIGGER lose_gateway_receipt")
+            .execute(&service.pool)
+            .await?;
+        let id: u64 =
+            sqlx::query_scalar("SELECT id FROM banner_contests WHERE contest_key='gateway-stop'")
+                .fetch_one(&service.pool)
+                .await?;
+        assert_eq!(
+            service.effects(id).await?["report_gateway_stop"]["state"],
+            "attempted"
+        );
+        service.clone().gateway_loop(server.clone()).await;
+        service.poll(&server).await?;
+        assert_eq!(mock.created_posts.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            service.effects(id).await?["report_gateway_stop"]["dispatch_started"],
+            true
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[ignore = "local MariaDB"]
+    async fn banner_schema_failure_does_not_disable_link_database() -> Result<()> {
+        let (service, _, _) = fixture("schema_isolation").await?;
+        sqlx::query("CREATE TABLE uuid_to_discord(uuid CHAR(36),discord_id VARCHAR(64))")
+            .execute(&service.pool)
+            .await?;
+        sqlx::query(
+            "INSERT INTO uuid_to_discord VALUES('00000000-0000-0000-0000-000000000001','42')",
+        )
+        .execute(&service.pool)
+        .await?;
+        sqlx::query("DROP TABLE banner_themes")
+            .execute(&service.pool)
+            .await?;
+        sqlx::query("CREATE TABLE banner_themes(broken INT)")
+            .execute(&service.pool)
+            .await?;
+        let env = crate::config::Environment::default();
+        assert!(
+            super::super::BannerService::initialize(
+                service.pool.clone(),
+                service.http.clone(),
+                &env
+            )
+            .await
+            .is_err()
+        );
+        let databases = crate::database::Databases {
+            link: service.pool.clone(),
+            stats: service.pool.clone(),
+        };
+        assert!(databases.mapping_for_discord("42").await?.is_some());
+        Ok(())
     }
 
     #[tokio::test]

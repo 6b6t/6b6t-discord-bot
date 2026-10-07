@@ -183,3 +183,60 @@ Temporary grants go only to HTTP_PROXY_COMMAND_SERVICE; `/get-ranks` stays on
 the configured rank service and verification polls for up to 30 seconds. A 403
 is a definite refusal; addtemp is never resent. Public #general denial fallback
 retains the exact staff reason, per qbasty's decision.
+
+## Production-path selftest
+
+After an operator deploys this change and refreshes guild slash commands, an
+Admin, Developer, or Administrator can run:
+
+```
+/bannercontest selftest username:<known Minecraft username> group:primeultra
+```
+
+Omit `username` to use the invoking staff member's linked player name. Without a
+link, supply it explicitly. Omit `group` for `primeultra`; `eliteultra` and `legend`
+are also accepted. The selected group must be absent from that player's ranks,
+including inherited groups. Use an account whose ranks are not being changed
+concurrently. The proxy command-service access token must allow both
+`lpv user <uuid> parent addtemp <group> 1m` and
+`lpv user <uuid> parent removetemp <group>`.
+
+The command replies ephemerally and journals each step in banner-reviews. It
+fetches current banner, splash and discovery splash from the CDN at size 4096,
+passes each through the winner JPEG encoder, and uses the shared single Modify
+Guild helper. Missing slots are omitted. Animated or non-16:9 current images
+are refused before PATCH to avoid changing their animation or crop. The same
+pictures remain, but JPEG re-encoding can change compression and resolution;
+this is not a byte-preserving round trip. The command reports the actual HTTP
+status, re-reads the guild, and downloads the resulting images to verify changed
+hashes and 16:9 dimensions. An unchanged hash is reported as a verification
+failure, rather than assumed to change.
+
+It resolves the UUID through the winner resolver, bypasses contest eligibility,
+grants the chosen group for one minute through the winner proxy helper, verifies
+presence for up to 30 seconds, dispatches removetemp, then verifies absence for
+up to 30 seconds. Cleanup is attempted even when grant dispatch is ambiguous or
+step reporting fails. A stopped process cannot perform cleanup, but the temporary
+grant expires after one minute. The real notification helper sends the invoking
+staff member a DM; closed DMs use banner-reviews as the fallback channel.
+Selftest never sends to general or announcements and never starts a contest.
+
+Inspect all step reports and the final Completed/FAILED report. A guild or prize
+command is never automatically re-dispatched. If removal is refused, check the
+rank service after the one-minute expiry; do not blindly repeat addtemp.
+Operational journal rows use `selftest-<uuid>` keys in banner_contests and are
+excluded from `/bannercontest status`.
+
+Gateway-stop alerts use the same journal in the independent, skipped
+`gateway-stop` operational row. The gateway only persists the alert (up to five
+bounded database attempts); the worker delivers it with the existing nonce,
+retry limit and restart uncertainty policy. Repeated restarts do not recreate
+an unresolved alert. Inspect `report_gateway_stop` before reconciling it. Mark
+an already delivered alert done with result true. Once the underlying stop is
+resolved and the alert is acknowledged, an operator may remove that report key
+to allow a future distinct stop to be reported; never clear an uncertain delivery
+without checking channel history.
+
+Banner schema initialization is isolated at service startup: a failure disables
+only the banner service. Linked accounts, rank synchronization and event database
+features retain their connected database pools.

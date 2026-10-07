@@ -215,6 +215,23 @@ impl ServerService {
 
     /// Grant a contest prize once. Callers journal the attempt before invoking this.
     pub async fn grant_banner_prize(&self, uuid: &str, group: &str) -> Result<()> {
+        self.banner_prize_command(uuid, group, "addtemp", "1mo")
+            .await
+    }
+
+    pub(crate) async fn banner_prize_command(
+        &self,
+        uuid: &str,
+        group: &str,
+        action: &str,
+        duration: &str,
+    ) -> Result<()> {
+        if !matches!(
+            (action, duration),
+            ("addtemp", "1mo" | "1m") | ("removetemp", "")
+        ) {
+            bail!("invalid prize operation");
+        }
         let uuid = uuid::Uuid::parse_str(uuid).context("invalid player UUID")?;
         if !matches!(group, "primeultra" | "eliteultra" | "legend") {
             bail!("invalid banner prize group");
@@ -229,7 +246,9 @@ impl ServerService {
             .proxy_command_access_token
             .as_deref()
             .context("proxy command service token missing")?;
-        let command = format!("lpv user {uuid} parent addtemp {group} 1mo");
+        let command = format!("lpv user {uuid} parent {action} {group} {duration}")
+            .trim_end()
+            .to_owned();
         let response: RunCommandResponse = self
             .http
             .post(format!("{}/run-command", base.trim_end_matches('/')))
@@ -248,6 +267,16 @@ impl ServerService {
 
     /// `LuckPerms` persists asynchronously. Never dispatch the grant again during verification.
     pub async fn verify_banner_prize(&self, username: &str, group: &str) -> bool {
+        self.verify_banner_prize_presence(username, group, true)
+            .await
+    }
+
+    pub(crate) async fn verify_banner_prize_presence(
+        &self,
+        username: &str,
+        group: &str,
+        present: bool,
+    ) -> bool {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
         loop {
             let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
@@ -255,7 +284,7 @@ impl ServerService {
                 return false;
             }
             if let Ok(Ok(Some(ranks))) = tokio::time::timeout(remaining, self.ranks(username)).await
-                && ranks.iter().any(|r| r.eq_ignore_ascii_case(group))
+                && ranks.iter().any(|r| r.eq_ignore_ascii_case(group)) == present
             {
                 return true;
             }
