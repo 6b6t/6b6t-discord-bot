@@ -24,6 +24,7 @@ pub struct AppState {
     pub anarchy: Option<AnarchyService>,
     pub community_event: Option<CommunityEventService>,
     pub event_submissions: Option<EventSubmissionService>,
+    pub banner_contest: Option<crate::banner_contest::BannerService>,
     pub role_sync_cache: Arc<RwLock<HashMap<String, CachedUserInfo>>>,
     pub ready_started: Arc<Mutex<bool>>,
 }
@@ -84,6 +85,13 @@ impl AppState {
                 http.clone(),
                 environment.apify_api_token.clone(),
             ),
+            banner_contest: databases.as_ref().map(|db| {
+                crate::banner_contest::BannerService::new(
+                    db.link.clone(),
+                    http.clone(),
+                    &environment,
+                )
+            }),
             environment,
             http,
             databases,

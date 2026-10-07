@@ -218,12 +218,15 @@ fn normalize_redis_uri(uri: &str) -> String {
 }
 
 #[derive(Clone, Debug)]
+#[cfg_attr(test, derive(Default))]
 pub struct Environment {
     pub discord_token: String,
     pub vote_channel_id: Option<serenity::ChannelId>,
     pub log_channel_id: Option<serenity::ChannelId>,
     pub youtube_api_key: Option<String>,
     pub apify_api_token: Option<String>,
+    pub proxy_command_base_url: Option<String>,
+    pub proxy_command_access_token: Option<String>,
     pub rank_service_base_url: Option<String>,
     pub rank_service_access_token: Option<String>,
     pub hytale_endpoint_url: Option<String>,
@@ -267,6 +270,8 @@ impl Environment {
             log_channel_id: optional_id("LOG_CHANNEL_ID")?,
             youtube_api_key: optional_env("YOUTUBE_API_KEY"),
             apify_api_token: optional_env("APIFY_API_TOKEN"),
+            proxy_command_base_url: optional_env("HTTP_PROXY_COMMAND_SERVICE_BASE_URL"),
+            proxy_command_access_token: optional_env("HTTP_PROXY_COMMAND_SERVICE_ACCESS_TOKEN"),
             rank_service_base_url: optional_env("HTTP_SLAVE1_COMMAND_SERVICE_BASE_URL")
                 .or_else(|| optional_env("HTTP_PROXY_COMMAND_SERVICE_BASE_URL")),
             rank_service_access_token: optional_env("HTTP_SLAVE1_COMMAND_SERVICE_ACCESS_TOKEN")

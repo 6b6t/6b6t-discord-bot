@@ -15,6 +15,8 @@ const ANARCHY_MOD_MESSAGE: &str = "Mojang banned 6b6t. Read what happened in our
 
 pub fn all() -> Vec<poise::Command<AppState, Error>> {
     vec![
+        crate::banner_contest::bannerthemes(),
+        crate::banner_contest::bannercontest(),
         ip(),
         anarchymod(),
         playercount(),

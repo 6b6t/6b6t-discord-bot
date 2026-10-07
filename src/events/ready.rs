@@ -47,6 +47,9 @@ pub async fn handle(
             |ctx, data| Box::pin(event_submission_worker(ctx, data)),
         );
     }
+    if let Some(service) = &data.banner_contest {
+        service.start(data.server.clone());
+    }
     let role_menu_ctx = ctx.clone();
     spawn_startup_retry("role menu initialization", move || {
         let ctx = role_menu_ctx.clone();

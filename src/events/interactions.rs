@@ -14,6 +14,13 @@ pub async fn handle(
     data: &AppState,
     interaction: &serenity::Interaction,
 ) -> Result<()> {
+    if match interaction {
+        serenity::Interaction::Component(c) => c.data.custom_id.starts_with("banner:"),
+        serenity::Interaction::Modal(m) => m.data.custom_id.starts_with("banner:"),
+        _ => false,
+    } {
+        return Ok(());
+    }
     if let Some(service) = &data.event_submissions {
         match interaction {
             serenity::Interaction::Component(component)

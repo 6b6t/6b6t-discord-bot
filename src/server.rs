@@ -203,6 +203,73 @@ impl ServerService {
         Ok(())
     }
 
+    /// Resolve a contest player's UUID without choosing among historic names.
+    pub async fn banner_uuid(&self, username: &str) -> Result<Option<String>> {
+        let databases = self.databases.as_ref().context("stats database missing")?;
+        let uuids = databases.uuids_for_player_name(username).await?;
+        if uuids.len() != 1 {
+            return Ok(None);
+        }
+        Ok(Some(uuid::Uuid::parse_str(&uuids[0])?.to_string()))
+    }
+
+    /// Grant a contest prize once. Callers journal the attempt before invoking this.
+    pub async fn grant_banner_prize(&self, uuid: &str, group: &str) -> Result<()> {
+        let uuid = uuid::Uuid::parse_str(uuid).context("invalid player UUID")?;
+        if !matches!(group, "primeultra" | "eliteultra" | "legend") {
+            bail!("invalid banner prize group");
+        }
+        let base = self
+            .environment
+            .proxy_command_base_url
+            .as_deref()
+            .context("proxy command service URL missing")?;
+        let token = self
+            .environment
+            .proxy_command_access_token
+            .as_deref()
+            .context("proxy command service token missing")?;
+        let command = format!("lpv user {uuid} parent addtemp {group} 1mo");
+        let response: RunCommandResponse = self
+            .http
+            .post(format!("{}/run-command", base.trim_end_matches('/')))
+            .header(reqwest::header::AUTHORIZATION, token)
+            .json(&RunCommandRequest { command: &command })
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        if !response.success {
+            bail!("temporary rank command failed");
+        }
+        Ok(())
+    }
+
+    /// `LuckPerms` persists asynchronously. Never dispatch the grant again during verification.
+    pub async fn verify_banner_prize(&self, username: &str, group: &str) -> bool {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                return false;
+            }
+            if let Ok(Ok(Some(ranks))) = tokio::time::timeout(remaining, self.ranks(username)).await
+                && ranks.iter().any(|r| r.eq_ignore_ascii_case(group))
+            {
+                return true;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return false;
+            }
+            tokio::time::sleep(
+                Duration::from_secs(2)
+                    .min(deadline.saturating_duration_since(tokio::time::Instant::now())),
+            )
+            .await;
+        }
+    }
+
     pub async fn player_for_discord(&self, discord_id: u64) -> Result<Option<(String, UserInfo)>> {
         let Some(databases) = &self.databases else {
             return Ok(None);
@@ -246,6 +313,14 @@ impl ServerService {
     }
 
     pub async fn top_rank(&self, username: &str) -> Result<Option<String>> {
+        Ok(self
+            .ranks(username)
+            .await?
+            .map(|ranks| highest_rank(&ranks).to_owned()))
+    }
+
+    /// Full group list, including plus and Ultra groups, for contest eligibility.
+    pub async fn ranks(&self, username: &str) -> Result<Option<Vec<String>>> {
         {
             let circuit = self.rank_circuit.lock().await;
             if circuit
@@ -291,7 +366,7 @@ impl ServerService {
                     if response.user_not_found {
                         return Ok(None);
                     }
-                    return Ok(Some(highest_rank(&response.ranks).to_owned()));
+                    return Ok(Some(response.ranks));
                 }
                 Ok(response)
                     if response.status().as_u16() != 429
