@@ -5,10 +5,11 @@ use chrono_tz::Europe::Warsaw;
 use serde_json::Value;
 
 pub const SCHEMA: &[&str] = &[
+    "CREATE TABLE IF NOT EXISTS banner_gateway_identifies (id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY, attempted_at BIGINT NOT NULL, INDEX banner_identify_time(attempted_at)) ENGINE=InnoDB",
     "CREATE TABLE IF NOT EXISTS banner_themes (year INT NOT NULL, month INT UNSIGNED NOT NULL, theme VARCHAR(200) NOT NULL, PRIMARY KEY(year,month)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
     "CREATE TABLE IF NOT EXISTS banner_contests (id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY, contest_key VARCHAR(64) NOT NULL UNIQUE, year INT NOT NULL, month INT UNSIGNED NOT NULL, state VARCHAR(24) NOT NULL DEFAULT 'scheduled', call_at BIGINT NOT NULL, close_at BIGINT NOT NULL, voting_at BIGINT NOT NULL, end_at BIGINT NOT NULL, dry_run BOOLEAN NOT NULL DEFAULT FALSE, reminded BOOLEAN NOT NULL DEFAULT FALSE, theme VARCHAR(200) NULL, call_message_id VARCHAR(32) NULL, effects LONGTEXT NOT NULL DEFAULT '{}', INDEX banner_due(state,call_at)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
-    "CREATE TABLE IF NOT EXISTS banner_submissions (id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY, contest_id BIGINT UNSIGNED NOT NULL, discord_id VARCHAR(32) NOT NULL, username VARCHAR(16) NOT NULL, uuid CHAR(36) NOT NULL, email VARCHAR(254) NOT NULL, prize VARCHAR(16) NOT NULL, image MEDIUMBLOB NOT NULL, status VARCHAR(16) NOT NULL DEFAULT 'pending', decider VARCHAR(32) NULL, reason VARCHAR(500) NULL, submitted_at BIGINT NOT NULL, shuffle_key CHAR(36) NOT NULL, review_message_id VARCHAR(32) NULL, vote_message_id VARCHAR(32) NULL, votes BIGINT UNSIGNED NOT NULL DEFAULT 0, revision INT UNSIGNED NOT NULL DEFAULT 0, review_revision INT UNSIGNED NOT NULL DEFAULT 0, review_closed BOOLEAN NOT NULL DEFAULT FALSE, UNIQUE KEY banner_account(contest_id,discord_id), UNIQUE KEY banner_username(contest_id,username), UNIQUE KEY banner_uuid(contest_id,uuid), FOREIGN KEY(contest_id) REFERENCES banner_contests(id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
-    "CREATE TABLE IF NOT EXISTS banner_winners (contest_id BIGINT UNSIGNED NOT NULL PRIMARY KEY, submission_id BIGINT UNSIGNED NOT NULL, year INT NOT NULL, month INT UNSIGNED NOT NULL, username VARCHAR(16) NOT NULL, uuid CHAR(36) NOT NULL, discord_id VARCHAR(32) NOT NULL, email VARCHAR(254) NOT NULL, prize VARCHAR(16) NOT NULL, expires_at BIGINT NOT NULL, image MEDIUMBLOB NOT NULL, votes BIGINT UNSIGNED NOT NULL, dry_run BOOLEAN NOT NULL DEFAULT FALSE, FOREIGN KEY(contest_id) REFERENCES banner_contests(id), FOREIGN KEY(submission_id) REFERENCES banner_submissions(id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+    "CREATE TABLE IF NOT EXISTS banner_submissions (id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY, contest_id BIGINT UNSIGNED NOT NULL, discord_id VARCHAR(32) NOT NULL, username VARCHAR(17) NOT NULL, uuid CHAR(36) NOT NULL, email VARCHAR(254) NOT NULL, prize VARCHAR(16) NOT NULL, image MEDIUMBLOB NOT NULL, status VARCHAR(16) NOT NULL DEFAULT 'pending', decider VARCHAR(32) NULL, reason VARCHAR(500) NULL, submitted_at BIGINT NOT NULL, shuffle_key CHAR(36) NOT NULL, review_message_id VARCHAR(32) NULL, vote_message_id VARCHAR(32) NULL, votes BIGINT UNSIGNED NOT NULL DEFAULT 0, revision INT UNSIGNED NOT NULL DEFAULT 0, review_revision INT UNSIGNED NOT NULL DEFAULT 0, review_closed BOOLEAN NOT NULL DEFAULT FALSE, UNIQUE KEY banner_account(contest_id,discord_id), UNIQUE KEY banner_username(contest_id,username), UNIQUE KEY banner_uuid(contest_id,uuid), FOREIGN KEY(contest_id) REFERENCES banner_contests(id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
+    "CREATE TABLE IF NOT EXISTS banner_winners (contest_id BIGINT UNSIGNED NOT NULL PRIMARY KEY, submission_id BIGINT UNSIGNED NOT NULL, year INT NOT NULL, month INT UNSIGNED NOT NULL, username VARCHAR(17) NOT NULL, uuid CHAR(36) NOT NULL, discord_id VARCHAR(32) NOT NULL, email VARCHAR(254) NOT NULL, prize VARCHAR(16) NOT NULL, expires_at BIGINT NOT NULL, image MEDIUMBLOB NOT NULL, votes BIGINT UNSIGNED NOT NULL, dry_run BOOLEAN NOT NULL DEFAULT FALSE, FOREIGN KEY(contest_id) REFERENCES banner_contests(id), FOREIGN KEY(submission_id) REFERENCES banner_submissions(id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
 ];
 
 #[derive(Clone, sqlx::FromRow)]
@@ -56,7 +57,7 @@ const MONTHS: [&str; 12] = [
     "December",
 ];
 
-#[derive(sqlx::FromRow)]
+#[derive(Clone, sqlx::FromRow)]
 pub struct Entry {
     pub id: u64,
     pub contest_id: u64,
@@ -64,8 +65,6 @@ pub struct Entry {
     pub username: String,
     pub uuid: String,
     pub email: String,
-    pub prize: String,
-    pub image: Vec<u8>,
     pub status: String,
     pub decider: Option<String>,
     pub reason: Option<String>,
@@ -137,30 +136,29 @@ pub fn month_expiry(now: DateTime<Utc>) -> Result<DateTime<Utc>> {
 
 pub fn prize(ranks: &[String]) -> Option<&'static str> {
     let ranks: Vec<String> = ranks.iter().map(|r| r.to_ascii_lowercase()).collect();
-    if ranks.iter().any(|r| {
-        matches!(
-            r.as_str(),
-            "primeultra" | "eliteultra" | "legend" | "legendultra"
-        )
-    }) {
-        return None;
+    for group in [
+        "legendultra",
+        "legend",
+        "apex",
+        "eliteultra",
+        "elite+",
+        "elite",
+        "primeultra",
+        "prime+",
+        "prime",
+    ] {
+        if ranks.iter().any(|r| r == group) {
+            return match group {
+                "apex" => Some("legend"),
+                "elite+" | "elite" => Some("eliteultra"),
+                "prime+" | "prime" => Some("primeultra"),
+                _ => None,
+            };
+        }
     }
-    if ranks.iter().any(|r| r == "apex") {
-        Some("legend")
-    } else if ranks
-        .iter()
-        .any(|r| matches!(r.as_str(), "elite" | "elite+"))
-    {
-        Some("eliteultra")
-    } else if ranks
-        .iter()
-        .any(|r| matches!(r.as_str(), "prime" | "prime+"))
-    {
-        Some("primeultra")
-    } else {
-        None
-    }
+    None
 }
+
 pub fn rank_name(rank: &str) -> &'static str {
     match rank {
         "primeultra" => "Prime Ultra",
@@ -228,7 +226,8 @@ pub fn parse_application(data: &Value) -> Result<Application> {
             parsed.host_str(),
             Some("cdn.discordapp.com" | "media.discordapp.net")
         )
-        || !parsed.path().starts_with("/attachments/")
+        || !(parsed.path().starts_with("/attachments/")
+            || parsed.path().starts_with("/ephemeral-attachments/"))
         || !parsed.username().is_empty()
         || parsed.password().is_some()
         || parsed.port_or_known_default() != Some(443)
@@ -245,6 +244,7 @@ pub fn parse_application(data: &Value) -> Result<Application> {
     })
 }
 pub fn valid_username(name: &str) -> bool {
+    let name = name.strip_prefix('.').unwrap_or(name);
     (3..=16).contains(&name.len()) && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
 }
 pub fn valid_email(email: &str) -> bool {
@@ -332,7 +332,7 @@ pub fn can_review(c: &Contest, now: i64) -> bool {
 }
 pub fn apply_modal(id: u64) -> Value {
     serde_json::json!({"type":9,"data":{"custom_id":format!("banner:form:{id}"),"title":"Apply for the Discord banner","components":[
-        {"type":18,"label":"Minecraft username","component":{"type":4,"custom_id":"username","style":1,"required":true,"min_length":3,"max_length":16}},
+        {"type":18,"label":"Minecraft username","component":{"type":4,"custom_id":"username","style":1,"required":true,"min_length":3,"max_length":17}},
         {"type":18,"label":"Email","component":{"type":4,"custom_id":"email","style":1,"required":true,"max_length":254}},
         {"type":18,"label":"Screenshot","component":{"type":19,"custom_id":"image","file_types":["image"],"min_values":1,"max_values":1,"required":true}}
     ]}})

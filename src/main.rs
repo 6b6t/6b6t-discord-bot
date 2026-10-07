@@ -28,9 +28,7 @@ async fn main() -> Result<()> {
         .with_env_filter(
             EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| EnvFilter::new("sixbsixt_discord_bot=info,warn"))
-                // Serenity logs rejected modal JSON at warn, including private email.
-                // Banner modals are handled separately before typed deserialization.
-                .add_directive("serenity::gateway::ws=off".parse()?)
+                // Tungstenite trace/debug frames can contain raw private interaction payloads.
                 .add_directive("tungstenite=off".parse()?),
         )
         .try_init()

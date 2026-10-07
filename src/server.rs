@@ -221,14 +221,14 @@ impl ServerService {
         }
         let base = self
             .environment
-            .rank_service_base_url
+            .proxy_command_base_url
             .as_deref()
-            .context("rank service URL missing")?;
+            .context("proxy command service URL missing")?;
         let token = self
             .environment
-            .rank_service_access_token
+            .proxy_command_access_token
             .as_deref()
-            .context("rank service token missing")?;
+            .context("proxy command service token missing")?;
         let command = format!("lpv user {uuid} parent addtemp {group} 1mo");
         let response: RunCommandResponse = self
             .http
@@ -244,6 +244,30 @@ impl ServerService {
             bail!("temporary rank command failed");
         }
         Ok(())
+    }
+
+    /// `LuckPerms` persists asynchronously. Never dispatch the grant again during verification.
+    pub async fn verify_banner_prize(&self, username: &str, group: &str) -> bool {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                return false;
+            }
+            if let Ok(Ok(Some(ranks))) = tokio::time::timeout(remaining, self.ranks(username)).await
+                && ranks.iter().any(|r| r.eq_ignore_ascii_case(group))
+            {
+                return true;
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return false;
+            }
+            tokio::time::sleep(
+                Duration::from_secs(2)
+                    .min(deadline.saturating_duration_since(tokio::time::Instant::now())),
+            )
+            .await;
+        }
     }
 
     pub async fn player_for_discord(&self, discord_id: u64) -> Result<Option<(String, UserInfo)>> {

@@ -2,7 +2,7 @@ use anyhow::{Result, bail};
 use image::{ImageFormat, ImageReader, imageops::FilterType};
 use std::io::Cursor;
 pub const MAX_DOWNLOAD: u64 = 20 * 1024 * 1024;
-pub const MAX_GUILD_IMAGE: usize = 10 * 1024 * 1024;
+pub const MAX_GUILD_IMAGE: usize = 3 * 1024 * 1024;
 
 /// Decode with strict allocation and dimension limits, centre crop once, JPEG once.
 pub fn crop(bytes: &[u8]) -> Result<Vec<u8>> {
@@ -16,11 +16,15 @@ pub fn crop(bytes: &[u8]) -> Result<Vec<u8>> {
     ) {
         bail!("unsupported format");
     }
+    let (width, height) = ImageReader::with_format(Cursor::new(bytes), format).into_dimensions()?;
+    if u64::from(width) * u64::from(height) > 40_000_000 {
+        bail!("too many image pixels");
+    }
     let mut reader = ImageReader::with_format(Cursor::new(bytes), format);
     let mut limits = image::Limits::default();
     limits.max_image_width = Some(16384);
     limits.max_image_height = Some(16384);
-    limits.max_alloc = Some(256 * 1024 * 1024);
+    limits.max_alloc = Some(160 * 1024 * 1024);
     reader.limits(limits);
     let image = reader.decode()?;
     let (w, h) = (image.width(), image.height());
@@ -30,13 +34,17 @@ pub fn crop(bytes: &[u8]) -> Result<Vec<u8>> {
     // Integral 16:9 dimensions avoid a second crop in any later step.
     let unit = (w / 16).min(h / 9);
     let (cw, ch) = (unit * 16, unit * 9);
-    let cropped = image.crop_imm((w - cw) / 2, (h - ch) / 2, cw, ch);
+    let cropped = image::imageops::crop_imm(&image, (w - cw) / 2, (h - ch) / 2, cw, ch);
     let unit = unit.min(120);
-    let resized = cropped
-        .resize_exact(unit * 16, unit * 9, FilterType::Lanczos3)
-        .to_rgb8();
+    let resized = image::DynamicImage::ImageRgba8(image::imageops::resize(
+        &*cropped,
+        unit * 16,
+        unit * 9,
+        FilterType::Lanczos3,
+    ))
+    .to_rgb8();
     let mut output = Vec::new();
-    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut output, 85).encode_image(&resized)?;
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut output, 80).encode_image(&resized)?;
     if output.len() >= MAX_GUILD_IMAGE {
         bail!("encoded image too large");
     }

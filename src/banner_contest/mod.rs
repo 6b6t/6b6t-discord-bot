@@ -1,5 +1,5 @@
-//! Monthly banner contests. All external effects have a durable attempt record:
-//! uncertain outcomes stop for an operator rather than duplicating a post/prize.
+//! Monthly banner contests. Public posts, guild images and prizes use an at-most-once
+//! journal. Private/repeatable effects use bounded persistent retries with backoff.
 mod commands;
 mod gateway;
 mod image;
@@ -54,7 +54,13 @@ impl BannerService {
         Self {
             pool,
             http,
-            token: Arc::new(environment.discord_token.clone()),
+            token: Arc::new(
+                environment
+                    .discord_token
+                    .trim()
+                    .trim_start_matches("Bot ")
+                    .to_owned(),
+            ),
             discord_api: "https://discord.com/api/v10".to_owned(),
             lock: Arc::default(),
         }
@@ -113,7 +119,7 @@ impl BannerService {
     }
     async fn entries(&self, id: u64) -> Result<Vec<Entry>> {
         Ok(sqlx::query_as(
-            "SELECT * FROM banner_submissions WHERE contest_id = ? ORDER BY submitted_at, id",
+            "SELECT id,contest_id,discord_id,username,uuid,email,status,decider,reason,submitted_at,shuffle_key,review_message_id,vote_message_id,votes,revision,review_revision,review_closed FROM banner_submissions WHERE contest_id = ? ORDER BY submitted_at, id",
         )
         .bind(id)
         .fetch_all(&self.pool)
@@ -125,7 +131,8 @@ impl BannerService {
                 .bind(year)
                 .bind(month)
                 .fetch_optional(&self.pool)
-                .await?,
+                .await?
+                .filter(|s: &String| !s.is_empty()),
         )
     }
 
@@ -150,6 +157,10 @@ impl BannerService {
     }
 
     async fn generate(&self) -> Result<()> {
+        let started: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM banner_contests WHERE dry_run=FALSE AND call_message_id IS NOT NULL").fetch_one(&self.pool).await?;
+        if started == 0 {
+            return Ok(());
+        }
         let now = Utc::now().with_timezone(&chrono_tz::Europe::Warsaw);
         let (year, month) = if now.month() == 12 {
             (now.year() + 1, 1)
@@ -182,18 +193,40 @@ impl BannerService {
         result
     }
     async fn poll_locked(&self, server: &ServerService) -> Result<()> {
+        self.flush_reports().await?;
         self.generate().await?;
-        let contests: Vec<Contest> = sqlx::query_as("SELECT * FROM banner_contests WHERE state NOT IN ('complete', 'skipped', 'failed') ORDER BY call_at, id").fetch_all(&self.pool).await?;
+        // Finished public phases must not discard a retrying private notice/card edit.
+        let terminal: Vec<Contest> = sqlx::query_as("SELECT c.* FROM banner_contests c WHERE c.state IN ('complete','skipped','paused','failed') AND (c.effects LIKE '%\"state\":\"pending\"%' OR c.effects LIKE '%\"state\":\"attempted\"%' OR EXISTS (SELECT 1 FROM banner_submissions e WHERE e.contest_id=c.id AND (e.review_message_id IS NULL OR e.review_revision<>e.revision OR e.review_closed=FALSE OR (e.status<>'pending' AND COALESCE(JSON_UNQUOTE(JSON_EXTRACT(c.effects,CONCAT('$.notify_',e.id,'_',e.revision,'.state'))),'')<>'done'))))").fetch_all(&self.pool).await?;
+        for contest in terminal {
+            self.reconcile_entries(&contest).await?;
+        }
+        let contests: Vec<Contest> = sqlx::query_as("SELECT * FROM banner_contests WHERE state NOT IN ('complete', 'skipped', 'failed', 'paused') ORDER BY call_at, id").fetch_all(&self.pool).await?;
         for mut contest in contests {
-            if matches!(contest.state.as_str(), "open" | "review" | "voting")
-                && self.reconcile_entries(&contest).await.is_err()
-            {
-                self.fail(contest.id, "Review or decision delivery stopped. Inspect the review/notify effect and message ID, complete that step by hand, and mark the effect done before resuming the contest.").await?;
-                continue;
+            if matches!(contest.state.as_str(), "open" | "review" | "voting") {
+                self.reconcile_entries(&contest).await?;
             }
             // Catch up all due phases in order, including rows inserted by SQL.
             loop {
                 let now = Utc::now().timestamp();
+                if !contest.dry_run {
+                    let stale = match contest.state.as_str() {
+                        "scheduled" => now >= contest.close_at,
+                        "review" => now >= contest.voting_at && contest.end_at - now < 12 * 3600,
+                        "voting" if now >= contest.end_at => {
+                            let effects = self.effects(contest.id).await?;
+                            effects["voting_public_at"]["result"]
+                                .as_i64()
+                                .is_none_or(|at| contest.end_at - at < 24 * 3600)
+                        }
+                        _ => false,
+                    };
+                    if stale {
+                        sqlx::query("UPDATE banner_submissions SET status='expired',revision=revision+1 WHERE contest_id=? AND status='pending'").bind(contest.id).execute(&self.pool).await?;
+                        self.queue_report(contest.id, "stale", &format!("Contest {} skipped: missed safe submission/voting window. No public catch-up post or prize. Check the dates before scheduling a new contest.", contest.id)).await?;
+                        self.set_state(contest.id, "skipped").await?;
+                        break;
+                    }
+                }
                 let result = match contest.state.as_str() {
                     "scheduled" if now >= contest.call_at => self.call(&contest).await,
                     "scheduled"
@@ -208,32 +241,101 @@ impl BannerService {
                     _ => break,
                 };
                 if result.is_err() {
-                    self.fail(contest.id, &format!("Contest {} stopped at {}. Check its effects journal, resolve the failed/uncertain step by hand, then resume the phase by SQL. No automatic retry.", contest.id, contest.state)).await?;
+                    // Retryable errors retain the phase. Public effects are held by their journal.
+                    let effects = self.effects(contest.id).await?;
+                    if effects.as_object().is_some_and(|e| {
+                        e.iter()
+                            .any(|(k, v)| !retryable(k) && v["state"] == "attempted")
+                    }) {
+                        self.fail(contest.id, &format!("Contest {} paused at {}: reconcile the public effects journal before resuming.", contest.id, contest.state)).await?;
+                    }
                     break;
                 }
                 contest = self.contest(contest.id).await?;
             }
         }
+        self.flush_reports().await?;
         Ok(())
     }
     async fn reconcile_entries(&self, contest: &Contest) -> Result<()> {
+        if Utc::now().timestamp() >= contest.close_at
+            || !matches!(contest.state.as_str(), "scheduled" | "open")
+        {
+            let _ = self.disable_apply(contest).await;
+        }
         for entry in self.entries(contest.id).await? {
-            if entry.review_message_id.is_none() {
-                let mut review_contest = contest.clone();
-                review_contest.dry_run = true;
-                let id = self.post_once(&review_contest, &format!("review_{}",entry.id), json!({"components":model::review_components(entry.id, !model::can_review(contest,Utc::now().timestamp()))}), Some(&entry.image)).await?;
-                sqlx::query("UPDATE banner_submissions SET review_message_id=? WHERE id=?")
-                    .bind(id)
-                    .bind(entry.id)
-                    .execute(&self.pool)
-                    .await?;
-            }
-            let entry = self.entry(entry.id).await?;
-            self.update_review(&entry, !model::can_review(contest, Utc::now().timestamp()))
+            // A private effect failure cannot block a different entry or the phase transition.
+            let _ = self.reconcile_entry(contest, &entry).await;
+        }
+        Ok(())
+    }
+    async fn reconcile_entry(&self, contest: &Contest, entry: &Entry) -> Result<()> {
+        if entry.review_message_id.is_none() {
+            let key = format!("review_{}", entry.id);
+            let id = if let Some(result) = self
+                .begin(
+                    contest.id,
+                    &key,
+                    "Upload the missing anonymous review card manually.",
+                )
+                .await?
+            {
+                result
+                    .as_str()
+                    .context("invalid review message ID")?
+                    .to_owned()
+            } else {
+                let image = self.entry_image(entry.id).await?;
+                let message = self.message(REVIEWS,json!({"components":model::review_components(entry.id,!model::can_review(contest,Utc::now().timestamp()))}),Some(&image)).await?;
+                let id = message["id"]
+                    .as_str()
+                    .context("missing review message ID")?
+                    .to_owned();
+                self.done(contest.id, &key, json!(id)).await?;
+                id
+            };
+            sqlx::query("UPDATE banner_submissions SET review_message_id=? WHERE id=?")
+                .bind(id)
+                .bind(entry.id)
+                .execute(&self.pool)
                 .await?;
-            if entry.status != "pending" {
-                self.notify(contest, &entry).await?;
+        }
+        let entry = self.entry(entry.id).await?;
+        let effects = self.effects(contest.id).await?;
+        for (key, effect) in effects.as_object().context("invalid effects")? {
+            if key.starts_with(&format!("reset_{}_", entry.id)) && effect["state"] != "done" {
+                let _ = self.reset_menu(&entry, key).await;
             }
+        }
+        let _ = self
+            .update_review(&entry, !model::can_review(contest, Utc::now().timestamp()))
+            .await;
+        if contest.state == "voting"
+            && let Some(message) = &entry.vote_message_id
+        {
+            let _ = self.add_fire(contest, entry.id, message).await;
+        }
+        // Decision snapshots preserve every actual revision, even two changes in one tick.
+        for (key, notice) in effects.as_object().context("invalid effects")? {
+            if key.starts_with(&format!("notice_{}_", entry.id)) && notice["state"] == "pending" {
+                let mut snapshot = entry.clone();
+                snapshot.status = notice["status"]
+                    .as_str()
+                    .context("invalid notice status")?
+                    .to_owned();
+                snapshot.reason = notice["reason"].as_str().map(str::to_owned);
+                snapshot.revision = u32::try_from(
+                    notice["revision"]
+                        .as_u64()
+                        .context("invalid notice revision")?,
+                )?;
+                if self.notify(contest, &snapshot).await.is_ok() {
+                    self.done(contest.id, key, json!(true)).await?;
+                }
+            }
+        }
+        if entry.status != "pending" {
+            let _ = self.notify(contest, &entry).await;
         }
         Ok(())
     }
@@ -258,13 +360,32 @@ impl BannerService {
             if effect["state"] == "done" {
                 return Ok(Some(effect["result"].clone()));
             }
-            self.report(&format!(
-                "Contest {contest}: uncertain/failed step `{key}`. By hand: {manual}"
-            ))
-            .await?;
-            bail!("effect requires manual reconciliation");
+            if retryable(key) {
+                let attempts = effect["attempts"].as_u64().unwrap_or(1);
+                if attempts >= 5 {
+                    self.queue_report(
+                        contest,
+                        key,
+                        &format!("Contest {contest}: `{key}` failed after 5 attempts. {manual}"),
+                    )
+                    .await?;
+                    bail!("retry limit reached");
+                }
+                if Utc::now().timestamp() < effect["retry_at"].as_i64().unwrap_or(0) {
+                    bail!("retry deferred");
+                }
+            } else {
+                self.queue_report(
+                    contest,
+                    key,
+                    &format!("Contest {contest}: uncertain step `{key}`. By hand: {manual}"),
+                )
+                .await?;
+                bail!("effect requires manual reconciliation");
+            }
         }
-        effects[key] = json!({"state":"attempted", "manual":manual});
+        let attempts = effects[key]["attempts"].as_u64().unwrap_or(0) + 1;
+        effects[key] = json!({"state":"attempted", "manual":manual, "attempts":attempts, "retry_at":Utc::now().timestamp() + 15 * (1_i64 << attempts.min(5)), "nonce":uuid::Uuid::new_v4().simple().to_string()[..25]});
         sqlx::query("UPDATE banner_contests SET effects = ? WHERE id = ?")
             .bind(effects.to_string())
             .bind(contest)
@@ -288,13 +409,61 @@ impl BannerService {
         Ok(())
     }
     async fn fail(&self, id: u64, message: &str) -> Result<()> {
-        self.set_state(id, "failed").await?;
-        self.report(message).await
+        self.queue_report(id, "failure", message).await?;
+        self.set_state(id, "paused").await
     }
     async fn report(&self, message: &str) -> Result<()> {
         self.message(REVIEWS, json!({"content": message}), None)
             .await?;
         Ok(())
+    }
+
+    async fn effects(&self, id: u64) -> Result<Value> {
+        let text: String = sqlx::query_scalar("SELECT effects FROM banner_contests WHERE id=?")
+            .bind(id)
+            .fetch_one(&self.pool)
+            .await?;
+        Ok(serde_json::from_str(&text)?)
+    }
+    async fn queue_report(&self, id: u64, key: &str, message: &str) -> Result<()> {
+        let mut effects = self.effects(id).await?;
+        let key = format!("report_{key}");
+        if effects.get(&key).is_none() {
+            effects[&key] = json!({"state":"pending", "message":message});
+            sqlx::query("UPDATE banner_contests SET effects=? WHERE id=?")
+                .bind(effects.to_string())
+                .bind(id)
+                .execute(&self.pool)
+                .await?;
+        }
+        Ok(())
+    }
+    async fn flush_reports(&self) -> Result<()> {
+        let rows: Vec<(u64, String)> =
+            sqlx::query_as("SELECT id,effects FROM banner_contests WHERE effects LIKE '%report_%'")
+                .fetch_all(&self.pool)
+                .await?;
+        for (id, text) in rows {
+            let effects: Value = serde_json::from_str(&text)?;
+            for (key, effect) in effects.as_object().context("invalid effects")? {
+                if key.starts_with("report_")
+                    && effect["state"] == "pending"
+                    && let Some(message) = effect["message"].as_str()
+                    && self.report(message).await.is_ok()
+                {
+                    self.done(id, key, json!(true)).await?;
+                }
+            }
+        }
+        Ok(())
+    }
+    async fn entry_image(&self, id: u64) -> Result<Vec<u8>> {
+        Ok(
+            sqlx::query_scalar("SELECT image FROM banner_submissions WHERE id=?")
+                .bind(id)
+                .fetch_one(&self.pool)
+                .await?,
+        )
     }
 
     async fn request(
@@ -312,10 +481,10 @@ impl BannerService {
                 request = request.json(payload);
             }
             // Never propagate URLs containing interaction/webhook tokens.
-            let response = request
-                .send()
-                .await
-                .map_err(|_| anyhow::anyhow!("Discord transport failure"))?;
+            let Ok(response) = request.send().await else {
+                tracing::warn!(failure_kind = "transport", "banner Discord request failed");
+                return Err(anyhow::anyhow!("Discord transport failure"));
+            };
             if response.status().as_u16() == 429 && attempt < 3 {
                 Self::rate_limit_wait(response).await?;
                 continue;
@@ -341,7 +510,11 @@ impl BannerService {
     async fn response(response: reqwest::Response) -> Result<Value> {
         let status = response.status();
         if !status.is_success() {
-            bail!("Discord HTTP {status}");
+            tracing::warn!(
+                http_status = status.as_u16(),
+                "banner Discord request failed"
+            );
+            return Err(DiscordHttpError(status.as_u16()).into());
         }
         let bytes = response
             .bytes()
@@ -391,6 +564,51 @@ impl BannerService {
         self.request(reqwest::Method::POST, &path, Some(payload))
             .await
     }
+    // Discord deduplicates this nonce for a few minutes. Restrict retries to one
+    // short live attempt; a process restart still requires manual reconciliation.
+    async fn public_message(
+        &self,
+        channel: u64,
+        payload: Value,
+        image: Option<&[u8]>,
+    ) -> Result<Value> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(45);
+        for attempt in 0..5 {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                bail!("public message retry deadline exceeded");
+            }
+            let result = tokio::time::timeout(
+                remaining.min(Duration::from_secs(10)),
+                self.message(channel, payload.clone(), image),
+            )
+            .await
+            .unwrap_or_else(|_| Err(anyhow::anyhow!("Discord transport failure")));
+            match result {
+                Ok(message) => return Ok(message),
+                Err(error) => {
+                    let transient = error
+                        .downcast_ref::<DiscordHttpError>()
+                        .is_some_and(|e| (500..=599).contains(&e.0))
+                        || matches!(
+                            error.to_string().as_str(),
+                            "Discord transport failure"
+                                | "Discord upload transport failure"
+                                | "Discord response read failed"
+                        );
+                    if !transient || attempt == 4 {
+                        return Err(error);
+                    }
+                    let wait = Duration::from_secs(1 << attempt);
+                    if tokio::time::Instant::now() + wait >= deadline {
+                        return Err(error);
+                    }
+                    tokio::time::sleep(wait).await;
+                }
+            }
+        }
+        bail!("public message retry limit reached")
+    }
     async fn post_once(
         &self,
         contest: &Contest,
@@ -404,7 +622,14 @@ impl BannerService {
         if contest.dry_run {
             payload["allowed_mentions"] = json!({"parse":[]});
         }
-        match self.message(contest.channel(), payload, image).await {
+        let result = if retryable(key) {
+            self.message(contest.channel(), payload, image).await
+        } else {
+            payload["nonce"] = self.effects(contest.id).await?[key]["nonce"].clone();
+            payload["enforce_nonce"] = json!(true);
+            self.public_message(contest.channel(), payload, image).await
+        };
+        match result {
             Ok(value) => {
                 let id = value["id"]
                     .as_str()
@@ -414,7 +639,9 @@ impl BannerService {
                 Ok(id)
             }
             Err(error) => {
-                self.report(&format!("Contest {}: `{key}` failed. By hand: inspect <#{}> for the post before sending it; record its ID in the effects journal. Error: {error}", contest.id, contest.channel())).await?;
+                if !retryable(key) {
+                    self.queue_report(contest.id, key, &format!("Contest {}: `{key}` uncertain. Inspect <#{}> before sending it; record its ID in the journal. Error: {error}", contest.id, contest.channel())).await?;
+                }
                 Err(error)
             }
         }
@@ -450,17 +677,29 @@ impl BannerService {
     }
     async fn disable_apply(&self, contest: &Contest) -> Result<()> {
         if let Some(id) = &contest.call_message_id {
+            if self
+                .begin(
+                    contest.id,
+                    "disable_apply",
+                    "Remove the Apply button manually.",
+                )
+                .await?
+                .is_some()
+            {
+                return Ok(());
+            }
             self.request(
                 reqwest::Method::PATCH,
                 &format!("/channels/{}/messages/{id}", contest.channel()),
                 Some(json!({"allowed_mentions":{"parse":[]},"components":[]})),
             )
             .await?;
+            self.done(contest.id, "disable_apply", json!(true)).await?;
         }
         Ok(())
     }
     async fn close(&self, contest: &Contest) -> Result<()> {
-        self.disable_apply(contest).await?;
+        let _ = self.disable_apply(contest).await;
         self.set_state(contest.id, "review").await
     }
     async fn voting(&self, contest: &Contest) -> Result<()> {
@@ -469,10 +708,9 @@ impl BannerService {
             if entry.status == "pending" {
                 sqlx::query("UPDATE banner_submissions SET status='expired', revision=revision+1 WHERE id=? AND status='pending'").bind(entry.id).execute(&self.pool).await?;
                 let updated = self.entry(entry.id).await?;
-                self.notify(contest, &updated).await?;
+                let _ = self.notify(contest, &updated).await;
             }
-            self.update_review(&self.entry(entry.id).await?, true)
-                .await?;
+            let _ = self.update_review(&self.entry(entry.id).await?, true).await;
         }
         entries.retain(|entry| entry.status == "approved");
         if entries.is_empty() {
@@ -496,7 +734,7 @@ impl BannerService {
                     contest,
                     &key,
                     json!({"content":format!("Screenshot {}",index+1)}),
-                    Some(&entry.image),
+                    Some(&self.entry_image(entry.id).await?),
                 )
                 .await?;
             sqlx::query("UPDATE banner_submissions SET vote_message_id=? WHERE id=?")
@@ -504,20 +742,37 @@ impl BannerService {
                 .bind(entry.id)
                 .execute(&self.pool)
                 .await?;
-            // Adding our own reaction is naturally idempotent.
-            self.request(
-                reqwest::Method::PUT,
-                &format!(
-                    "/channels/{}/messages/{id}/reactions/%F0%9F%94%A5/@me",
-                    contest.channel()
-                ),
-                None,
-            )
-            .await?;
+            let _ = self.add_fire(contest, entry.id, &id).await;
         }
+        self.done(
+            contest.id,
+            "voting_public_at",
+            json!(Utc::now().timestamp()),
+        )
+        .await?;
         self.set_state(contest.id, "voting").await
     }
 
+    async fn add_fire(&self, contest: &Contest, id: u64, message: &str) -> Result<()> {
+        let key = format!("fire_{id}");
+        if self
+            .begin(contest.id, &key, "Add the fire reaction manually.")
+            .await?
+            .is_some()
+        {
+            return Ok(());
+        }
+        self.request(
+            reqwest::Method::PUT,
+            &format!(
+                "/channels/{}/messages/{message}/reactions/%F0%9F%94%A5/@me",
+                contest.channel()
+            ),
+            None,
+        )
+        .await?;
+        self.done(contest.id, &key, json!(true)).await
+    }
     async fn votes(&self, contest: &Contest, entry: &Entry) -> Result<u64> {
         let message = entry
             .vote_message_id
@@ -570,13 +825,7 @@ impl BannerService {
             {
                 value.as_u64().context("invalid stored vote count")?
             } else {
-                let count = match self.votes(contest, entry).await {
-                    Ok(count) => count,
-                    Err(error) => {
-                        self.report(&format!("Contest {}: fire reaction counting failed for message {} in <#{}>. By hand: page GET /channels/{}/messages/{}/reactions/🔥 (normal and burst), exclude bots and deduplicate users, then store the count in effects.{key}.result and mark it done.",contest.id,entry.vote_message_id.as_deref().unwrap_or("missing"),contest.channel(),contest.channel(),entry.vote_message_id.as_deref().unwrap_or("missing"))).await?;
-                        return Err(error);
-                    }
-                };
+                let count = self.votes(contest, entry).await?;
                 self.done(contest.id, &key, json!(count)).await?;
                 count
             };
@@ -593,26 +842,55 @@ impl BannerService {
                 .bind(contest.id)
                 .fetch_optional(&self.pool)
                 .await?;
+        let winner_posted = self.effects(contest.id).await?["winner"]["state"] == "done";
+        if !winner_posted {
+            let _ = self
+                .begin(
+                    contest.id,
+                    "preflight",
+                    "Recheck winner ranks and UUID before announcing.",
+                )
+                .await?;
+        }
         let current = server
             .ranks(&winner.username)
-            .await
-            .ok()
-            .flatten()
+            .await?
             .and_then(|r| prize(&r));
-        let rank = stored_rank.as_deref().or(current).unwrap_or(&winner.prize);
+        let identity = server.banner_uuid(&winner.username).await?;
+        let Some(rank) = (if winner_posted {
+            stored_rank.as_deref().or(current)
+        } else {
+            current
+        }) else {
+            self.set_state(contest.id, "paused").await?;
+            self.queue_report(contest.id, "eligibility", "Winner is no longer eligible. No winner announcement or prize; check ranks before resuming.").await?;
+            return Ok(());
+        };
+        if !winner_posted && identity.as_deref() != Some(&winner.uuid) {
+            self.set_state(contest.id, "paused").await?;
+            self.queue_report(
+                contest.id,
+                "identity",
+                "Winner UUID no longer resolves uniquely. No winner announcement or prize.",
+            )
+            .await?;
+            return Ok(());
+        }
+        self.done(contest.id, "preflight", json!(true)).await?;
+        let image = self.entry_image(winner.id).await?;
         let command = format!("lpv user {} parent addtemp {rank} 1mo", winner.uuid);
         // Winner is logged before Discord and console effects; no email in any outgoing text.
         let expiry = model::month_expiry(Utc::now())?.timestamp();
         sqlx::query("INSERT IGNORE INTO banner_winners (contest_id,submission_id,year,month,username,uuid,discord_id,email,prize,expires_at,image,votes,dry_run) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)")
-            .bind(contest.id).bind(winner.id).bind(contest.year).bind(contest.month).bind(&winner.username).bind(&winner.uuid).bind(&winner.discord_id).bind(&winner.email).bind(rank).bind(expiry).bind(&winner.image).bind(winner.votes).bind(contest.dry_run).execute(&self.pool).await?;
-        self.post_once(contest,"winner",json!({"content":model::winner_text(contest,winner,rank),"allowed_mentions":role_mentions()}),Some(&winner.image)).await?;
+            .bind(contest.id).bind(winner.id).bind(contest.year).bind(contest.month).bind(&winner.username).bind(&winner.uuid).bind(&winner.discord_id).bind(&winner.email).bind(rank).bind(expiry).bind(&image).bind(winner.votes).bind(contest.dry_run).execute(&self.pool).await?;
+        self.post_once(contest,"winner",json!({"content":model::winner_text(contest,winner,rank),"allowed_mentions":role_mentions()}),Some(&image)).await?;
         if contest.dry_run {
             self.post_once(contest,"dry_actions",json!({"content":format!("TEST: would set banner, splash and discovery_splash with one Modify Guild call; would run `{command}` and verify /get-ranks. No image or rank was changed.")}),None).await?;
         } else {
             if self.begin(contest.id,"guild_images","Set banner, splash and discovery_splash to the winner's banner.jpg using one PATCH /guilds/917520262797344779.").await?.is_none() {
-                let uri=format!("data:image/jpeg;base64,{}",STANDARD.encode(&winner.image));
+                let uri=format!("data:image/jpeg;base64,{}",STANDARD.encode(&image));
                 if self.request(reqwest::Method::PATCH,&format!("/guilds/{}",config::GUILD_ID),Some(json!({"banner":uri,"splash":uri,"discovery_splash":uri}))).await.is_err() {
-                    self.report("Set the winning banner.jpg manually in all three guild image slots: banner, splash and discovery_splash. The Modify Guild step failed and will not be retried.").await?;
+                    self.queue_report(contest.id, "guild_failure", "Set the winning banner.jpg manually in all three guild image slots: banner, splash and discovery_splash. The Modify Guild step failed and will not be retried.").await?;
                 }
                 self.done(contest.id,"guild_images",json!("attempt finished; check guild slots if reported")).await?;
             }
@@ -621,8 +899,8 @@ impl BannerService {
                 let eligible = server.ranks(&winner.username).await.ok().flatten().and_then(|r|prize(&r)) == Some(rank)
                     && server.banner_uuid(&winner.username).await.ok().flatten().as_deref() == Some(&winner.uuid);
                 let granted=eligible && server.grant_banner_prize(&winner.uuid,rank).await.is_ok();
-                let verified=granted && server.ranks(&winner.username).await.ok().flatten().is_some_and(|r|r.iter().any(|r|r==rank));
-                if !verified { self.report(&format!("Contest {}: prize not verified. By hand: check eligibility and /get-ranks, then run `{command}` only if the rank is missing; verify `{rank}` with /get-ranks. Never run addtemp twice.",contest.id)).await?; }
+                let verified=granted && server.verify_banner_prize(&winner.username, rank).await;
+                if !verified { self.queue_report(contest.id, "prize_failure", &format!("Contest {}: prize not verified. By hand: check eligibility and /get-ranks, then run `{command}` only if the rank is missing; verify `{rank}` with /get-ranks. Never run addtemp twice.",contest.id)).await?; }
                 self.done(contest.id,"prize",json!({"verified":verified})).await?;
             }
         }
@@ -631,7 +909,7 @@ impl BannerService {
 
     async fn entry(&self, id: u64) -> Result<Entry> {
         Ok(
-            sqlx::query_as("SELECT * FROM banner_submissions WHERE id=?")
+            sqlx::query_as("SELECT id,contest_id,discord_id,username,uuid,email,status,decider,reason,submitted_at,shuffle_key,review_message_id,vote_message_id,votes,revision,review_revision,review_closed FROM banner_submissions WHERE id=?")
                 .bind(id)
                 .fetch_one(&self.pool)
                 .await?,
@@ -713,7 +991,17 @@ impl BannerService {
                 .as_str()
                 .context("missing deny reason")?;
             if reason == "Other" {
-                return self.callback(&interaction,json!({"type":9,"data":{"custom_id":format!("banner:other:{id}"),"title":"Deny screenshot","components":[{"type":1,"components":[{"type":4,"custom_id":"reason","style":2,"label":"Reason","required":true,"min_length":1,"max_length":500}]}]}})).await;
+                self.callback(&interaction,json!({"type":9,"data":{"custom_id":format!("banner:other:{id}"),"title":"Deny screenshot","components":[{"type":1,"components":[{"type":4,"custom_id":"reason","style":2,"label":"Reason","required":true,"min_length":1,"max_length":500}]}]}})).await?;
+                // Persist the menu reset so a transient PATCH failure does not trap Other.
+                let key = format!(
+                    "reset_{}_{}",
+                    entry.id,
+                    interaction["id"]
+                        .as_str()
+                        .context("missing interaction ID")?
+                );
+                let _ = self.reset_menu(&entry, &key).await;
+                return Ok(());
             }
         }
         self.callback(
@@ -733,12 +1021,17 @@ impl BannerService {
             _ => Ok("Unknown banner action.".to_owned()),
         };
         Self::release(connection).await;
-        let text = if let Ok(text) = result {
-            text
-        } else {
-            // Errors can include user-controlled email or attachment URLs: never log them.
-            tracing::error!("banner interaction failed; inspect persisted contest state");
-            "We couldn't complete this step. Please ask staff in the server.".to_owned()
+        let text = match result {
+            Ok(text) => text,
+            Err(error) => {
+                // Only structured diagnostics; never user input, URLs, tokens or response bodies.
+                let status = error.downcast_ref::<DiscordHttpError>().map(|e| e.0);
+                tracing::error!(
+                    http_status = status,
+                    "banner interaction failed; inspect persisted contest state"
+                );
+                "We couldn't complete this step. Please ask staff in the server.".to_owned()
+            }
         };
         self.finish_reply(&interaction, &text).await
     }
@@ -809,25 +1102,8 @@ impl BannerService {
         if Utc::now().timestamp() >= contest.close_at {
             return Ok(CLOSED.into());
         }
-        let result=sqlx::query("INSERT INTO banner_submissions (contest_id,discord_id,username,uuid,email,prize,image,submitted_at,shuffle_key) VALUES (?,?,?,?,?,?,?,?,?)")
+        sqlx::query("INSERT INTO banner_submissions (contest_id,discord_id,username,uuid,email,prize,image,submitted_at,shuffle_key) VALUES (?,?,?,?,?,?,?,?,?)")
             .bind(id).bind(user).bind(&application.username).bind(uuid).bind(&application.email).bind(rank).bind(&crop).bind(Utc::now().timestamp_millis()).bind(uuid::Uuid::new_v4().to_string()).execute(&self.pool).await?;
-        let entry_id = result.last_insert_id();
-        let key = format!("review_{entry_id}");
-        let mut review_contest = contest.clone();
-        review_contest.dry_run = true;
-        let message = self
-            .post_once(
-                &review_contest,
-                &key,
-                json!({"components":model::review_components(entry_id,false)}),
-                Some(&crop),
-            )
-            .await?;
-        sqlx::query("UPDATE banner_submissions SET review_message_id=? WHERE id=?")
-            .bind(message)
-            .bind(entry_id)
-            .execute(&self.pool)
-            .await?;
         Ok(
             "Thanks! Your screenshot is waiting for review. We'll message you when it's checked."
                 .into(),
@@ -912,17 +1188,66 @@ impl BannerService {
         } else {
             "denied"
         };
-        sqlx::query("UPDATE banner_submissions SET status=?,reason=?,decider=?,revision=revision+1 WHERE id=?").bind(status).bind(reason).bind(model::user_id(interaction)).bind(id).execute(&self.pool).await?;
-        let entry = self.entry(id).await?;
-        self.update_review(&entry, false).await?;
-        self.notify(&contest, &entry).await?;
+        if entry.status == status && entry.reason == reason {
+            return Ok("Decision saved.".into());
+        }
+        let mut effects = self.effects(contest.id).await?;
+        let revision = entry
+            .revision
+            .checked_add(1)
+            .context("decision revision overflow")?;
+        effects[format!("notice_{id}_{revision}")] =
+            json!({"state":"pending","status":status,"reason":reason,"revision":revision});
+        let mut transaction = self.pool.begin().await?;
+        sqlx::query(
+            "UPDATE banner_submissions SET status=?,reason=?,decider=?,revision=? WHERE id=?",
+        )
+        .bind(status)
+        .bind(&reason)
+        .bind(model::user_id(interaction))
+        .bind(revision)
+        .bind(id)
+        .execute(&mut *transaction)
+        .await?;
+        sqlx::query("UPDATE banner_contests SET effects=? WHERE id=?")
+            .bind(effects.to_string())
+            .bind(contest.id)
+            .execute(&mut *transaction)
+            .await?;
+        transaction.commit().await?;
         Ok("Decision saved.".into())
+    }
+    async fn reset_menu(&self, entry: &Entry, key: &str) -> Result<()> {
+        if self
+            .begin(
+                entry.contest_id,
+                key,
+                "Reset the denial menu on the review card.",
+            )
+            .await?
+            .is_some()
+        {
+            return Ok(());
+        }
+        if let Some(message) = &entry.review_message_id {
+            let contest = self.contest(entry.contest_id).await?;
+            self.request(reqwest::Method::PATCH,&format!("/channels/{REVIEWS}/messages/{message}"),Some(json!({"components":model::review_components(entry.id,!model::can_review(&contest,Utc::now().timestamp())),"allowed_mentions":{"parse":[]}}))).await?;
+        }
+        self.done(entry.contest_id, key, json!(true)).await
     }
     async fn update_review(&self, entry: &Entry, disabled: bool) -> Result<()> {
         if entry.review_revision == entry.revision && entry.review_closed == disabled {
             return Ok(());
         }
         if let Some(id) = &entry.review_message_id {
+            let key = format!("patch_{}_{}_{}", entry.id, entry.revision, disabled);
+            if self
+                .begin(entry.contest_id, &key, "Update the review card by hand.")
+                .await?
+                .is_some()
+            {
+                return Ok(());
+            }
             let decision_text = entry.decider.as_ref().map_or_else(String::new, |user| {
                 format!(
                     "{} by <@{user}>",
@@ -934,6 +1259,7 @@ impl BannerService {
                 )
             });
             self.request(reqwest::Method::PATCH,&format!("/channels/{REVIEWS}/messages/{id}"),Some(json!({"content":decision_text,"allowed_mentions":{"parse":[]},"components":model::review_components(entry.id,disabled)}))).await?;
+            self.done(entry.contest_id, &key, json!(true)).await?;
             sqlx::query(
                 "UPDATE banner_submissions SET review_revision=?,review_closed=? WHERE id=?",
             )
@@ -971,14 +1297,28 @@ impl BannerService {
                 .await;
             let delivered = if let Ok(dm) = dm {
                 if let Some(channel) = dm["id"].as_str().and_then(|id| id.parse::<u64>().ok()) {
-                    self.message(channel, json!({"content":text}), None)
-                        .await
-                        .is_ok()
+                    match self.message(channel, json!({"content":text}), None).await {
+                        Ok(_) => true,
+                        Err(e)
+                            if e.downcast_ref::<DiscordHttpError>()
+                                .is_some_and(|e| e.0 == 403) =>
+                        {
+                            false
+                        }
+                        Err(e) => return Err(e),
+                    }
                 } else {
-                    false
+                    bail!("missing DM channel");
                 }
-            } else {
+            } else if dm
+                .as_ref()
+                .err()
+                .and_then(|e| e.downcast_ref::<DiscordHttpError>())
+                .is_some_and(|e| e.0 == 403)
+            {
                 false
+            } else {
+                return Err(dm.err().context("DM request failed")?);
             };
             if !delivered {
                 self.message(GENERAL,json!({"content":format!("<@{}> {text}",entry.discord_id),"allowed_mentions":{"parse":[],"users":[entry.discord_id]}}),None).await?;
@@ -990,3 +1330,21 @@ impl BannerService {
 fn role_mentions() -> Value {
     json!({"parse":[],"roles":[EVENT_ROLE.to_string()]})
 }
+
+fn retryable(key: &str) -> bool {
+    ["review_", "patch_", "notify_", "fire_", "count_", "reset_"]
+        .iter()
+        .any(|prefix| key.starts_with(prefix))
+        || key == "theme_reminder"
+        || key == "disable_apply"
+        || key == "preflight"
+}
+
+#[derive(Debug)]
+struct DiscordHttpError(u16);
+impl std::fmt::Display for DiscordHttpError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Discord HTTP {}", self.0)
+    }
+}
+impl std::error::Error for DiscordHttpError {}

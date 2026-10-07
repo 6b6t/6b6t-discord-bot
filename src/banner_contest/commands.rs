@@ -78,10 +78,7 @@ async fn theme_set(
         let opened:i64=sqlx::query_scalar("SELECT COUNT(*) FROM banner_contests WHERE year=? AND month=? AND dry_run=FALSE AND (state!='scheduled' OR JSON_EXTRACT(effects,'$.call') IS NOT NULL)").bind(year).bind(month).fetch_one(&service.pool).await?;
         if opened!=0 {bail!("the call has already been posted; its theme cannot change");}
         let theme=theme.as_ref().map(|s|s.trim()).filter(|s|!s.is_empty());
-        if let Some(theme)=theme {
-            if theme.chars().count()>200 || theme.contains(['\n','\r']) {bail!("theme must be one line, at most 200 characters");}
-            sqlx::query("INSERT INTO banner_themes(year,month,theme) VALUES(?,?,?) ON DUPLICATE KEY UPDATE theme=VALUES(theme)").bind(year).bind(month).bind(theme).execute(&service.pool).await?;
-        }else{sqlx::query("DELETE FROM banner_themes WHERE year=? AND month=?").bind(year).bind(month).execute(&service.pool).await?;}
+        save_theme(&service.pool, year, month, theme).await?;
         sqlx::query("UPDATE banner_contests SET theme=? WHERE year=? AND month=? AND state='scheduled'").bind(theme).bind(year).bind(month).execute(&service.pool).await?;
         Ok::<_,Error>(())
     }.await;
@@ -248,7 +245,7 @@ async fn start(
         .context("Contest worker busy; try again.")?;
     let result=async {
         if dry {
-            let tests:i64=sqlx::query_scalar("SELECT COUNT(*) FROM banner_contests WHERE dry_run=TRUE AND state NOT IN ('complete','skipped','failed')").fetch_one(&service.pool).await?;
+            let tests:i64=sqlx::query_scalar("SELECT COUNT(*) FROM banner_contests WHERE dry_run=TRUE AND state NOT IN ('complete','skipped','failed','paused')").fetch_one(&service.pool).await?;
             if tests>0 {bail!("a test is already running");}
         }
         let id=service.insert_contest(year,month,schedule,dry).await?;
@@ -270,4 +267,19 @@ async fn start(
         ),
     )
     .await
+}
+
+pub(super) async fn save_theme(
+    pool: &sqlx::MySqlPool,
+    year: i32,
+    month: u32,
+    theme: Option<&str>,
+) -> Result<()> {
+    if let Some(theme) = theme
+        && (theme.chars().count() > 200 || theme.contains(['\n', '\r']))
+    {
+        bail!("theme must be one line, at most 200 characters");
+    }
+    sqlx::query("INSERT INTO banner_themes(year,month,theme) VALUES(?,?,?) ON DUPLICATE KEY UPDATE theme=VALUES(theme)").bind(year).bind(month).bind(theme.unwrap_or("")).execute(pool).await?;
+    Ok(())
 }

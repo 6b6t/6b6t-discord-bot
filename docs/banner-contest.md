@@ -7,8 +7,10 @@ settings. No new deployment environment variables are required. Defaults are the
 `1155462541871415326`.
 
 On 7 October 2026, startup creates tables and seeds Halloween for October and
-Christmas for December. It creates November's scheduled row silently. Its call
-is 25 October 2026 at 22:00 Europe/Warsaw. October is never generated automatically.
+Christmas for December. The monthly generator stays disabled until staff starts
+a real contest successfully (October). Test contests and skipped rows do not
+enable it. After that, it schedules next month's contest every month; November's
+call is 25 October 2026 at 22:00 Europe/Warsaw. October is never generated automatically.
 
 ## After deploy
 
@@ -20,11 +22,13 @@ is 25 October 2026 at 22:00 Europe/Warsaw. October is never generated automatica
    Elite, Elite+ or Apex. Upload a PNG/JPG/WEBP of at least 1280×720 and a valid email.
 2. Check that the review card contains only its JPEG crop and buttons. Deny it,
    check the test notification in reviews, then approve it before voting starts.
-   Also test **Other** and enter a reason. Vote with 🔥. The result and the commands
+   Also test **Other**, cancel, choose it again and enter a reason.
+   Confirm modal submissions arrive and the main bot activity still reads
+   "Playing IP: play.6b6t.org…" after the second gateway connects. Vote with 🔥. The result and the commands
    the bot *would* run must appear only in reviews. No DMs, general messages,
    announcement posts, guild image updates or rank grants occur in test mode.
    Repeat with an undecided entry and with no accepted entries if needed.
-3. Run `/bannercontest status`. Check the test is complete and November is scheduled.
+3. Run `/bannercontest status`. Check the test is complete. November is scheduled only after the real October call.
    Confirm `/bannerthemes list` shows October Halloween and December Christmas.
    `/bannerthemes set year:2026 month:11 theme:<theme>` sets November's theme;
    omit `theme` to clear it. Discord requires a `set` subcommand because `list`
@@ -47,33 +51,60 @@ can change until voting starts; a denied submission cannot be replaced.
 
 ## Persistence and manual recovery
 
-Four new tables are created in the existing link database without altering any
+Five feature tables are created in the existing link database without altering any
 existing table: `banner_themes`, `banner_contests`, `banner_submissions`, and
-`banner_winners`. Dates are UTC Unix seconds; submission order uses Unix
+`banner_winners`, plus `banner_gateway_identifies` for a persistent rolling IDENTIFY cap. No existing tables are altered. Dates are UTC Unix seconds; submission order uses Unix
 milliseconds plus the submission ID as a deterministic tie breaker. Themes are
 snapshotted at the call. Every accepted source is decoded with bounded memory,
 centre cropped to an integral 16:9 rectangle, resized to at most 1920×1080 and
-encoded once as JPEG. Those bytes are stored in MariaDB and reused for review,
+encoded once as JPEG at quality 80, under 3 MiB. Headers over 40 MP are refused
+before decode; decoder allocation is capped at 160 MiB and the crop is a borrowed view. Those bytes are stored in MariaDB and reused for review,
 voting, the winner post and all guild image slots. There are no expiring URL
 dependencies. Email is stored only in submission/winner rows, never in bot text
-or application logs. Serenity's payload-error logging is disabled because its
-older decoder would otherwise print the private raw file-upload modal.
+or application logs. Serenity 0.12.5 silently drops username/email/file values
+and resolved attachments from Label/File Upload modal submissions; it does not
+reject them. Its gateway warnings remain enabled. Tungstenite frame logs are
+disabled to keep raw private interaction payloads out of logs.
 
 The Serenity `RawEventHandler` receives an already-deserialized event and cannot
-handle types 18/19. A separate uncompressed JSON gateway session receives just
+recover the silently dropped values for types 18/19. A separate uncompressed JSON gateway session receives just
 banner interactions (zero intents), with heartbeat, resume and reconnect support.
 It waits six seconds after the main session's Ready before identifying. It
-consumes one extra Discord gateway session; do not run duplicate deployments.
+consumes one extra Discord gateway session. Fresh identifies require at least
+100 remaining in Discord's budget and are capped at 20 in a rolling 24 hours,
+persisted across restarts. Fatal closes 4004 and 4010–4014 stop the raw session
+and report to reviews. READY/RESUMED resets reconnect backoff.
 The normal Serenity session owns other commands and events.
 
 An advisory MariaDB lock serializes contest work across instances. External
 non-idempotent actions have an `effects` JSON journal in their contest row. The
 attempt is persisted before network I/O. Successful posts store their message
-ID. Known 429 responses retry up to three times; transport timeouts and other
-failures do not retry a post or rank command. Restart resumes successful journal
-entries and catches up every due phase. An uncertain effect stops the contest
-as `failed` and reports the specific manual action in reviews. Image/prize
-failures after the winner announcement report manual remediation and complete
+ID. Known 429 responses retry up to three times. Public messages use a journaled
+25-character nonce with `enforce_nonce`: transient 5xx/transport errors retry
+with 1, 2, 4, 8 second backoff, at most five attempts within 45 seconds.
+[Discord deduplicates messages with the same nonce](https://docs.discord.com/developers/resources/message#create-message).
+A restart does not repeat an uncertain public attempt, since nonce deduplication
+is only guaranteed for a few minutes. Rank commands and guild image changes
+are never resent. Restart resumes successful journal entries.
+Safe catch-up never posts a call
+after close, never opens voting with less than 12 hours remaining, and never
+awards unless all vote images were public for at least 24 hours before end.
+Otherwise the contest is skipped with a durable staff report and no public
+catch-up post or prize. Test mode keeps its minute-long phases.
+
+An uncertain public effect holds the phase as `paused` for manual reconciliation;
+it never resends the public post or prize. Retryable review cards, edits,
+reaction PUTs/GETs, reminders and notifications retry up to five times with
+persisted exponential backoff (30, 60, 120, 240 seconds). Exhaustion reports only
+that entry/effect and keeps other entries working. Reports are stored in the
+journal before delivery and retried on later ticks, even for terminal contests.
+Saved submissions get the waiting-for-review reply immediately; the worker
+uploads their cards. Changed decisions and their notification snapshots are
+saved together in a transaction, so rapid changes each get their own notice.
+Private retries continue after public completion, skip or pause.
+Metadata queries omit image blobs; bytes are fetched only
+for uploads. A cleared seeded theme is stored as an empty marker, so restarts
+cannot recreate it. Image/prize failures after the winner announcement report manual remediation and complete
 the attempt, so the bot does not repeatedly grant or change images.
 
 Before recovering a failed contest, inspect its journal and channel history:
@@ -119,7 +150,7 @@ cargo test
 cargo build
 # An isolated local MariaDB test database (name must start with banner_test):
 BANNER_TEST_DATABASE_URL=mysql://root@127.0.0.1:33307/banner_test \
-  cargo test -- --include-ignored
+  cargo test -- --include-ignored --test-threads=1
 ```
 
 The MariaDB scenario uses local HTTP stubs for Discord, image downloads and
@@ -128,3 +159,16 @@ constraints, decision changes, expiration, reaction pagination excluding bots,
 catch-up, direct SQL rows, durable uncertain effects, DM fallback mention limits,
 dry-run isolation, one three-slot guild update, prize verification and failure
 reporting. A separate local websocket test covers gateway heartbeat and resume.
+
+Floodgate Bedrock names with a leading `.` are accepted (up to 16 characters
+after the dot), when `/get-ranks` resolves the name and the stats database
+provides one unique UUID. If either service cannot resolve the Floodgate name,
+the bot gives the unknown-username reply; no Java-name substitution is guessed.
+Highest paid group is selected in order: legendultra, legend, apex, eliteultra,
+elite+, elite, primeultra, prime+, prime. Thus Apex plus a previous Prime Ultra
+can win Legend. Inherited Prime from VIP still counts, as the rank service returns
+inherited groups. Winner eligibility and UUID are checked before any public promise.
+Temporary grants go only to HTTP_PROXY_COMMAND_SERVICE; `/get-ranks` stays on
+the configured rank service and verification polls for up to 30 seconds. A 403
+is a definite refusal; addtemp is never resent. Public #general denial fallback
+retains the exact staff reason, per qbasty's decision.

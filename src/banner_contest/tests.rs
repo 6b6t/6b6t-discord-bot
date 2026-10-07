@@ -29,8 +29,6 @@ fn entry(id: u64, votes: u64, submitted: i64) -> Entry {
         username: "player".into(),
         uuid: "00000000-0000-0000-0000-000000000001".into(),
         email: "private@example.org".into(),
-        prize: "primeultra".into(),
-        image: vec![],
         status: "approved".into(),
         decider: None,
         reason: None,
@@ -120,6 +118,7 @@ fn eligibility_uses_all_ranks_and_rejects_upgraded_groups() {
         (vec!["elite"], Some("eliteultra")),
         (vec!["elite+", "prime"], Some("eliteultra")),
         (vec!["apex", "elite+"], Some("legend")),
+        (vec!["apex", "primeultra"], Some("legend")),
         (vec![], None),
         (vec!["default"], None),
         (vec!["prime", "primeultra"], None),
@@ -140,11 +139,11 @@ fn docs_shaped_file_upload_modal_resolves_attachments() {
         {"type":18,"id":1,"component":{"type":4,"id":2,"custom_id":"username","value":"Steve"}},
         {"type":18,"id":3,"component":{"type":4,"id":4,"custom_id":"email","value":"steve@example.org"}},
         {"type":18,"id":5,"component":{"type":19,"id":6,"custom_id":"image","values":["111111111111111111111"]}}
-    ],"resolved":{"attachments":{"111111111111111111111":{"id":"111111111111111111111","content_type":"image/png","ephemeral":true,"filename":"screenshot.png","height":720,"width":1280,"size":800_000,"url":"https://cdn.discordapp.com/attachments/123/456/screenshot.png?ex=abc&is=def&hm=123","proxy_url":"https://media.discordapp.net/attachments/123/456/screenshot.png"}}}});
+    ],"resolved":{"attachments":{"111111111111111111111":{"id":"111111111111111111111","content_type":"image/png","ephemeral":true,"filename":"bug.png","height":604,"width":2482,"placeholder":"/PcBAoBQydvKesabEIoMsdg=","placeholder_version":1,"size":241_394,"url":"https://cdn.discordapp.com/ephemeral-attachments/2222222222222222222/111111111111111111111/bug.png?ex=68dc7ce1&is=68db2b61&hm=5954f90117ccf8716ffa6c7f97a778a0d039810c9584045f400d8a9fff590768&","proxy_url":"https://media.discordapp.net/ephemeral-attachments/2222222222222222222/111111111111111111111/bug.png?ex=68dc7ce1&is=68db2b61&hm=5954f90117ccf8716ffa6c7f97a778a0d039810c9584045f400d8a9fff590768&"}}}});
     let a = parse_application(&data).unwrap();
     assert_eq!(a.username, "Steve");
     assert_eq!(a.email, "steve@example.org");
-    assert_eq!(a.size, 800_000);
+    assert_eq!(a.size, 241_394);
     let mut missing = data.clone();
     missing["resolved"] = json!({});
     assert!(parse_application(&missing).is_err());
@@ -268,7 +267,7 @@ fn expiry_matches_luckperms_duration_parser() {
 // The local HTTP fixture and sequential integration scenario intentionally share
 // one isolated database to exercise restarts without parallel-test interference.
 #[allow(clippy::too_many_lines)]
-mod local_integration {
+pub(crate) mod local_integration {
     use super::*;
     use anyhow::{Context as _, Result};
     use serde_json::{Value, json};
@@ -282,11 +281,19 @@ mod local_integration {
         sync::Mutex,
     };
 
-    struct Mock {
+    type FailureRules = Arc<Mutex<Vec<(String, String, usize, u16)>>>;
+    pub(crate) struct Mock {
         base: String,
         requests: Arc<Mutex<Vec<(String, String, Value)>>>,
         awarded: Arc<AtomicBool>,
         fail_image: Arc<AtomicBool>,
+        failures: FailureRules,
+        ranks: Arc<Mutex<std::collections::HashMap<String, Vec<String>>>>,
+        verify_delay: Arc<AtomicU64>,
+        deny_command: Arc<AtomicBool>,
+        created_posts: Arc<AtomicU64>,
+        pub(crate) gateway_remaining: Arc<AtomicU64>,
+        pub(crate) gateway_url: Arc<Mutex<String>>,
         task: tokio::task::JoinHandle<()>,
     }
     impl Drop for Mock {
@@ -304,6 +311,25 @@ mod local_integration {
             let grant = awarded.clone();
             let fail_image = Arc::new(AtomicBool::new(false));
             let failure = fail_image.clone();
+            let failures = Arc::new(Mutex::new(Vec::<(String, String, usize, u16)>::new()));
+            let failing = failures.clone();
+            let ranks = Arc::new(Mutex::new(
+                std::collections::HashMap::<String, Vec<String>>::new(),
+            ));
+            let rank_map = ranks.clone();
+            let verify_delay = Arc::new(AtomicU64::new(0));
+            let delay = verify_delay.clone();
+            let deny_command = Arc::new(AtomicBool::new(false));
+            let denied = deny_command.clone();
+            let gateway_remaining = Arc::new(AtomicU64::new(99));
+            let remaining = gateway_remaining.clone();
+            let gateway_url = Arc::new(Mutex::new("ws://127.0.0.1:9".to_owned()));
+            let gateway_address = gateway_url.clone();
+            let created_posts = Arc::new(AtomicU64::new(0));
+            let created = created_posts.clone();
+            let nonces = Arc::new(Mutex::new(
+                std::collections::HashMap::<String, String>::new(),
+            ));
             let messages = Arc::new(AtomicU64::new(1000));
             let mut attachment = Cursor::new(Vec::new());
             image::DynamicImage::new_rgb8(1280, 720)
@@ -320,6 +346,14 @@ mod local_integration {
                     let failure = failure.clone();
                     let messages = messages.clone();
                     let attachment = attachment.clone();
+                    let failing = failing.clone();
+                    let rank_map = rank_map.clone();
+                    let delay = delay.clone();
+                    let denied = denied.clone();
+                    let remaining = remaining.clone();
+                    let gateway_address = gateway_address.clone();
+                    let created = created.clone();
+                    let nonces = nonces.clone();
                     tokio::spawn(async move {
                         let mut bytes = Vec::new();
                         let mut buffer = [0_u8; 8192];
@@ -374,14 +408,64 @@ mod local_integration {
                         recorded
                             .lock()
                             .await
-                            .push((method.clone(), path.clone(), payload));
-                        let (status, response) = if path == "/attachment" {
+                            .push((method.clone(), path.clone(), payload.clone()));
+                        let injected = {
+                            let mut failures = failing.lock().await;
+                            failures
+                                .iter_mut()
+                                .find(|(m, p, n, _)| {
+                                    *m == method && path.starts_with(p.as_str()) && *n > 0
+                                })
+                                .map(|(_, _, n, status)| {
+                                    *n -= 1;
+                                    *status
+                                })
+                        };
+                        let (status, response) = if injected == Some(599) {
+                            // Discord accepted the public post but its response was lost to a 5xx.
+                            let id = messages.fetch_add(1, Ordering::SeqCst).to_string();
+                            if let Some(nonce) = payload["nonce"].as_str() {
+                                nonces.lock().await.insert(nonce.to_owned(), id);
+                            }
+                            created.fetch_add(1, Ordering::SeqCst);
+                            (500, b"{}".to_vec())
+                        } else if let Some(status) = injected {
+                            (status, b"{}".to_vec())
+                        } else if path == "/gateway/bot" {
+                            (200,json!({"url":*gateway_address.lock().await, "session_start_limit":{"remaining":remaining.load(Ordering::SeqCst)}}).to_string().into_bytes())
+                        } else if path == "/attachment" {
                             (200, attachment.as_ref().clone())
                         } else if path == "/get-ranks" {
-                            (200,json!({"success":true,"ranks":if grant.load(Ordering::SeqCst){vec!["prime","primeultra"]}else{vec!["prime"]}}).to_string().into_bytes())
-                        } else if path == "/run-command" {
-                            grant.store(true, Ordering::SeqCst);
-                            (200, json!({"success":true}).to_string().into_bytes())
+                            let username = payload["username"]
+                                .as_str()
+                                .or_else(|| payload["player"].as_str())
+                                .unwrap_or_default();
+                            let mapped = rank_map.lock().await.get(username).cloned();
+                            let delayed = delay
+                                .try_update(Ordering::SeqCst, Ordering::SeqCst, |n| {
+                                    n.checked_sub(1)
+                                })
+                                .is_ok();
+                            let groups = mapped.unwrap_or_else(|| {
+                                if grant.load(Ordering::SeqCst) && !delayed {
+                                    vec!["prime".into(), "primeultra".into()]
+                                } else {
+                                    vec!["prime".into()]
+                                }
+                            });
+                            (
+                                200,
+                                json!({"success":true,"ranks":groups})
+                                    .to_string()
+                                    .into_bytes(),
+                            )
+                        } else if path == "/run-command" || path == "/proxy/run-command" {
+                            if denied.load(Ordering::SeqCst) {
+                                (403, b"{}".to_vec())
+                            } else {
+                                grant.store(true, Ordering::SeqCst);
+                                (200, json!({"success":true}).to_string().into_bytes())
+                            }
                         } else if path.starts_with("/guilds/")
                             && method == "PATCH"
                             && failure.load(Ordering::SeqCst)
@@ -404,12 +488,22 @@ mod local_integration {
                         } else if path == "/users/@me/channels" {
                             (403, b"{}".to_vec())
                         } else if path.contains("/messages") && method == "POST" {
-                            (
-                                200,
-                                json!({"id":messages.fetch_add(1,Ordering::SeqCst).to_string()})
-                                    .to_string()
-                                    .into_bytes(),
-                            )
+                            let nonce = if payload["enforce_nonce"] == true {
+                                payload["nonce"].as_str()
+                            } else {
+                                None
+                            };
+                            let mut nonces = nonces.lock().await;
+                            let existing = nonce.and_then(|n| nonces.get(n)).cloned();
+                            let id = existing.unwrap_or_else(|| {
+                                created.fetch_add(1, Ordering::SeqCst);
+                                let id = messages.fetch_add(1, Ordering::SeqCst).to_string();
+                                if let Some(nonce) = nonce {
+                                    nonces.insert(nonce.to_owned(), id.clone());
+                                }
+                                id
+                            });
+                            (200, json!({"id":id}).to_string().into_bytes())
                         } else {
                             (200, b"{}".to_vec())
                         };
@@ -427,6 +521,13 @@ mod local_integration {
                 requests,
                 awarded,
                 fail_image,
+                failures,
+                ranks,
+                verify_delay,
+                deny_command,
+                created_posts,
+                gateway_remaining,
+                gateway_url,
                 task,
             }
         }
@@ -447,6 +548,840 @@ mod local_integration {
         Ok(sqlx::query("INSERT INTO banner_submissions(contest_id,discord_id,username,uuid,email,prize,image,submitted_at,shuffle_key) VALUES(?,?,?,?,?,'primeultra',?,?,?)").bind(contest).bind(user).bind(name).bind(uuid).bind("private@example.org").bind(crop(source.get_ref())?).bind(time).bind(uuid::Uuid::new_v4().to_string()).execute(&service.pool).await?.last_insert_id())
     }
 
+    pub(crate) async fn fixture(
+        name: &str,
+    ) -> Result<(
+        super::super::BannerService,
+        crate::server::ServerService,
+        Mock,
+    )> {
+        crate::install_crypto_provider()?;
+        let url = std::env::var("BANNER_TEST_DATABASE_URL").context("set local test DB URL")?;
+        let mut parsed = reqwest::Url::parse(&url)?;
+        assert!(
+            matches!(parsed.host_str(), Some("127.0.0.1" | "localhost"))
+                && parsed.path().starts_with("/banner_test")
+        );
+        let database = format!("banner_test_fix_{name}");
+        parsed.set_path("/mysql");
+        let admin = sqlx::MySqlPool::connect(parsed.as_str()).await?;
+        sqlx::query(sqlx::AssertSqlSafe(format!(
+            "DROP DATABASE IF EXISTS `{database}`"
+        )))
+        .execute(&admin)
+        .await?;
+        sqlx::query(sqlx::AssertSqlSafe(format!("CREATE DATABASE `{database}`")))
+            .execute(&admin)
+            .await?;
+        admin.close().await;
+        parsed.set_path(&format!("/{database}"));
+        let pool = sqlx::MySqlPool::connect(parsed.as_str()).await?;
+        super::super::ensure_schema(&pool).await?;
+        sqlx::query("CREATE TABLE player_info(uuid CHAR(36) PRIMARY KEY,name VARCHAR(16),first_join BIGINT)").execute(&pool).await?;
+        sqlx::query(
+            "INSERT INTO player_info VALUES('00000000-0000-0000-0000-000000000001','Steve',0)",
+        )
+        .execute(&pool)
+        .await?;
+        let mock = Mock::start().await;
+        let http = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(2))
+            .build()?;
+        let env = Arc::new(crate::config::Environment {
+            discord_token: "local-fake-token".into(),
+            proxy_command_base_url: Some(format!("{}/proxy", mock.base)),
+            proxy_command_access_token: Some("fake".into()),
+            rank_service_base_url: Some(mock.base.clone()),
+            rank_service_access_token: Some("fake".into()),
+            ..Default::default()
+        });
+        let mut service = super::super::BannerService::new(pool.clone(), http.clone(), &env);
+        service.discord_api = mock.base.clone();
+        let server = crate::server::ServerService::new(
+            http,
+            env,
+            Some(crate::database::Databases {
+                link: pool.clone(),
+                stats: pool,
+            }),
+        );
+        Ok((service, server, mock))
+    }
+    async fn opened(service: &super::super::BannerService, dry: bool) -> Result<(u64, u64)> {
+        let now = Utc::now().timestamp();
+        let id = service
+            .insert_contest(
+                2030,
+                1,
+                Schedule {
+                    call: now - 1,
+                    close: now + 86400,
+                    voting: now + 129_600,
+                    end: now + 388_800,
+                },
+                dry,
+            )
+            .await?;
+        service.call(&service.contest(id).await?).await?;
+        let entry = insert_entry(
+            service,
+            id,
+            "123",
+            "Steve",
+            "00000000-0000-0000-0000-000000000001",
+            now,
+        )
+        .await?;
+        Ok((id, entry))
+    }
+    async fn retry_now(service: &super::super::BannerService, id: u64) -> Result<()> {
+        let mut effects: Value = serde_json::from_str(
+            &sqlx::query_scalar::<_, String>("SELECT effects FROM banner_contests WHERE id=?")
+                .bind(id)
+                .fetch_one(&service.pool)
+                .await?,
+        )?;
+        for effect in effects.as_object_mut().unwrap().values_mut() {
+            effect["retry_at"] = json!(0);
+        }
+        sqlx::query("UPDATE banner_contests SET effects=? WHERE id=?")
+            .bind(effects.to_string())
+            .bind(id)
+            .execute(&service.pool)
+            .await?;
+        Ok(())
+    }
+    fn review_path() -> String {
+        format!("/channels/{}/messages", super::super::REVIEWS)
+    }
+
+    #[tokio::test]
+    #[ignore = "local MariaDB"]
+    async fn public_transient_retry_reuses_nonce_without_duplicate_post() -> Result<()> {
+        let (service, _, mock) = fixture("public_retry").await?;
+        let now = Utc::now().timestamp();
+        let id = service
+            .insert_contest(
+                2030,
+                1,
+                Schedule {
+                    call: now,
+                    close: now + 86400,
+                    voting: now + 129_600,
+                    end: now + 388_800,
+                },
+                false,
+            )
+            .await?;
+        let public = format!("/channels/{}/messages", super::super::ANNOUNCEMENTS);
+        mock.failures
+            .lock()
+            .await
+            .push(("POST".into(), public.clone(), 1, 599));
+        service.call(&service.contest(id).await?).await?;
+        assert_eq!(service.contest(id).await?.state, "open");
+        assert_eq!(
+            mock.created_posts.load(Ordering::SeqCst),
+            1,
+            "accepted post must be deduplicated on retry"
+        );
+        let requests = mock.requests.lock().await;
+        let posts: Vec<_> = requests
+            .iter()
+            .filter(|(m, p, _)| m == "POST" && p == &public)
+            .collect();
+        assert_eq!(posts.len(), 2);
+        assert_eq!(posts[0].2["nonce"], posts[1].2["nonce"]);
+        assert_eq!(posts[0].2["enforce_nonce"], true);
+        assert!(posts[0].2["nonce"].as_str().unwrap().len() <= 25);
+        Ok(())
+    }
+    #[tokio::test]
+    #[ignore = "local MariaDB"]
+    async fn patch_dm_fallback_fire_and_reaction_reads_retry_independently() -> Result<()> {
+        let (service, server, mock) = fixture("private_stages").await?;
+        let (id, entry) = opened(&service, false).await?;
+        service
+            .reconcile_entries(&service.contest(id).await?)
+            .await?;
+        service
+            .decide(
+                entry,
+                "approve",
+                &interaction(&format!("banner:approve:{entry}"), 3),
+            )
+            .await?;
+        mock.failures
+            .lock()
+            .await
+            .push(("PATCH".into(), review_path(), 1, 500));
+        mock.failures
+            .lock()
+            .await
+            .push(("POST".into(), "/users/@me/channels".into(), 1, 500));
+        service.poll(&server).await?;
+        assert_eq!(service.contest(id).await?.state, "open");
+        assert!(
+            !mock
+                .requests
+                .lock()
+                .await
+                .iter()
+                .any(|(_, p, _)| p == "/channels/982192297645056040/messages"),
+            "transient DM error must not immediately fall back"
+        );
+        mock.failures.lock().await.push((
+            "POST".into(),
+            "/channels/982192297645056040/messages".into(),
+            1,
+            500,
+        ));
+        retry_now(&service, id).await?;
+        service.poll(&server).await?;
+        retry_now(&service, id).await?;
+        service.poll(&server).await?;
+        assert_eq!(service.entry(entry).await?.review_revision, 1);
+        mock.failures.lock().await.push((
+            "PUT".into(),
+            format!("/channels/{}/messages", super::super::ANNOUNCEMENTS),
+            1,
+            500,
+        ));
+        service.voting(&service.contest(id).await?).await?;
+        assert_eq!(service.contest(id).await?.state, "voting");
+        retry_now(&service, id).await?;
+        service.poll(&server).await?;
+        assert_eq!(
+            serde_json::from_str::<Value>(
+                &sqlx::query_scalar::<_, String>("SELECT effects FROM banner_contests WHERE id=?")
+                    .bind(id)
+                    .fetch_one(&service.pool)
+                    .await?
+            )?[format!("fire_{entry}")]["state"],
+            "done"
+        );
+        service
+            .done(
+                id,
+                "voting_public_at",
+                json!(Utc::now().timestamp() - 86401),
+            )
+            .await?;
+        sqlx::query("UPDATE banner_contests SET end_at=? WHERE id=?")
+            .bind(Utc::now().timestamp() - 1)
+            .bind(id)
+            .execute(&service.pool)
+            .await?;
+        mock.failures.lock().await.push((
+            "GET".into(),
+            format!("/channels/{}/messages", super::super::ANNOUNCEMENTS),
+            1,
+            500,
+        ));
+        service.poll(&server).await?;
+        assert_eq!(service.contest(id).await?.state, "voting");
+        assert!(!mock.awarded.load(Ordering::SeqCst));
+        retry_now(&service, id).await?;
+        service.poll(&server).await?;
+        assert_eq!(service.contest(id).await?.state, "complete");
+        assert!(mock.awarded.load(Ordering::SeqCst));
+        Ok(())
+    }
+    #[tokio::test]
+    #[ignore = "local MariaDB"]
+    async fn floodgate_name_resolved_by_services_can_submit() -> Result<()> {
+        let (service, server, _mock) = fixture("floodgate").await?;
+        sqlx::query("ALTER TABLE player_info MODIFY name VARCHAR(17)")
+            .execute(&service.pool)
+            .await?;
+        sqlx::query("UPDATE player_info SET name='.1234567890123456'")
+            .execute(&service.pool)
+            .await?;
+        let now = Utc::now().timestamp();
+        let id = service
+            .insert_contest(
+                2030,
+                1,
+                Schedule {
+                    call: now,
+                    close: now + 86400,
+                    voting: now + 129_600,
+                    end: now + 388_800,
+                },
+                false,
+            )
+            .await?;
+        service.call(&service.contest(id).await?).await?;
+        let mut form = interaction(&format!("banner:form:{id}"), 5);
+        form["data"]["components"] = json!([
+            {"type":18,"component":{"type":4,"custom_id":"username","value":".1234567890123456"}},
+            {"type":18,"component":{"type":4,"custom_id":"email","value":"private@example.org"}},
+            {"type":18,"component":{"type":19,"custom_id":"image","values":["777"]}}
+        ]);
+        form["data"]["resolved"] = json!({"attachments":{"777":{"url":"https://cdn.discordapp.com/attachments/1/2/test.png","size":10000}}});
+        assert!(
+            service
+                .submit(id, &form, &server)
+                .await?
+                .starts_with("Thanks!")
+        );
+        assert_eq!(service.entries(id).await?[0].username, ".1234567890123456");
+        assert_eq!(
+            apply_modal(id)["data"]["components"][0]["component"]["max_length"],
+            17
+        );
+        Ok(())
+    }
+    #[tokio::test]
+    #[ignore = "local MariaDB"]
+    async fn general_fallback_keeps_denial_reason_per_owner() -> Result<()> {
+        let (service, _, mock) = fixture("denial_reason").await?;
+        let (id, entry) = opened(&service, false).await?;
+        let mut other = interaction(&format!("banner:other:{entry}"), 5);
+        other["data"]["components"] = json!([{"type":1,"components":[{"type":4,"custom_id":"reason","value":"Owner requested reason"}]}]);
+        service.decide(entry, "other", &other).await?;
+        service
+            .reconcile_entries(&service.contest(id).await?)
+            .await?;
+        assert!(mock.requests.lock().await.iter().any(|(_, p, v)| {
+            p == "/channels/982192297645056040/messages"
+                && v["content"]
+                    .as_str()
+                    .is_some_and(|s| s.contains("denied: Owner requested reason."))
+                && v["allowed_mentions"]["users"] == json!(["123"])
+        }));
+        Ok(())
+    }
+    #[tokio::test]
+    #[ignore = "local MariaDB"]
+    async fn private_notifications_keep_retrying_after_public_phase_completes() -> Result<()> {
+        let (service, server, mock) = fixture("terminal_notices").await?;
+        let (id, entry) = opened(&service, false).await?;
+        service
+            .reconcile_entries(&service.contest(id).await?)
+            .await?;
+        mock.failures.lock().await.push((
+            "POST".into(),
+            "/channels/982192297645056040/messages".into(),
+            1,
+            500,
+        ));
+        service.voting(&service.contest(id).await?).await?;
+        assert_eq!(service.contest(id).await?.state, "complete");
+        retry_now(&service, id).await?;
+        service.poll(&server).await?;
+        let effects: Value = serde_json::from_str(
+            &sqlx::query_scalar::<_, String>("SELECT effects FROM banner_contests WHERE id=?")
+                .bind(id)
+                .fetch_one(&service.pool)
+                .await?,
+        )?;
+        assert_eq!(effects[format!("notify_{entry}_1")]["state"], "done");
+        assert_eq!(service.contest(id).await?.state, "complete");
+        Ok(())
+    }
+    #[tokio::test]
+    #[ignore = "local MariaDB"]
+    async fn rapid_changed_decisions_preserve_each_notification() -> Result<()> {
+        let (service, _, mock) = fixture("notice_revisions").await?;
+        let (id, entry) = opened(&service, true).await?;
+        let mut deny = interaction(&format!("banner:deny:{entry}"), 3);
+        deny["data"]["values"] = json!(["Low quality"]);
+        service.decide(entry, "deny", &deny).await?;
+        service
+            .decide(
+                entry,
+                "approve",
+                &interaction(&format!("banner:approve:{entry}"), 3),
+            )
+            .await?;
+        service
+            .reconcile_entries(&service.contest(id).await?)
+            .await?;
+        let requests = mock.requests.lock().await;
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|(_, _, p)| p["content"]
+                    .as_str()
+                    .is_some_and(|s| s.starts_with("TEST decision notification:")))
+                .count(),
+            2
+        );
+        assert!(requests.iter().any(|(_, _, p)| {
+            p["content"]
+                .as_str()
+                .is_some_and(|s| s.contains("denied: Low quality"))
+        }));
+        assert!(requests.iter().any(|(_, _, p)| {
+            p["content"]
+                .as_str()
+                .is_some_and(|s| s.contains("was accepted"))
+        }));
+        Ok(())
+    }
+    #[tokio::test]
+    #[ignore = "local MariaDB"]
+    async fn saved_application_returns_waiting_even_when_review_upload_is_down() -> Result<()> {
+        let (service, server, mock) = fixture("saved_submit").await?;
+        let now = Utc::now().timestamp();
+        let id = service
+            .insert_contest(
+                2030,
+                1,
+                Schedule {
+                    call: now,
+                    close: now + 86400,
+                    voting: now + 129_600,
+                    end: now + 388_800,
+                },
+                false,
+            )
+            .await?;
+        service.call(&service.contest(id).await?).await?;
+        let mut form = interaction(&format!("banner:form:{id}"), 5);
+        form["data"]["components"] = json!([
+            {"type":18,"component":{"type":4,"custom_id":"username","value":"Steve"}},
+            {"type":18,"component":{"type":4,"custom_id":"email","value":"private@example.org"}},
+            {"type":18,"component":{"type":19,"custom_id":"image","values":["777"]}}
+        ]);
+        form["data"]["resolved"] = json!({"attachments":{"777":{"url":"https://cdn.discordapp.com/attachments/1/2/test.png","size":10000}}});
+        mock.failures
+            .lock()
+            .await
+            .push(("POST".into(), review_path(), 1, 500));
+        let response = service.submit(id, &form, &server).await?;
+        assert!(response.starts_with("Thanks! Your screenshot is waiting for review."));
+        assert_eq!(service.entries(id).await?.len(), 1);
+        assert!(
+            !mock
+                .requests
+                .lock()
+                .await
+                .iter()
+                .any(|(m, p, _)| m == "POST" && p == &review_path())
+        );
+        service.poll(&server).await?;
+        assert_eq!(service.contest(id).await?.state, "open");
+        Ok(())
+    }
+    #[tokio::test]
+    #[ignore = "local MariaDB"]
+    async fn prize_is_dispatched_to_proxy_not_rank_service() -> Result<()> {
+        let (_service, server, mock) = fixture("proxy_route").await?;
+        server
+            .grant_banner_prize("00000000-0000-0000-0000-000000000001", "primeultra")
+            .await?;
+        assert_eq!(
+            mock.requests
+                .lock()
+                .await
+                .iter()
+                .filter(|(_, p, _)| p == "/proxy/run-command")
+                .count(),
+            1
+        );
+        assert_eq!(
+            mock.requests
+                .lock()
+                .await
+                .iter()
+                .filter(|(_, p, _)| p == "/run-command")
+                .count(),
+            0
+        );
+        Ok(())
+    }
+    #[derive(Clone)]
+    struct LogCapture(Arc<std::sync::Mutex<Vec<u8>>>);
+    impl std::io::Write for LogCapture {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogCapture {
+        type Writer = Self;
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+    #[tokio::test]
+    #[ignore = "local MariaDB"]
+    async fn http_failure_logs_status_without_private_url_token_or_body() -> Result<()> {
+        let (service, _, mock) = fixture("log_status").await?;
+        mock.failures
+            .lock()
+            .await
+            .push(("GET".into(), "/private-token-path".into(), 1, 500));
+        let output = LogCapture(Arc::default());
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .without_time()
+            .with_max_level(tracing::Level::WARN)
+            .with_writer(output.clone())
+            .finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+        assert!(
+            service
+                .request(reqwest::Method::GET, "/private-token-path", None)
+                .await
+                .is_err()
+        );
+        let log = String::from_utf8(output.0.lock().unwrap().clone())?;
+        assert!(
+            log.contains("http_status=500"),
+            "HTTP status must be logged: {log}"
+        );
+        for private in ["private-token-path", "local-fake-token", mock.base.as_str()] {
+            assert!(!log.contains(private));
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    #[ignore = "local MariaDB"]
+    async fn review_upload_transient_error_does_not_stop_contest() -> Result<()> {
+        let (service, server, mock) = fixture("review_retry").await?;
+        let (id, entry) = opened(&service, false).await?;
+        mock.failures
+            .lock()
+            .await
+            .push(("POST".into(), review_path(), 1, 500));
+        service.poll(&server).await?;
+        assert_eq!(service.contest(id).await?.state, "open");
+        assert!(service.entry(entry).await?.review_message_id.is_none());
+        let posts = mock.requests.lock().await.len();
+        service.poll(&server).await?;
+        assert_eq!(
+            mock.requests.lock().await.len(),
+            posts,
+            "backoff must defer immediate retry"
+        );
+        retry_now(&service, id).await?;
+        service.poll(&server).await?;
+        assert!(service.entry(entry).await?.review_message_id.is_some());
+        assert_eq!(service.contest(id).await?.state, "open");
+        assert!(!mock.requests.lock().await.iter().any(|(_, _, p)| {
+            p["content"]
+                .as_str()
+                .is_some_and(|s| s.contains("failed after"))
+        }));
+        Ok(())
+    }
+    #[tokio::test]
+    #[ignore = "local MariaDB"]
+    async fn private_retry_cap_reports_once_and_keeps_other_entries() -> Result<()> {
+        let (service, server, mock) = fixture("retry_cap").await?;
+        let (id, entry) = opened(&service, false).await?;
+        mock.failures
+            .lock()
+            .await
+            .push(("POST".into(), review_path(), 5, 500));
+        for _ in 0..6 {
+            retry_now(&service, id).await?;
+            service.poll(&server).await?;
+        }
+        assert!(service.entry(entry).await?.review_message_id.is_none());
+        assert_eq!(service.contest(id).await?.state, "open");
+        let before = mock.requests.lock().await.len();
+        service.poll(&server).await?;
+        assert_eq!(
+            mock.requests.lock().await.len(),
+            before,
+            "exhausted upload and delivered report must not repeat"
+        );
+        let other = insert_entry(
+            &service,
+            id,
+            "456",
+            "Other",
+            "00000000-0000-0000-0000-000000000002",
+            1,
+        )
+        .await?;
+        service.poll(&server).await?;
+        assert!(service.entry(other).await?.review_message_id.is_some());
+        Ok(())
+    }
+    #[tokio::test]
+    #[ignore = "local MariaDB"]
+    async fn stale_catchup_has_no_public_posts_or_prizes() -> Result<()> {
+        let (service, server, mock) = fixture("stale").await?;
+        let now = Utc::now().timestamp();
+        for (month, state, close, voting, end) in [
+            (1, "scheduled", now - 1, now - 1, now - 1),
+            (2, "review", now - 2, now - 1, now + 43199),
+            (3, "voting", now - 3, now - 2, now - 1),
+        ] {
+            let id = service
+                .insert_contest(
+                    2031,
+                    month,
+                    Schedule {
+                        call: now - 4,
+                        close,
+                        voting,
+                        end,
+                    },
+                    false,
+                )
+                .await?;
+            service.set_state(id, state).await?;
+            service.poll(&server).await?;
+            assert_eq!(service.contest(id).await?.state, "skipped");
+        }
+        assert!(
+            mock.requests
+                .lock()
+                .await
+                .iter()
+                .all(|(_, p, _)| p.starts_with(&review_path()))
+        );
+        Ok(())
+    }
+    #[tokio::test]
+    #[ignore = "local MariaDB"]
+    async fn voting_requires_twelve_hours_to_open_and_twenty_four_public_hours_to_award()
+    -> Result<()> {
+        let (service, server, mock) = fixture("voting_time").await?;
+        let (id, entry) = opened(&service, false).await?;
+        sqlx::query("UPDATE banner_submissions SET status='approved' WHERE id=?")
+            .bind(entry)
+            .execute(&service.pool)
+            .await?;
+        let now = Utc::now().timestamp();
+        sqlx::query("UPDATE banner_contests SET state='review',voting_at=?,end_at=? WHERE id=?")
+            .bind(now - 1)
+            .bind(now + 43210)
+            .bind(id)
+            .execute(&service.pool)
+            .await?;
+        service.poll(&server).await?;
+        assert_eq!(service.contest(id).await?.state, "voting");
+        sqlx::query("UPDATE banner_contests SET end_at=? WHERE id=?")
+            .bind(now - 1)
+            .bind(id)
+            .execute(&service.pool)
+            .await?;
+        service.poll(&server).await?;
+        assert_eq!(service.contest(id).await?.state, "skipped");
+        assert!(!mock.awarded.load(Ordering::SeqCst));
+        assert!(!mock.requests.lock().await.iter().any(|(_, _, p)| {
+            p["content"]
+                .as_str()
+                .is_some_and(|s| s.contains("The winner of"))
+        }));
+        Ok(())
+    }
+    #[tokio::test]
+    #[ignore = "local MariaDB"]
+    async fn listing_entries_does_not_fetch_blobs() -> Result<()> {
+        let (service, _, _mock) = fixture("metadata").await?;
+        let (id, entry) = opened(&service, false).await?;
+        // A column-level SELECT grant makes a blob read fail, rather than merely inspecting SQL text.
+        sqlx::query("DROP USER IF EXISTS 'banner_metadata'@'127.0.0.1'")
+            .execute(&service.pool)
+            .await?;
+        sqlx::query("CREATE USER 'banner_metadata'@'127.0.0.1' IDENTIFIED BY 'local-only'")
+            .execute(&service.pool)
+            .await?;
+        sqlx::query("GRANT SELECT(id,contest_id,discord_id,username,uuid,email,prize,status,decider,reason,submitted_at,shuffle_key,review_message_id,vote_message_id,votes,revision,review_revision,review_closed) ON banner_test_fix_metadata.banner_submissions TO 'banner_metadata'@'127.0.0.1'").execute(&service.pool).await?;
+        let url = std::env::var("BANNER_TEST_DATABASE_URL")?;
+        let mut parsed = reqwest::Url::parse(&url)?;
+        parsed.set_path("/banner_test_fix_metadata");
+        parsed.set_username("banner_metadata").unwrap();
+        parsed.set_password(Some("local-only")).unwrap();
+        let mut limited = service.clone();
+        limited.pool = sqlx::MySqlPool::connect(parsed.as_str()).await?;
+        assert_eq!(limited.entries(id).await?.len(), 1);
+        assert_eq!(limited.entry(entry).await?.id, entry);
+        assert!(limited.entry_image(entry).await.is_err());
+        Ok(())
+    }
+    #[tokio::test]
+    #[ignore = "local MariaDB"]
+    async fn cleared_seed_theme_survives_schema_restart() -> Result<()> {
+        let (service, _, _mock) = fixture("themes").await?;
+        // Run the same SQL used by the staff command.
+        super::super::commands::save_theme(&service.pool, 2026, 12, None).await?;
+        super::super::ensure_schema(&service.pool).await?;
+        assert_eq!(service.theme(2026, 12).await?, None);
+        Ok(())
+    }
+    #[tokio::test]
+    #[ignore = "local MariaDB"]
+    async fn same_decision_does_not_increment_revision_or_notify_twice() -> Result<()> {
+        let (service, _, mock) = fixture("decision").await?;
+        let (id, entry) = opened(&service, true).await?;
+        service
+            .reconcile_entries(&service.contest(id).await?)
+            .await?;
+        let approve = interaction(&format!("banner:approve:{entry}"), 3);
+        service.decide(entry, "approve", &approve).await?;
+        service
+            .reconcile_entries(&service.contest(id).await?)
+            .await?;
+        let before = mock.requests.lock().await.len();
+        let revision = service.entry(entry).await?.revision;
+        service.decide(entry, "approve", &approve).await?;
+        service
+            .reconcile_entries(&service.contest(id).await?)
+            .await?;
+        assert_eq!(service.entry(entry).await?.revision, revision);
+        assert_eq!(mock.requests.lock().await.len(), before);
+        Ok(())
+    }
+    #[tokio::test]
+    #[ignore = "local MariaDB"]
+    async fn ineligible_winner_has_no_public_promise() -> Result<()> {
+        let (service, server, mock) = fixture("ineligible").await?;
+        let (id, entry) = opened(&service, false).await?;
+        sqlx::query("UPDATE banner_submissions SET status='approved' WHERE id=?")
+            .bind(entry)
+            .execute(&service.pool)
+            .await?;
+        service.voting(&service.contest(id).await?).await?;
+        mock.ranks
+            .lock()
+            .await
+            .insert("Steve".into(), vec!["legend".into()]);
+        service.finish(&service.contest(id).await?, &server).await?;
+        assert!(!mock.requests.lock().await.iter().any(|(_, _, p)| {
+            p["content"]
+                .as_str()
+                .is_some_and(|s| s.contains("The winner of"))
+        }));
+        assert!(!mock.awarded.load(Ordering::SeqCst));
+        Ok(())
+    }
+    #[tokio::test]
+    #[ignore = "local MariaDB"]
+    async fn failure_report_survives_discord_outage_and_restart() -> Result<()> {
+        let (service, server, mock) = fixture("reports").await?;
+        let (id, _entry) = opened(&service, false).await?;
+        mock.failures
+            .lock()
+            .await
+            .push(("POST".into(), review_path(), 1, 500));
+        let _ = service.fail(id, "Local failure diagnostic").await;
+        service.poll(&server).await?;
+        let restarted = service.clone();
+        restarted.poll(&server).await?;
+        assert!(
+            mock.requests
+                .lock()
+                .await
+                .iter()
+                .filter(|(_, _, p)| p["content"] == "Local failure diagnostic")
+                .count()
+                >= 2
+        );
+        let before = mock.requests.lock().await.len();
+        restarted.poll(&server).await?;
+        assert_eq!(mock.requests.lock().await.len(), before);
+        Ok(())
+    }
+    #[tokio::test]
+    #[ignore = "local MariaDB"]
+    async fn monthly_generation_waits_for_a_staff_started_real_contest() -> Result<()> {
+        let (service, _, _mock) = fixture("gate").await?;
+        service.generate().await?;
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM banner_contests")
+                .fetch_one(&service.pool)
+                .await?,
+            0
+        );
+        opened(&service, true).await?;
+        service.generate().await?;
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM banner_contests WHERE dry_run=FALSE"
+            )
+            .fetch_one(&service.pool)
+            .await?,
+            0
+        );
+        opened(&service, false).await?;
+        service.generate().await?;
+        service.generate().await?;
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM banner_contests WHERE dry_run=FALSE"
+            )
+            .fetch_one(&service.pool)
+            .await?,
+            2
+        );
+        Ok(())
+    }
+    #[tokio::test]
+    #[ignore = "local MariaDB"]
+    async fn prize_uses_proxy_and_waits_for_async_rank_save() -> Result<()> {
+        let (service, server, mock) = fixture("proxy").await?;
+        let (_id, _entry) = opened(&service, false).await?;
+        mock.verify_delay.store(2, Ordering::SeqCst);
+        server
+            .grant_banner_prize("00000000-0000-0000-0000-000000000001", "primeultra")
+            .await?;
+        assert!(server.verify_banner_prize("Steve", "primeultra").await);
+        let requests = mock.requests.lock().await;
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|(_, p, _)| p == "/proxy/run-command")
+                .count(),
+            1
+        );
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|(_, p, _)| p == "/run-command")
+                .count(),
+            0
+        );
+        assert!(
+            requests
+                .iter()
+                .filter(|(_, p, _)| p == "/get-ranks")
+                .count()
+                >= 3
+        );
+        drop(requests);
+        mock.deny_command.store(true, Ordering::SeqCst);
+        assert!(
+            server
+                .grant_banner_prize("00000000-0000-0000-0000-000000000001", "primeultra")
+                .await
+                .is_err()
+        );
+        Ok(())
+    }
+    #[tokio::test]
+    #[ignore = "local MariaDB"]
+    async fn other_cancel_resets_original_menu() -> Result<()> {
+        let (service, server, mock) = fixture("other").await?;
+        let (id, entry) = opened(&service, true).await?;
+        service
+            .reconcile_entries(&service.contest(id).await?)
+            .await?;
+        let mut other = interaction(&format!("banner:deny:{entry}"), 3);
+        other["data"]["values"] = json!(["Other"]);
+        let before = mock.requests.lock().await.len();
+        service.receive(other, server).await?;
+        assert!(
+            mock.requests.lock().await[before..]
+                .iter()
+                .any(|(m, p, v)| m == "PATCH"
+                    && p.starts_with(&review_path())
+                    && v["components"][1]["components"][0]["options"][3]["default"] != true)
+        );
+        Ok(())
+    }
     #[tokio::test]
     #[ignore = "requires BANNER_TEST_DATABASE_URL pointing to an isolated local MariaDB banner_test database"]
     async fn schema_journal_forms_decisions_voting_catchup_and_prizes() -> Result<()> {
@@ -494,6 +1429,8 @@ mod local_integration {
             .build()?;
         let env = Arc::new(crate::config::Environment {
             discord_token: "local-fake-token".into(),
+            proxy_command_base_url: Some(format!("{}/proxy", mock.base)),
+            proxy_command_access_token: Some("local-fake-token".into()),
             rank_service_base_url: Some(mock.base.clone()),
             rank_service_access_token: Some("local-fake-token".into()),
             ..Default::default()
@@ -541,11 +1478,14 @@ mod local_integration {
             {"type":18,"component":{"type":4,"custom_id":"email","value":"private@example.org"}},
             {"type":18,"component":{"type":19,"custom_id":"image","values":["777"]}}
         ]);
-        form["data"]["resolved"] = json!({"attachments":{"777":{"url":"https://cdn.discordapp.com/attachments/1/2/test.png","size":10000}}});
+        form["data"]["resolved"] = json!({"attachments":{"777":{"url":"https://cdn.discordapp.com/ephemeral-attachments/1/2/test.png","size":10000}}});
         service.receive(form.clone(), server.clone()).await?;
         let entries = service.entries(id).await?;
         assert_eq!(entries.len(), 1);
         let first = entries[0].id;
+        service
+            .reconcile_entries(&service.contest(id).await?)
+            .await?;
         service.receive(form.clone(), server.clone()).await?;
         assert_eq!(service.entries(id).await?.len(), 1);
         let mut denied = interaction(&format!("banner:deny:{first}"), 3);
@@ -685,6 +1625,10 @@ mod local_integration {
             .bind(real)
             .execute(&pool)
             .await?;
+        service.voting(&service.contest(real).await?).await?;
+        service
+            .done(real, "voting_public_at", json!(now - 86401))
+            .await?;
         service.poll(&server).await?;
         assert_eq!(service.contest(real).await?.state, "complete");
         assert!(mock.awarded.load(Ordering::SeqCst));
@@ -698,7 +1642,7 @@ mod local_integration {
         assert_eq!(patches[0].2["banner"], patches[0].2["discovery_splash"]);
         let commands: Vec<_> = requests
             .iter()
-            .filter(|(_, p, _)| p == "/run-command")
+            .filter(|(_, p, _)| p == "/proxy/run-command")
             .collect();
         assert_eq!(commands.len(), 1);
         assert_eq!(
@@ -744,6 +1688,10 @@ mod local_integration {
             .bind(broken)
             .execute(&pool)
             .await?;
+        service.voting(&service.contest(broken).await?).await?;
+        service
+            .done(broken, "voting_public_at", json!(now - 86401))
+            .await?;
         service.poll(&server).await?;
         service.poll(&server).await?;
         assert_eq!(service.contest(broken).await?.state, "complete");
@@ -775,7 +1723,7 @@ mod local_integration {
                 .is_none()
         );
         service.poll(&server).await?;
-        assert_eq!(service.contest(uncertain).await?.state, "failed");
+        assert_eq!(service.contest(uncertain).await?.state, "paused");
         let before = mock.requests.lock().await.len();
         service.poll(&server).await?;
         assert_eq!(
@@ -786,4 +1734,61 @@ mod local_integration {
         pool.close().await;
         Ok(())
     }
+}
+
+#[test]
+fn floodgate_names_pass_syntax_validation() {
+    assert!(valid_username(".Bedrock_Player"));
+    assert!(valid_username(".1234567890123456"));
+}
+#[test]
+fn excessive_pixel_count_is_rejected_before_decode() {
+    let mut bytes = Cursor::new(Vec::new());
+    image::DynamicImage::new_rgba8(16384, 4095)
+        .write_to(&mut bytes, image::ImageFormat::Png)
+        .unwrap();
+    assert!(crop(bytes.get_ref()).is_err());
+}
+#[test]
+fn guild_crop_has_small_upload_budget() {
+    assert!(std::hint::black_box(super::image::MAX_GUILD_IMAGE) <= 3 * 1024 * 1024);
+}
+#[tokio::test]
+async fn discord_token_matches_serenity_normalization() {
+    let pool = sqlx::mysql::MySqlPoolOptions::new()
+        .connect_lazy("mysql://root@127.0.0.1/banner_test")
+        .unwrap();
+    let env = crate::config::Environment {
+        discord_token: " Bot fake-token\n".into(),
+        ..Default::default()
+    };
+    let service = super::BannerService::new(pool, reqwest::Client::new(), &env);
+    assert_eq!(service.token.as_str(), "fake-token");
+}
+
+#[test]
+fn serenity_modal_rationale_matches_actual_decoder() {
+    let typed: poise::serenity_prelude::ModalInteractionData = serde_json::from_value(json!({
+        "custom_id":"banner:form:1", "components":[{"type":18,"component":{"type":4,"custom_id":"username","value":"Steve"}}],
+        "resolved":{"attachments":{"1":{"url":"private"}}}
+    })).unwrap();
+    assert!(typed.components[0].components.is_empty());
+    let docs = include_str!("../../docs/banner-contest.md");
+    assert!(docs.contains("silently drops username/email/file values"));
+    assert!(!include_str!("../main.rs").contains("serenity::gateway::ws=off"));
+}
+#[test]
+fn banner_component_guard_precedes_generic_handlers() {
+    // Architectural regression: banner ownership must be explicit before any generic handler.
+    let source = include_str!("../events/interactions.rs");
+    let guard = source
+        .find("c.data.custom_id.starts_with(\"banner:\")")
+        .expect("explicit banner guard");
+    assert!(
+        guard
+            < source
+                .find("if let Some(service) = &data.event_submissions")
+                .unwrap()
+    );
+    assert!(guard < source.find("approval(ctx, data, component)").unwrap());
 }
