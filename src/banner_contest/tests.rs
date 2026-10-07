@@ -96,6 +96,12 @@ fn theme_reminder_keeps_warsaw_time_across_autumn_dst() {
 
 #[test]
 fn one_off_and_minute_schedules() {
+    let longer = Schedule::test_with(1000, 10);
+    assert_eq!(
+        (longer.close, longer.voting, longer.end),
+        (1600, 2200, 2800)
+    );
+    assert_eq!(Schedule::test_with(0, 99).end, 30 * 60 * 3);
     let s = Schedule::test(1000);
     assert_eq!((s.call, s.close, s.voting, s.end), (1000, 1060, 1120, 1180));
     assert!(Schedule::monthly(2026, 0).is_err());

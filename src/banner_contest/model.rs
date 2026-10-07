@@ -108,12 +108,18 @@ impl Schedule {
             end: at(end, 10)?,
         })
     }
+    #[cfg(test)]
     pub fn test(now: i64) -> Self {
+        Self::test_with(now, 1)
+    }
+    /// Test schedule with `minutes` per phase (clamped to 1-30), so staff have time to fill in the form.
+    pub fn test_with(now: i64, minutes: u32) -> Self {
+        let step = i64::from(minutes.clamp(1, 30)) * 60;
         Self {
             call: now,
-            close: now + 60,
-            voting: now + 120,
-            end: now + 180,
+            close: now + step,
+            voting: now + 2 * step,
+            end: now + 3 * step,
         }
     }
 }
