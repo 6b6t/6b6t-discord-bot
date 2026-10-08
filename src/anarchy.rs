@@ -4,6 +4,8 @@ use anyhow::{Context as _, Result};
 use poise::serenity_prelude as serenity;
 use serde::Deserialize;
 
+use crate::server::PlayerCounts;
+
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AnarchyStats {
@@ -22,9 +24,13 @@ pub struct DailyStats {
 }
 
 impl AnarchyStats {
-    /// Renders the analytics report. The percentage lines are always present;
-    /// `n/a` is shown when the denominator is missing or zero.
-    pub fn render(&self, online_users: Option<u64>, online_players: Option<u64>) -> String {
+    /// Renders the analytics report, showing both shares when bots are reported.
+    /// Missing counts keep the unavailable messages; zero denominators show 0%.
+    pub fn render(
+        &self,
+        online_users: Option<u64>,
+        online_players: Option<PlayerCounts>,
+    ) -> String {
         let mut message = format!(
             "**Anarchy Mod Analytics**\n\
              All-time: {} hits / {} unique IPs\n\
@@ -41,13 +47,29 @@ impl AnarchyStats {
         );
         message.push('\n');
         match (online_users, online_players) {
+            (Some(users), Some(players)) if players.bots > 0 => {
+                let _ = writeln!(
+                    message,
+                    "Online: {} out of {} real players use AnarchyMod ({}%)",
+                    comma_count(users),
+                    comma_count(players.humans),
+                    percentage(users, players.humans)
+                );
+                let _ = writeln!(
+                    message,
+                    "With bots: {} out of {} online accounts ({}%)",
+                    comma_count(users),
+                    comma_count(players.total),
+                    percentage(users, players.total)
+                );
+            }
             (Some(users), Some(players)) => {
                 let _ = writeln!(
                     message,
                     "Online: {} out of {} online players use AnarchyMod ({}%)",
                     comma_count(users),
-                    comma_count(players),
-                    percentage(users, players)
+                    comma_count(players.total),
+                    percentage(users, players.total)
                 );
             }
             (Some(users), None) => {
@@ -61,7 +83,7 @@ impl AnarchyStats {
                 let _ = writeln!(
                     message,
                     "Online: AnarchyMod player count unavailable ({} total players online)",
-                    comma_count(players)
+                    comma_count(players.total)
                 );
             }
             (None, None) => message.push_str("Online: player counts unavailable\n"),
@@ -97,7 +119,7 @@ impl AnarchyService {
         &self,
         ctx: &serenity::Context,
         online_users: Option<u64>,
-        online_players: Option<u64>,
+        online_players: Option<PlayerCounts>,
     ) -> Result<()> {
         let stats = self.fetch().await?;
         self.channel_id
@@ -157,6 +179,7 @@ fn comma_count(value: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::{AnarchyStats, DailyStats, comma_count, percentage};
+    use crate::server::PlayerCounts;
 
     #[tokio::test]
     async fn fetches_utc_d1_stats_without_redis_and_rejects_errors() {
@@ -233,15 +256,25 @@ mod tests {
         }
     }
 
+    fn all_players(total: u64) -> PlayerCounts {
+        PlayerCounts {
+            total,
+            humans: total,
+            bots: 0,
+        }
+    }
+
     #[test]
     fn stats_message_includes_all_reported_metrics() {
-        let rendered = sample_stats().render(Some(45), Some(371));
+        let rendered = sample_stats().render(Some(45), Some(all_players(371)));
         assert!(rendered.contains("1,234,567 hits / 98,765 unique IPs"));
         assert!(rendered.contains("Today (2026-08-08): 3,210 hits / 890 unique IPs"));
         assert!(rendered.contains("Yesterday (2026-08-07): 2,100 hits / 700 unique IPs"));
         assert!(rendered.contains("unique IPs\nOnline:"));
         assert!(rendered.contains("Online: 45 out of 371 online players use AnarchyMod (12%)"));
         assert!(!rendered.contains("Today's players:"));
+        assert!(rendered.ends_with("Online: 45 out of 371 online players use AnarchyMod (12%)\n"));
+        assert!(!rendered.contains("With bots:"));
     }
 
     #[test]
@@ -252,17 +285,116 @@ mod tests {
             rendered
                 .contains("Online: 0 AnarchyMod users currently online (player count unavailable)")
         );
-        let rendered = stats.render(Some(0), Some(0));
+        let rendered = stats.render(Some(0), Some(all_players(0)));
         assert!(rendered.contains("Online: 0 out of 0 online players use AnarchyMod (0%)"));
     }
 
     #[test]
     fn unavailable_anarchymod_endpoint_is_not_reported_as_zero() {
-        let rendered = sample_stats().render(None, Some(371));
+        let rendered = sample_stats().render(None, Some(all_players(371)));
         assert!(
             rendered
                 .contains("Online: AnarchyMod player count unavailable (371 total players online)")
         );
         assert!(!rendered.contains("Online: 0 out of 371"));
+    }
+
+    #[test]
+    fn online_shares_use_real_players_and_all_accounts_when_bots_are_reported() {
+        let rendered = sample_stats().render(
+            Some(97),
+            Some(PlayerCounts {
+                total: 620,
+                humans: 146,
+                bots: 474,
+            }),
+        );
+        assert!(rendered.ends_with(
+            "Online: 97 out of 146 real players use AnarchyMod (66%)\n\
+             With bots: 97 out of 620 online accounts (16%)\n"
+        ));
+    }
+
+    #[test]
+    fn online_shares_clamp_each_percentage_independently() {
+        let players = Some(PlayerCounts {
+            total: 620,
+            humans: 146,
+            bots: 474,
+        });
+        let rendered = sample_stats().render(Some(200), players);
+        assert!(rendered.ends_with(
+            "Online: 200 out of 146 real players use AnarchyMod (100%)\n\
+             With bots: 200 out of 620 online accounts (32%)\n"
+        ));
+        let rendered = sample_stats().render(Some(700), players);
+        assert!(rendered.ends_with(
+            "Online: 700 out of 146 real players use AnarchyMod (100%)\n\
+             With bots: 700 out of 620 online accounts (100%)\n"
+        ));
+    }
+
+    #[test]
+    fn online_shares_handle_zero_real_players() {
+        let players = Some(PlayerCounts {
+            total: 620,
+            humans: 0,
+            bots: 620,
+        });
+        let rendered = sample_stats().render(Some(97), players);
+        assert!(rendered.ends_with(
+            "Online: 97 out of 0 real players use AnarchyMod (0%)\n\
+             With bots: 97 out of 620 online accounts (16%)\n"
+        ));
+        let rendered = sample_stats().render(Some(0), players);
+        assert!(rendered.ends_with(
+            "Online: 0 out of 0 real players use AnarchyMod (0%)\n\
+             With bots: 0 out of 620 online accounts (0%)\n"
+        ));
+    }
+
+    #[test]
+    fn online_shares_keep_thousands_separators() {
+        let rendered = sample_stats().render(
+            Some(1_000),
+            Some(PlayerCounts {
+                total: 2_500,
+                humans: 1_500,
+                bots: 1_000,
+            }),
+        );
+        assert!(rendered.ends_with(
+            "Online: 1,000 out of 1,500 real players use AnarchyMod (67%)\n\
+             With bots: 1,000 out of 2,500 online accounts (40%)\n"
+        ));
+    }
+
+    #[test]
+    fn unavailable_counts_keep_existing_fallbacks_even_when_bots_are_reported() {
+        let stats = sample_stats();
+        let rendered = stats.render(
+            None,
+            Some(PlayerCounts {
+                total: 620,
+                humans: 146,
+                bots: 474,
+            }),
+        );
+        assert!(
+            rendered.ends_with(
+                "Online: AnarchyMod player count unavailable (620 total players online)\n"
+            )
+        );
+        assert!(!rendered.contains("With bots:"));
+        let rendered = stats.render(Some(97), None);
+        assert!(rendered.ends_with(
+            "Online: 97 AnarchyMod users currently online (player count unavailable)\n"
+        ));
+        assert!(!rendered.contains("With bots:"));
+        assert!(
+            stats
+                .render(None, None)
+                .ends_with("Online: player counts unavailable\n")
+        );
     }
 }

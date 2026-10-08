@@ -242,7 +242,7 @@ async fn anarchy_analytics(ctx: &serenity::Context, data: &AppState) {
     };
     let (online_users, online_players) = tokio::join!(
         data.server.anarchymod_player_count(),
-        data.server.player_count(),
+        data.server.player_counts(),
     );
     let online_users = match online_users {
         Ok(count) => Some(count),
