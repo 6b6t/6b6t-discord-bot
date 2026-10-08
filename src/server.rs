@@ -142,10 +142,13 @@ impl ServerService {
         Ok(response)
     }
 
-    /// Current online player count, used as the denominator for the anarchy mod
-    /// analytics online percentage.
-    pub async fn player_count(&self) -> Result<u64> {
-        self.player_count_request("network-players").await
+    /// Current online counts, used as denominators for anarchy mod analytics.
+    pub async fn player_counts(&self) -> Result<PlayerCounts> {
+        let players = self.players_request("network-players").await?;
+        Ok(PlayerCounts::from_response(
+            players.player_count,
+            players.bot_count,
+        ))
     }
 
     /// Current online players detected through the `anarchymod:join` plugin message.

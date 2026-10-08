@@ -156,8 +156,10 @@ unless overridden). It fetches current D1 counters from the website's authentica
 `/api/discord/data?resource=anarchy-mod` endpoint. Daily dates use UTC, matching
 the website's counters. Redis is not required for analytics. Current online AnarchyMod
 users come from the authenticated `/anarchymod-players` command-service endpoint,
-while `/network-players` supplies the total online-player denominator. Analytics
-is enabled when `MOTD_REVIEW_BOT_SECRET` is configured on both the bot and website.
+while the same `/network-players` response supplies real-player and total-account
+denominators. When bots are reported, the report shows both percentages; a zero or
+missing bot count keeps the single total-player line. Analytics is enabled when
+`MOTD_REVIEW_BOT_SECRET` is configured on both the bot and website.
 
 | Variable | Required | Purpose |
 | --- | --- | --- |
