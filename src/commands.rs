@@ -178,7 +178,11 @@ async fn getuser(
     ctx: Context<'_>,
     #[description = "Discord user to look up"] id: serenity::User,
 ) -> Result<(), Error> {
-    if !command_admin(&ctx).await {
+    if !ctx
+        .author_member()
+        .await
+        .is_some_and(|member| command_admin(&member))
+    {
         ctx.send(
             CreateReply::default()
                 .ephemeral(true)
@@ -475,10 +479,8 @@ fn parse_discord_mention(value: &str) -> Option<u64> {
         .and_then(|id| id.parse::<u64>().ok())
 }
 
-async fn command_admin(ctx: &Context<'_>) -> bool {
-    ctx.author_member()
-        .await
-        .is_some_and(|member| member.roles.contains(&config::COMMAND_ADMIN_ROLE_ID))
+fn command_admin(member: &serenity::Member) -> bool {
+    moderation::is_administrator(member) || member.roles.contains(&config::COMMAND_ADMIN_ROLE_ID)
 }
 
 async fn finish_deferred(
@@ -558,6 +560,19 @@ mod tests {
         PlayerCounts, PlayerUuidResolution, parse_discord_mention, player_count_sentence,
         select_linked_uuid, unique_uuids,
     };
+
+    #[test]
+    fn getuser_allows_administrators_or_command_admin_role_only() {
+        let mut member = super::serenity::Member::default();
+        assert!(!super::command_admin(&member));
+        member.permissions = Some(super::serenity::Permissions::MANAGE_GUILD);
+        assert!(!super::command_admin(&member));
+        member.permissions = Some(super::serenity::Permissions::ADMINISTRATOR);
+        assert!(super::command_admin(&member));
+        member.permissions = None;
+        member.roles.push(super::config::COMMAND_ADMIN_ROLE_ID);
+        assert!(super::command_admin(&member));
+    }
 
     #[test]
     fn player_count_lists_players_bots_and_total() {
